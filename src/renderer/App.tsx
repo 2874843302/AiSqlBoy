@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Database, Table, Play, Plus, Trash2, X, Server, HardDrive, RefreshCw, ChevronRight, Layout, Settings, Activity, AlignLeft, Bot, Sparkles, Send, Loader2, Key } from 'lucide-react'
+import { Database, Table, Play, Plus, Trash2, X, Server, HardDrive, RefreshCw, ChevronRight, Layout, Settings, Activity, AlignLeft, Bot, Sparkles, Send, Loader2, Key, Search } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ConnectionConfig } from '../shared/types'
 import { format } from 'sql-formatter'
@@ -249,6 +249,40 @@ const ConfirmModal: React.FC<{
   );
 };
 
+// 辅助函数：判断是否为时间类型并返回 input 类型
+const getTimeInputType = (type: string): 'datetime-local' | 'date' | 'time' | null => {
+  if (!type) return null;
+  const t = type.toUpperCase();
+  if (t.includes('DATETIME') || t.includes('TIMESTAMP')) return 'datetime-local';
+  if (t.includes('DATE')) return 'date';
+  if (t.includes('TIME')) return 'time';
+  return null;
+};
+
+// 辅助函数：格式化时间值为 input 要求的格式
+const formatTimeForInput = (value: any, inputType: string) => {
+  if (!value) return '';
+  try {
+    const date = new Date(value);
+    if (isNaN(date.getTime())) return value.toString();
+
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    if (inputType === 'datetime-local') {
+      // YYYY-MM-DDTHH:mm
+      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    } else if (inputType === 'date') {
+      // YYYY-MM-DD
+      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+    } else if (inputType === 'time') {
+      // HH:mm
+      return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    }
+  } catch (e) {
+    return value.toString();
+  }
+  return value.toString();
+};
+
 const App: React.FC = () => {
   // State for connections
   const [savedConnections, setSavedConnections] = useState<ConnectionConfig[]>([])
@@ -297,7 +331,7 @@ const App: React.FC = () => {
   };
 
   // Context Menu State
-  const [contextMenu, setContextMenu] = useState<{ x: number, y: number, type: 'table' | 'database', target: string } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number, y: number, type: 'table' | 'database' | 'row', target: string } | null>(null);
   
   // Modals State
   const [showRenameModal, setShowRenameModal] = useState(false);
@@ -354,10 +388,76 @@ const App: React.FC = () => {
   const [editingCellCoord, setEditingCellCoord] = useState<{rowIdx: number, colName: string} | null>(null);
   const [editValue, setEditValue] = useState<string>('');
 
+  // Search State
+  const [searchTerm, setSearchTerm] = useState('');
+  const [searchMatches, setSearchMatches] = useState<{rowIdx: number, colName: string}[]>([]);
+  const [currentMatchIdx, setCurrentMatchIdx] = useState(-1);
+  const searchInputRef = React.useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+        if (selectedTable) {
+          e.preventDefault();
+          searchInputRef.current?.focus();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedTable]);
+
   useEffect(() => {
     loadSavedConnections()
     loadSettings()
   }, [])
+
+  // 搜索逻辑
+  useEffect(() => {
+    if (!searchTerm.trim()) {
+      setSearchMatches([]);
+      setCurrentMatchIdx(-1);
+      return;
+    }
+
+    const matches: {rowIdx: number, colName: string}[] = [];
+    const term = searchTerm.toLowerCase();
+
+    data.forEach((row, rowIdx) => {
+      columns.forEach((col) => {
+        const value = row[col.name];
+        if (value !== null && value !== undefined && value.toString().toLowerCase().includes(term)) {
+          matches.push({ rowIdx, colName: col.name });
+        }
+      });
+    });
+
+    setSearchMatches(matches);
+    setCurrentMatchIdx(matches.length > 0 ? 0 : -1);
+  }, [searchTerm, data, columns]);
+
+  // 定位到当前匹配项
+  useEffect(() => {
+    if (currentMatchIdx >= 0 && searchMatches[currentMatchIdx]) {
+      const { rowIdx, colName } = searchMatches[currentMatchIdx];
+      const element = document.querySelector(`[data-row-idx="${rowIdx}"][data-col-name="${colName}"]`);
+      if (element) {
+        element.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+      }
+    }
+  }, [currentMatchIdx, searchMatches]);
+
+  const handleNextMatch = () => {
+    if (searchMatches.length > 0) {
+      setCurrentMatchIdx((prev) => (prev + 1) % searchMatches.length);
+    }
+  };
+
+  const handlePrevMatch = () => {
+    if (searchMatches.length > 0) {
+      setCurrentMatchIdx((prev) => (prev - 1 + searchMatches.length) % searchMatches.length);
+    }
+  };
 
   useEffect(() => {
      setSelectedSql('');
@@ -624,9 +724,22 @@ const App: React.FC = () => {
 
   // Handle data cell edit start
   const handleCellDoubleClick = (rowIdx: number, colName: string, value: any) => {
-    if (activeConnection?.type === 'redis') return; // Redis 不支持直接编辑单元格
+    // Redis 仅支持修改 key, value, ttl，不支持修改 type
+    if (activeConnection?.type === 'redis' && colName === 'type') {
+      setToast({ message: 'Redis 数据类型由其内容决定，无法直接修改。', type: 'info' });
+      return;
+    }
+
+    const col = columns.find(c => c.name === colName);
+    const timeInputType = col ? getTimeInputType(col.type) : null;
+
     setEditingCellCoord({ rowIdx, colName });
-    setEditValue(value === null ? '' : value.toString());
+
+    if (timeInputType && value) {
+      setEditValue(formatTimeForInput(value, timeInputType));
+    } else {
+      setEditValue(value === null ? '' : value.toString());
+    }
   };
 
   // Handle data cell edit commit (local only)
@@ -634,16 +747,44 @@ const App: React.FC = () => {
     if (!editingCellCoord) return;
     const { rowIdx, colName } = editingCellCoord;
     
+    // 如果输入为空字符串，将其视为 null
+    let finalValue: any = editValue === '' ? null : editValue;
+
+    // 处理时间格式转换
+    if (finalValue !== null) {
+      const col = columns.find(c => c.name === colName);
+      const timeInputType = col ? getTimeInputType(col.type) : null;
+      if (timeInputType === 'datetime-local') {
+        // 转换 '2023-10-27T10:30' 为 '2023-10-27 10:30:00'
+        finalValue = finalValue.replace('T', ' ');
+        if (finalValue.length === 16) finalValue += ':00'; // 补全秒
+      } else if (timeInputType === 'date') {
+        // 保持 YYYY-MM-DD
+      } else if (timeInputType === 'time') {
+        // 补全秒，转换 '10:30' 为 '10:30:00'
+        if (finalValue.length === 5) finalValue += ':00';
+      }
+    }
+    
     // 检查是否真的有变化
     const originalValue = editOriginalData[rowIdx][colName];
-    const isChanged = editValue !== (originalValue === null ? '' : originalValue.toString());
+    
+    let isChanged = false;
+    if (originalValue === null) {
+      isChanged = finalValue !== null;
+    } else if (finalValue === null) {
+      isChanged = originalValue !== null;
+    } else {
+      // 时间字符串比对时，可能需要归一化，但目前简单字符串比对能处理大部分情况
+      isChanged = finalValue.toString() !== originalValue.toString();
+    }
 
     if (isChanged) {
       setEditingCells(prev => ({
         ...prev,
         [rowIdx]: {
           ...(prev[rowIdx] || {}),
-          [colName]: editValue
+          [colName]: finalValue
         }
       }));
     } else {
@@ -686,37 +827,86 @@ const App: React.FC = () => {
     return `'${val.toString().replace(/'/g, "''")}'`;
   };
 
+  const formatRedisValue = (val: any) => {
+    if (val === null || val === undefined) return '""';
+    return `"${val.toString().replace(/"/g, '\\"')}"`;
+  };
+
   // Submit all changes to database
   const handleSubmitChanges = async () => {
     if (!selectedTable || !activeConnection) return;
     
     const sqls: string[] = [];
-    const primaryKeyCols = columns.filter(c => c.primaryKey).map(c => c.name);
     
-    if (primaryKeyCols.length === 0) {
-      setToast({ message: '无法提交更改：该表没有主键，无法精确定位行。', type: 'error' });
-      return;
-    }
+    if (activeConnection.type === 'redis') {
+      // Redis 提交逻辑
+      // 1. 处理删除
+      for (const rowIdx of Array.from(deletedRows)) {
+        const rowData = editOriginalData[rowIdx];
+        sqls.push(`DEL ${formatRedisValue(rowData.key)}`);
+      }
 
-    const quote = activeConnection.type === 'mysql' ? '`' : '"';
+      // 2. 处理修改
+      for (const rowIdxStr in editingCells) {
+        const rowIdx = parseInt(rowIdxStr);
+        if (deletedRows.has(rowIdx)) continue;
 
-    // 1. 处理删除
-    for (const rowIdx of Array.from(deletedRows)) {
-      const rowData = editOriginalData[rowIdx];
-      const whereClause = primaryKeyCols.map(pk => `${quote}${pk}${quote} = ${formatSqlValue(rowData[pk])}`).join(' AND ');
-      sqls.push(`DELETE FROM ${quote}${selectedTable}${quote} WHERE ${whereClause}`);
-    }
+        const rowEdits = editingCells[rowIdx];
+        const rowData = editOriginalData[rowIdx];
+        const currentKey = rowData.key;
 
-    // 2. 处理修改
-    for (const rowIdxStr in editingCells) {
-      const rowIdx = parseInt(rowIdxStr);
-      if (deletedRows.has(rowIdx)) continue; // 已删除的行不再处理修改
+        // A. 处理 Key 重命名
+        if (rowEdits.key !== undefined && rowEdits.key !== currentKey) {
+          sqls.push(`RENAME ${formatRedisValue(currentKey)} ${formatRedisValue(rowEdits.key)}`);
+        }
 
-      const rowEdits = editingCells[rowIdx];
-      const rowData = editOriginalData[rowIdx];
-      const setClause = Object.entries(rowEdits).map(([col, val]) => `${quote}${col}${quote} = ${formatSqlValue(val)}`).join(', ');
-      const whereClause = primaryKeyCols.map(pk => `${quote}${pk}${quote} = ${formatSqlValue(rowData[pk])}`).join(' AND ');
-      sqls.push(`UPDATE ${quote}${selectedTable}${quote} SET ${setClause} WHERE ${whereClause}`);
+        const effectiveKey = rowEdits.key !== undefined ? rowEdits.key : currentKey;
+
+        // B. 处理 Value 修改
+        if (rowEdits.value !== undefined) {
+          sqls.push(`SET ${formatRedisValue(effectiveKey)} ${formatRedisValue(rowEdits.value)}`);
+        }
+
+        // C. 处理 TTL 修改
+        if (rowEdits.ttl !== undefined) {
+          const ttl = parseInt(rowEdits.ttl);
+          if (isNaN(ttl)) continue;
+          if (ttl === -1) {
+            sqls.push(`PERSIST ${formatRedisValue(effectiveKey)}`);
+          } else {
+            sqls.push(`EXPIRE ${formatRedisValue(effectiveKey)} ${ttl}`);
+          }
+        }
+      }
+    } else {
+      // SQL 数据库提交逻辑 (MySQL, PostgreSQL, SQLite)
+      const primaryKeyCols = columns.filter(c => c.primaryKey).map(c => c.name);
+      
+      if (primaryKeyCols.length === 0) {
+        setToast({ message: '无法提交更改：该表没有主键，无法精确定位行。', type: 'error' });
+        return;
+      }
+
+      const quote = activeConnection.type === 'mysql' ? '`' : '"';
+
+      // 1. 处理删除
+      for (const rowIdx of Array.from(deletedRows)) {
+        const rowData = editOriginalData[rowIdx];
+        const whereClause = primaryKeyCols.map(pk => `${quote}${pk}${quote} = ${formatSqlValue(rowData[pk])}`).join(' AND ');
+        sqls.push(`DELETE FROM ${quote}${selectedTable}${quote} WHERE ${whereClause}`);
+      }
+
+      // 2. 处理修改
+      for (const rowIdxStr in editingCells) {
+        const rowIdx = parseInt(rowIdxStr);
+        if (deletedRows.has(rowIdx)) continue;
+
+        const rowEdits = editingCells[rowIdx];
+        const rowData = editOriginalData[rowIdx];
+        const setClause = Object.entries(rowEdits).map(([col, val]) => `${quote}${col}${quote} = ${formatSqlValue(val)}`).join(', ');
+        const whereClause = primaryKeyCols.map(pk => `${quote}${pk}${quote} = ${formatSqlValue(rowData[pk])}`).join(' AND ');
+        sqls.push(`UPDATE ${quote}${selectedTable}${quote} SET ${setClause} WHERE ${whereClause}`);
+      }
     }
 
     if (sqls.length === 0) {
@@ -1300,7 +1490,7 @@ ${selectedSql}
                             className="opacity-0 group-hover:opacity-100 p-1.5 hover:bg-blue-50 rounded-lg transition-all text-slate-400"
                             title="修改配置"
                           >
-                            <Settings size={12} />
+                            <Settings size={14} />
                           </motion.button>
                           <motion.button 
                             whileHover={{ scale: 1.1, color: '#ef4444' }}
@@ -1308,7 +1498,7 @@ ${selectedSql}
                             className="opacity-0 group-hover:opacity-100 p-1.5 hover:bg-red-50 rounded-lg transition-all text-slate-400"
                             title="删除连接"
                           >
-                            <Trash2 size={12} />
+                            <Trash2 size={14} />
                           </motion.button>
                           <ChevronRight size={14} className={`transition-transform duration-300 ${expandedConnections.has(conn.id!) ? 'rotate-90 opacity-100 text-blue-400' : 'opacity-0 group-hover:opacity-40'}`} />
                         </div>
@@ -1327,7 +1517,7 @@ ${selectedSql}
                             {/* Database List */}
                             <div className="px-2">
                               <div className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] mb-3 flex items-center gap-2">
-                                <Layout size={10} /> 数据库
+                                <Layout size={14} /> 数据库
                               </div>
                               <div className="grid grid-cols-1 gap-1">
                                 {databases.map((db) => (
@@ -1347,13 +1537,13 @@ ${selectedSql}
                                     >
                                       <div className="flex items-center gap-3 truncate">
                                         {activeConnection?.type === 'redis' ? (
-                                          <Server size={14} className={selectedDatabase === db ? 'text-blue-500' : 'text-slate-400'} />
+                                          <Server size={16} className={selectedDatabase === db ? 'text-blue-500' : 'text-slate-400'} />
                                         ) : (
-                                          <Database size={14} className={selectedDatabase === db ? 'text-blue-500' : 'text-slate-400'} />
+                                          <Database size={16} className={selectedDatabase === db ? 'text-blue-500' : 'text-slate-400'} />
                                         )}
                                         <span className="truncate font-semibold">{activeConnection?.type === 'redis' ? `DB ${db}` : db}</span>
                                       </div>
-                                      <ChevronRight size={12} className={`transition-transform duration-300 ${expandedDatabases.has(db) ? 'rotate-90' : ''} ${selectedDatabase === db ? 'opacity-100' : 'opacity-0'}`} />
+                                      <ChevronRight size={14} className={`transition-transform duration-300 ${expandedDatabases.has(db) ? 'rotate-90' : ''} ${selectedDatabase === db ? 'opacity-100' : 'opacity-0'}`} />
                                     </motion.button>
 
                                     {/* Database Expansion (Tables) */}
@@ -1382,9 +1572,9 @@ ${selectedSql}
                                               }`}
                                             >
                                               {activeConnection?.type === 'redis' ? (
-                                                <Key size={14} className={selectedTable === table.name ? 'text-blue-100' : 'text-slate-400'} />
+                                                <Key size={16} className={selectedTable === table.name ? 'text-blue-100' : 'text-slate-400'} />
                                               ) : (
-                                                <Table size={14} className={selectedTable === table.name ? 'text-blue-100' : 'text-slate-400'} />
+                                                <Table size={16} className={selectedTable === table.name ? 'text-blue-100' : 'text-slate-400'} />
                                               )}
                                               <span className="truncate font-semibold">{table.name}</span>
                                             </motion.button>
@@ -1473,6 +1663,60 @@ ${selectedSql}
               )}
             </AnimatePresence>
           </div>
+
+          {/* Search Bar */}
+          {selectedTable && (
+            <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-2xl px-3 py-1.5 focus-within:ring-2 focus-within:ring-blue-500/20 focus-within:border-blue-500/50 transition-all shadow-sm">
+              <Search size={14} className="text-slate-400" />
+              <input 
+                ref={searchInputRef}
+                type="text"
+                placeholder="搜索表格数据 (Ctrl+F)..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleNextMatch();
+                  }
+                  if (e.key === 'Escape') {
+                    e.currentTarget.blur();
+                  }
+                }}
+                className="bg-transparent border-none outline-none text-sm w-48 text-slate-600 placeholder:text-slate-400 font-medium"
+              />
+              {searchTerm && (
+                <div className="flex items-center gap-2 ml-2 border-l border-slate-200 pl-2">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase min-w-[40px] text-center">
+                    {searchMatches.length > 0 ? `${currentMatchIdx + 1} / ${searchMatches.length}` : '无匹配'}
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <button 
+                      onClick={handlePrevMatch}
+                      className="p-1 hover:bg-slate-200 rounded-lg transition-colors text-slate-400 hover:text-slate-600"
+                      title="上一个匹配"
+                    >
+                      <ChevronRight size={14} className="rotate-180" />
+                    </button>
+                    <button 
+                      onClick={handleNextMatch}
+                      className="p-1 hover:bg-slate-200 rounded-lg transition-colors text-slate-400 hover:text-slate-600"
+                      title="下一个匹配"
+                    >
+                      <ChevronRight size={14} />
+                    </button>
+                    <button 
+                      onClick={() => setSearchTerm('')}
+                      className="p-1 hover:bg-slate-200 rounded-lg transition-colors text-slate-400 hover:text-red-500"
+                      title="清除搜索"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </header>
 
         {/* Content Area */}
@@ -1600,23 +1844,19 @@ ${selectedSql}
                               key={i} 
                               className={`group hover:bg-blue-50/40 transition-colors cursor-pointer ${isDeleted ? 'bg-red-50 opacity-60 grayscale-[0.5]' : ''}`}
                               onContextMenu={(e) => {
-                                if (activeConnection?.type === 'redis' && row.key) {
-                                  e.preventDefault();
-                                  setContextMenu({ x: e.clientX, y: e.clientY, type: 'table', target: row.key });
-                                } else if (activeConnection?.type !== 'redis') {
-                                  e.preventDefault();
-                                  setContextMenu({ 
-                                    x: e.clientX, 
-                                    y: e.clientY, 
-                                    type: 'database', // 借用 database 类型来实现通用的行右键菜单，或者增加一个 'row' 类型
-                                    target: i.toString() 
-                                  });
-                                }
+                                e.preventDefault();
+                                setContextMenu({ 
+                                  x: e.clientX, 
+                                  y: e.clientY, 
+                                  type: 'row', 
+                                  target: i.toString() 
+                                });
                               }}
                             >
                               {columns.map((col) => {
                                 const isEditing = editingCellCoord?.rowIdx === i && editingCellCoord?.colName === col.name;
                                 const isModified = editingCells[i]?.[col.name] !== undefined;
+                                const isCurrentMatch = currentMatchIdx >= 0 && searchMatches[currentMatchIdx]?.rowIdx === i && searchMatches[currentMatchIdx]?.colName === col.name;
                                 const displayValue = isModified ? editingCells[i][col.name] : row[col.name];
                                 
                                 const value = displayValue;
@@ -1628,11 +1868,14 @@ ${selectedSql}
                                 return (
                                   <td 
                                     key={col.name} 
-                                    className={`px-6 py-4 text-sm text-slate-600 border-x border-transparent transition-all ${isModified ? 'bg-yellow-50/50 !text-yellow-700' : ''} ${isEditing ? 'ring-2 ring-blue-500 ring-inset z-10 !bg-white' : ''}`}
+                                    data-row-idx={i}
+                                    data-col-name={col.name}
+                                    className={`px-6 py-4 text-sm text-slate-600 border-x border-transparent transition-all ${isModified ? 'bg-yellow-50/50 !text-yellow-700' : ''} ${isEditing ? 'ring-2 ring-blue-500 ring-inset z-10 !bg-white' : ''} ${isCurrentMatch ? 'ring-2 ring-orange-400 ring-inset z-10 bg-orange-50' : ''}`}
                                     onDoubleClick={() => handleCellDoubleClick(i, col.name, row[col.name])}
                                   >
                                     {isEditing ? (
                                       <input
+                                        type={getTimeInputType(col.type) || 'text'}
                                         autoFocus
                                         className="w-full bg-transparent outline-none font-mono text-[13px] text-blue-600"
                                         value={editValue}
@@ -1650,7 +1893,17 @@ ${selectedSql}
                                         ) : (
                                           <div className="flex items-center gap-3">
                                             <span className={`truncate max-w-[400px] group-hover:text-slate-900 transition-colors font-mono text-[13px] ${isModified ? 'font-bold' : ''}`}>
-                                              {finalDisplayValue}
+                                              {searchTerm ? (
+                                                (() => {
+                                                  const text = finalDisplayValue;
+                                                  const parts = text.split(new RegExp(`(${searchTerm})`, 'gi'));
+                                                  return parts.map((part, index) => 
+                                                    part.toLowerCase() === searchTerm.toLowerCase() ? (
+                                                      <mark key={index} className="bg-yellow-200 text-slate-900 rounded-sm px-0.5">{part}</mark>
+                                                    ) : part
+                                                  );
+                                                })()
+                                              ) : finalDisplayValue}
                                             </span>
                                             {isLongText && (
                                               <motion.button
@@ -2275,7 +2528,7 @@ ${selectedSql}
             y={contextMenu.y}
             onClose={() => setContextMenu(null)}
             options={
-              contextMenu.type === 'database' && /^\d+$/.test(contextMenu.target) ? [
+              contextMenu.type === 'row' ? [
                 {
                   label: deletedRows.has(parseInt(contextMenu.target)) ? '取消删除' : '删除行',
                   icon: <Trash2 size={14} />,
