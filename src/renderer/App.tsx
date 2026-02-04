@@ -1,0 +1,3003 @@
+import React, { useState, useEffect } from 'react'
+import { Database, Table, Play, Plus, Trash2, X, Server, HardDrive, RefreshCw, ChevronRight, Layout, Settings, Activity, AlignLeft, Bot, Sparkles, Send, Loader2, Key } from 'lucide-react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { ConnectionConfig } from '../shared/types'
+import { format } from 'sql-formatter'
+import Editor from 'react-simple-code-editor';
+import Prism from 'prismjs';
+import 'prismjs/components/prism-sql';
+import 'prismjs/themes/prism.css';
+
+declare global {
+  interface Window {
+    electronAPI: {
+      getSavedConnections: () => Promise<ConnectionConfig[]>
+      saveConnection: (config: ConnectionConfig) => Promise<any>
+      deleteConnection: (id: number) => Promise<any>
+      connectDB: (config: ConnectionConfig) => Promise<{ success: boolean; error?: string }>
+      getDatabases: () => Promise<string[]>
+      useDatabase: (dbName: string) => Promise<{ success: boolean; error?: string }>
+      getTables: () => Promise<{ name: string }[]>
+      getTableData: (tableName: string, limit?: number, offset?: number, orderBy?: string, orderDir?: 'ASC' | 'DESC') => Promise<{ data: any[], total: number }>
+      getTableColumns: (tableName: string) => Promise<any[]>
+      renameTable: (oldName: string, newName: string) => Promise<{ success: boolean; error?: string }>
+      deleteTable: (tableName: string) => Promise<{ success: boolean; error?: string }>
+      createTable: (tableName: string, columns: any[]) => Promise<{ success: boolean; error?: string }>
+      getTableIndexes: (tableName: string) => Promise<any[]>
+      updateTableSchema: (tableName: string, changes: any) => Promise<{ success: boolean; error?: string }>
+        exportDatabase: (includeData: boolean) => Promise<{ success: boolean; error?: string }>
+        deleteDatabase: (dbName: string) => Promise<{ success: boolean; error?: string }>
+        executeQuery: (sql: string) => Promise<{ success: boolean; data: any[]; columns: string[]; error?: string }>
+        aiChat: (messages: any[]) => Promise<{ success: boolean; response?: string; error?: string }>
+        saveSetting: (key: string, value: string) => Promise<void>
+        getSetting: (key: string) => Promise<string | null>
+    }
+  }
+}
+
+const DB_TYPES = {
+  mysql: [
+    'INT', 'BIGINT', 'VARCHAR(255)', 'TEXT', 'DATETIME', 'TIMESTAMP', 
+    'DECIMAL(10,2)', 'TINYINT', 'JSON', 'BLOB'
+  ],
+  postgresql: [
+    'INTEGER', 'BIGINT', 'VARCHAR(255)', 'TEXT', 'TIMESTAMP', 'BOOLEAN',
+    'NUMERIC', 'JSONB', 'UUID', 'BYTEA'
+  ],
+  sqlite: [
+    'INTEGER', 'TEXT', 'REAL', 'BLOB', 'NUMERIC'
+  ]
+};
+
+// Prism SQL 样式覆盖
+const editorStyles = `
+  .sql-editor-container pre {
+    background: transparent !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+  .sql-editor-container textarea {
+    caret-color: #000 !important;
+    outline: none !important;
+    color: transparent !important;
+    background: transparent !important;
+    -webkit-text-fill-color: transparent !important;
+  }
+  .ai-selection-input textarea {
+    color: #000 !important;
+    -webkit-text-fill-color: #000 !important;
+  }
+  .sql-editor-container pre {
+    pointer-events: none !important;
+  }
+  .token.keyword { color: #2563eb; font-weight: bold; }
+  .token.string { color: #059669; }
+  .token.comment { color: #94a3b8; font-style: italic; }
+  .token.number { color: #d97706; }
+  .token.punctuation { color: #64748b; }
+  .token.function { color: #7c3aed; }
+  .token.operator { color: #475569; }
+`;
+
+// Context Menu Component
+const ContextMenu: React.FC<{
+  x: number;
+  y: number;
+  options: { label: string; icon: React.ReactNode; onClick: () => void; danger?: boolean }[];
+  onClose: () => void;
+}> = ({ x, y, options, onClose }) => {
+  useEffect(() => {
+    const handleClick = () => onClose();
+    window.addEventListener('click', handleClick);
+    return () => window.removeEventListener('click', handleClick);
+  }, [onClose]);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.95 }}
+      style={{ top: y, left: x }}
+      className="fixed z-[100] bg-white border border-slate-200 rounded-xl shadow-2xl py-1.5 min-w-[160px] overflow-hidden"
+    >
+      {options.map((opt, i) => (
+        <button
+          key={i}
+          onClick={(e) => {
+            e.stopPropagation();
+            opt.onClick();
+            onClose();
+          }}
+          className={`w-full px-4 py-2 text-sm text-left flex items-center gap-3 transition-colors ${
+            opt.danger 
+              ? 'text-red-500 hover:bg-red-50' 
+              : 'text-slate-600 hover:bg-blue-50 hover:text-blue-600'
+          }`}
+        >
+          {opt.icon}
+          <span className="font-medium">{opt.label}</span>
+        </button>
+      ))}
+    </motion.div>
+  );
+};
+
+// Global Toast Component
+const Toast: React.FC<{
+  message: string;
+  type?: 'error' | 'success' | 'info';
+  onClose: () => void;
+}> = ({ message, type = 'error', onClose }) => {
+  useEffect(() => {
+    const timer = setTimeout(onClose, 5000);
+    return () => clearTimeout(timer);
+  }, [onClose]);
+
+  const colors = {
+    error: 'bg-red-50 border-red-200 text-red-800',
+    success: 'bg-emerald-50 border-emerald-200 text-emerald-800',
+    info: 'bg-blue-50 border-blue-200 text-blue-800'
+  };
+
+  const icons = {
+    error: <X className="w-5 h-5 text-red-500" />,
+    success: <RefreshCw className="w-5 h-5 text-emerald-500" />,
+    info: <Activity className="w-5 h-5 text-blue-500" />
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: -20, x: '-50%' }}
+      animate={{ opacity: 1, y: 20, x: '-50%' }}
+      exit={{ opacity: 0, y: -20, x: '-50%' }}
+      className={`fixed top-0 left-1/2 z-[200] px-4 py-3 rounded-xl border shadow-xl flex items-center gap-3 min-w-[320px] max-w-[90vw] ${colors[type]}`}
+    >
+      <div className="flex-shrink-0">
+        {icons[type]}
+      </div>
+      <div className="flex-grow text-sm font-medium leading-relaxed">
+        {message}
+      </div>
+      <button 
+        onClick={onClose}
+        className="flex-shrink-0 p-1 hover:bg-black/5 rounded-lg transition-colors"
+      >
+        <X className="w-4 h-4" />
+      </button>
+    </motion.div>
+  );
+};
+
+// Custom Confirm Modal Component
+const ConfirmModal: React.FC<{
+  show: boolean;
+  title: string;
+  message: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+  type?: 'warning' | 'danger' | 'info';
+}> = ({ show, title, message, onConfirm, onCancel, type = 'warning' }) => {
+  return (
+    <AnimatePresence>
+      {show && (
+        <div className="fixed inset-0 z-[210] flex items-center justify-center p-6">
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={onCancel}
+            className="absolute inset-0 bg-slate-900/20 backdrop-blur-sm"
+          />
+          <motion.div 
+            initial={{ scale: 0.9, opacity: 0, y: 20 }}
+            animate={{ scale: 1, opacity: 1, y: 0 }}
+            exit={{ scale: 0.9, opacity: 0, y: 20 }}
+            className="bg-white border border-slate-200 rounded-[32px] shadow-2xl w-[400px] overflow-hidden z-10"
+          >
+            {/* Header */}
+            <div className="px-8 py-6 border-b border-slate-100 flex justify-between items-center bg-gradient-to-b from-slate-50 to-transparent">
+              <div className="flex items-center gap-2">
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
+                  type === 'danger' ? 'bg-red-50 text-red-500' : 
+                  type === 'warning' ? 'bg-amber-50 text-amber-500' : 'bg-blue-50 text-blue-500'
+                }`}>
+                  <Settings size={18} />
+                </div>
+                <h3 className="font-bold text-lg text-slate-900 tracking-tight">{title}</h3>
+              </div>
+              <motion.button 
+                whileHover={{ rotate: 90, scale: 1.1 }}
+                onClick={onCancel} 
+                className="w-8 h-8 flex items-center justify-center bg-slate-100 hover:bg-slate-200 rounded-full text-slate-400 transition-colors"
+              >
+                <X size={16} />
+              </motion.button>
+            </div>
+            
+            {/* Content */}
+            <div className="p-8">
+              <p className="text-slate-600 text-sm leading-relaxed font-medium">{message}</p>
+            </div>
+
+            {/* Actions */}
+            <div className="px-8 py-6 border-t border-slate-100 bg-slate-50 flex gap-3">
+              <button 
+                onClick={onCancel}
+                className="flex-1 py-3 rounded-2xl text-sm font-bold text-slate-500 hover:text-slate-700 hover:bg-slate-200/50 transition-all"
+              >
+                取消
+              </button>
+              <motion.button 
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                onClick={() => {
+                  onConfirm();
+                  onCancel();
+                }}
+                className={`flex-1 py-3 rounded-2xl text-sm font-bold text-white shadow-lg transition-all ${
+                  type === 'danger' ? 'bg-red-500 hover:bg-red-600 shadow-red-200' : 
+                  type === 'warning' ? 'bg-amber-500 hover:bg-amber-600 shadow-amber-200' : 'bg-blue-500 hover:bg-blue-600 shadow-blue-200'
+                }`}
+              >
+                确定
+              </motion.button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
+  );
+};
+
+const App: React.FC = () => {
+  // State for connections
+  const [savedConnections, setSavedConnections] = useState<ConnectionConfig[]>([])
+  const [activeConnection, setActiveConnection] = useState<ConnectionConfig | null>(null)
+  const [showAddModal, setShowAddModal] = useState(false)
+  const [isEditingConnection, setIsEditingConnection] = useState(false)
+  const [expandedConnections, setExpandedConnections] = useState<Set<number>>(new Set())
+  const [expandedDatabases, setExpandedDatabases] = useState<Set<string>>(new Set())
+  const [newConfig, setNewConfig] = useState<ConnectionConfig>({
+    name: '',
+    type: 'mysql',
+    host: 'localhost',
+    port: 3306,
+    user: 'root',
+    password: '',
+    database: ''
+  })
+
+  // State for active DB content
+  const [databases, setDatabases] = useState<string[]>([])
+  const [selectedDatabase, setSelectedDatabase] = useState<string | null>(null)
+  const [tables, setTables] = useState<{ name: string }[]>([])
+  const [selectedTable, setSelectedTable] = useState<string | null>(null)
+  const [columns, setColumns] = useState<any[]>([])
+  const [data, setData] = useState<any[]>([])
+  const [loading, setLoading] = useState<boolean>(false)
+  const [toast, setToast] = useState<{ message: string; type: 'error' | 'success' | 'info' } | null>(null);
+
+  // Confirm Modal State
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [confirmOptions, setConfirmOptions] = useState<{
+    title: string;
+    message: string;
+    onConfirm: () => void;
+    type?: 'warning' | 'danger' | 'info';
+  }>({
+    title: '',
+    message: '',
+    onConfirm: () => {},
+    type: 'warning'
+  });
+
+  const confirm = (options: { title: string; message: string; onConfirm: () => void; type?: 'warning' | 'danger' | 'info' }) => {
+    setConfirmOptions(options);
+    setShowConfirm(true);
+  };
+
+  // Context Menu State
+  const [contextMenu, setContextMenu] = useState<{ x: number, y: number, type: 'table' | 'database', target: string } | null>(null);
+  
+  // Modals State
+  const [showRenameModal, setShowRenameModal] = useState(false);
+  const [renameData, setRenameData] = useState({ oldName: '', newName: '' });
+  const [showSchemaModal, setShowSchemaModal] = useState(false);
+  const [schemaData, setSchemaData] = useState<{ tableName: string; columns: any[]; indexes: any[] }>({ tableName: '', columns: [], indexes: [] });
+  const [activeSchemaTab, setActiveSchemaTab] = useState<'columns' | 'indexes'>('columns');
+  const [textDetail, setTextDetail] = useState<{ content: string; fieldName: string } | null>(null)
+  
+  // Pagination State
+  const [pageSize, setPageSize] = useState(20);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalRows, setTotalRows] = useState(0);
+  
+  // Sorting State
+  const [sortConfig, setSortConfig] = useState<{ column: string; direction: 'ASC' | 'DESC' | null }>({ column: '', direction: null });
+
+  // Query Console State
+  interface ConsoleTab {
+    id: string;
+    name: string;
+    sql: string;
+    results?: any[];
+    columns?: string[];
+    executing: boolean;
+    error?: string;
+    dbName?: string;
+  }
+  const [consoles, setConsoles] = useState<ConsoleTab[]>([]);
+  const [activeConsoleId, setActiveConsoleId] = useState<string | null>(null);
+
+  // AI State
+  const [showAIModal, setShowAIModal] = useState(false);
+  const [aiLoading, setAILoading] = useState(false);
+  const [aiPrompt, setAIPrompt] = useState('');
+  const [aiMessages, setAIMessages] = useState<{ role: 'user' | 'assistant', content: string }[]>([]);
+  const [aiContext, setAIContext] = useState<{ type: 'database' | 'table', name: string } | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [apiKey, setApiKey] = useState('');
+
+  // AI SQL Selection feature states
+  const [selectedSql, setSelectedSql] = useState<string>('');
+  const [selectionRange, setSelectionRange] = useState<{ start: number, end: number } | null>(null);
+  const [showAISelectionInput, setShowAISelectionInput] = useState(false);
+  const [aiSelectionPrompt, setAISelectionPrompt] = useState('');
+  const [aiSelectionLoading, setAISelectionLoading] = useState(false);
+  const [selectionPosition, setSelectionPosition] = useState<{ x: number, y: number } | null>(null);
+  const aiPopupRef = React.useRef<HTMLDivElement>(null);
+
+  // Data Editing State
+  const [editingCells, setEditingCells] = useState<{[rowIdx: number]: {[colName: string]: any}}>({});
+  const [deletedRows, setDeletedRows] = useState<Set<number>>(new Set());
+  const [editOriginalData, setEditOriginalData] = useState<any[]>([]); // 用于比对变更
+  const [editingCellCoord, setEditingCellCoord] = useState<{rowIdx: number, colName: string} | null>(null);
+  const [editValue, setEditValue] = useState<string>('');
+
+  useEffect(() => {
+    loadSavedConnections()
+    loadSettings()
+  }, [])
+
+  useEffect(() => {
+     setSelectedSql('');
+     setSelectionRange(null);
+     setSelectionPosition(null);
+     setShowAISelectionInput(false);
+   }, [activeConsoleId]);
+
+  const loadSettings = async () => {
+    const savedKey = await window.electronAPI.getSetting('deepseek_api_key');
+    if (savedKey) setApiKey(savedKey);
+  }
+
+  const handleSaveSettings = async () => {
+    await window.electronAPI.saveSetting('deepseek_api_key', apiKey);
+    setShowSettings(false);
+  }
+
+  const loadSavedConnections = async () => {
+    const connections = await window.electronAPI.getSavedConnections()
+    setSavedConnections(connections)
+  }
+
+  const handleSaveConnection = async () => {
+    if (!newConfig.name) return
+    await window.electronAPI.saveConnection(newConfig)
+    setShowAddModal(false)
+    setIsEditingConnection(false)
+    loadSavedConnections()
+  }
+
+  const handleEditConnection = (conn: ConnectionConfig, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setNewConfig({ ...conn })
+    setIsEditingConnection(true)
+    setShowAddModal(true)
+  }
+
+  const handleDeleteConnection = async (id: number, e: React.MouseEvent) => {
+    e.stopPropagation()
+    confirm({
+      title: '删除连接',
+      message: '确定要删除这个连接吗？',
+      type: 'danger',
+      onConfirm: async () => {
+        await window.electronAPI.deleteConnection(id)
+        loadSavedConnections()
+        // 如果删除的是当前活跃连接，清空状态
+        if (activeConnection?.id === id) {
+          setActiveConnection(null)
+          setDatabases([])
+          setSelectedDatabase(null)
+          setTables([])
+        }
+      }
+    });
+  }
+
+  const loadDatabases = async () => {
+    if (!activeConnection) return;
+    try {
+      const dbList = await window.electronAPI.getDatabases();
+      setDatabases(dbList);
+    } catch (err: any) {
+      setToast({ message: err.message, type: 'error' });
+    }
+  }
+
+  const handleConnect = async (config: ConnectionConfig) => {
+    // 切换折叠状态
+    const newExpanded = new Set(expandedConnections)
+    if (newExpanded.has(config.id!)) {
+      newExpanded.delete(config.id!)
+      setExpandedConnections(newExpanded)
+      // 如果有关联的活跃连接，可以保持 activeConnection 不变，或者根据需求清空
+      return
+    } else {
+      newExpanded.add(config.id!)
+      setExpandedConnections(newExpanded)
+    }
+
+    setLoading(true)
+    try {
+      const result = await window.electronAPI.connectDB(config)
+      if (result.success) {
+        setActiveConnection(config)
+        await loadDatabases();
+        
+        // 如果配置中已经指定了数据库，则自动选择
+        if (config.type === 'sqlite') {
+          handleSelectDatabase('main')
+        } else if (config.database) {
+          handleSelectDatabase(config.database)
+        } else {
+          setSelectedDatabase(null)
+          setTables([])
+        }
+
+        setSelectedTable(null)
+        setData([])
+        setColumns([])
+      } else {
+        setToast({ message: result.error || '连接失败', type: 'error' })
+      }
+    } catch (err: any) {
+      setToast({ message: err.message, type: 'error' })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleSelectDatabase = async (dbName: string) => {
+    // 切换折叠状态
+    const newExpanded = new Set(expandedDatabases)
+    if (newExpanded.has(dbName)) {
+      newExpanded.delete(dbName)
+      setExpandedDatabases(newExpanded)
+      return
+    } else {
+      newExpanded.add(dbName)
+      setExpandedDatabases(newExpanded)
+    }
+
+    setSelectedDatabase(dbName)
+    setLoading(true)
+    try {
+      const result = await window.electronAPI.useDatabase(dbName)
+      if (result.success) {
+        const tableList = await window.electronAPI.getTables()
+        setTables(tableList)
+        setSelectedTable(null)
+        setData([])
+        setColumns([])
+        
+        // Redis 自动选择 "Keys" 表
+        if (activeConnection?.type === 'redis' && tableList.length > 0) {
+          handleSelectTable(tableList[0].name)
+        }
+      } else {
+        setToast({ message: result.error || '切换数据库失败', type: 'error' })
+      }
+    } catch (err: any) {
+      setToast({ message: err.message, type: 'error' })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleSelectTable = async (tableName: string, page = 1, size = pageSize, sortCol = sortConfig.column, sortDir = sortConfig.direction) => {
+    setSelectedTable(tableName)
+    setCurrentPage(page);
+    setLoading(true)
+    try {
+      const offset = (page - 1) * size;
+      const [cols, dataRes] = await Promise.all([
+        window.electronAPI.getTableColumns(tableName),
+        window.electronAPI.getTableData(tableName, size, offset, sortCol || undefined, sortDir || undefined)
+      ])
+      setColumns(cols)
+      setData(dataRes.data)
+      setEditOriginalData(JSON.parse(JSON.stringify(dataRes.data))) // 深拷贝原始数据用于比对
+      setEditingCells({})
+      setDeletedRows(new Set())
+      setTotalRows(dataRes.total)
+    } catch (err: any) {
+      setToast({ message: err.message, type: 'error' })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleSort = (columnName: string) => {
+    let nextDir: 'ASC' | 'DESC' | null = 'ASC';
+    
+    if (sortConfig.column === columnName) {
+      if (sortConfig.direction === 'ASC') nextDir = 'DESC';
+      else if (sortConfig.direction === 'DESC') nextDir = null;
+    }
+
+    setSortConfig({ column: nextDir ? columnName : '', direction: nextDir });
+    handleSelectTable(selectedTable!, 1, pageSize, nextDir ? columnName : '', nextDir);
+  };
+
+  const handleExecuteSQL = async (id: string) => {
+    const consoleTab = consoles.find(c => c.id === id);
+    if (!consoleTab) return;
+
+    // 获取选中的文本，如果没有选中则执行全部
+    let sqlToExecute = '';
+    const textarea = document.querySelector('.sql-editor-container textarea') as HTMLTextAreaElement;
+    if (textarea && textarea.selectionStart !== textarea.selectionEnd) {
+      sqlToExecute = consoleTab.sql.substring(textarea.selectionStart, textarea.selectionEnd);
+    } else {
+      sqlToExecute = consoleTab.sql;
+    }
+
+    if (!sqlToExecute.trim()) return;
+
+    setConsoles(prev => prev.map(c => c.id === id ? { ...c, executing: true, error: undefined } : c));
+    try {
+      // 如果控制台指定了数据库且当前未切换到该库，则先切换
+      if (consoleTab.dbName && consoleTab.dbName !== selectedDatabase) {
+        await window.electronAPI.useDatabase(consoleTab.dbName);
+        setSelectedDatabase(consoleTab.dbName);
+        const tableList = await window.electronAPI.getTables();
+        setTables(tableList);
+      }
+
+      const res = await window.electronAPI.executeQuery(sqlToExecute);
+      if (res.success) {
+        setConsoles(prev => prev.map(c => c.id === id ? { ...c, results: res.data, columns: res.columns, executing: false } : c));
+        
+        // 如果执行的是创建/删除数据库语句，刷新数据库列表
+        const upperSql = consoleTab.sql.trim().toUpperCase();
+        if (upperSql.includes('CREATE DATABASE') || upperSql.includes('DROP DATABASE')) {
+          await loadDatabases();
+        }
+      } else {
+        setConsoles(prev => prev.map(c => c.id === id ? { ...c, error: res.error, executing: false } : c));
+        setToast({ message: res.error || 'SQL 执行失败', type: 'error' });
+      }
+    } catch (err: any) {
+      setConsoles(prev => prev.map(c => c.id === id ? { ...c, error: err.message, executing: false } : c));
+      setToast({ message: err.message, type: 'error' });
+    }
+  }
+
+  const handleNewConsole = (dbName: string) => {
+    const id = Math.random().toString(36).substr(2, 9);
+    const isRedis = activeConnection?.type === 'redis';
+    const newConsole: ConsoleTab = {
+      id,
+      name: isRedis ? `命令 - DB ${dbName}` : `查询 - ${dbName}`,
+      sql: isRedis ? 'KEYS *' : '',
+      executing: false,
+      dbName: dbName
+    };
+    setConsoles([...consoles, newConsole]);
+    setActiveConsoleId(id);
+    setSelectedTable(null);
+    setContextMenu(null);
+  }
+
+  const handleExportDB = async (includeData: boolean) => {
+    if (activeConnection?.type === 'redis') {
+      setToast({ message: 'Redis 暂不支持导出 SQL', type: 'error' });
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await window.electronAPI.exportDatabase(includeData);
+      if (res.success) {
+        setToast({ message: '数据库导出成功', type: 'success' });
+      } else if (res.error !== 'User cancelled') {
+        setToast({ message: res.error || '导出失败', type: 'error' });
+      }
+    } catch (err: any) {
+      setToast({ message: err.message, type: 'error' });
+    } finally {
+      setLoading(false);
+      setContextMenu(null);
+    }
+  }
+
+  // Handle data cell edit start
+  const handleCellDoubleClick = (rowIdx: number, colName: string, value: any) => {
+    if (activeConnection?.type === 'redis') return; // Redis 不支持直接编辑单元格
+    setEditingCellCoord({ rowIdx, colName });
+    setEditValue(value === null ? '' : value.toString());
+  };
+
+  // Handle data cell edit commit (local only)
+  const handleCellEditCommit = () => {
+    if (!editingCellCoord) return;
+    const { rowIdx, colName } = editingCellCoord;
+    
+    // 检查是否真的有变化
+    const originalValue = editOriginalData[rowIdx][colName];
+    const isChanged = editValue !== (originalValue === null ? '' : originalValue.toString());
+
+    if (isChanged) {
+      setEditingCells(prev => ({
+        ...prev,
+        [rowIdx]: {
+          ...(prev[rowIdx] || {}),
+          [colName]: editValue
+        }
+      }));
+    } else {
+      // 如果改回原值，从编辑状态中移除
+      setEditingCells(prev => {
+        const rowEdits = { ...(prev[rowIdx] || {}) };
+        delete rowEdits[colName];
+        const newEditingCells = { ...prev };
+        if (Object.keys(rowEdits).length === 0) {
+          delete newEditingCells[rowIdx];
+        } else {
+          newEditingCells[rowIdx] = rowEdits;
+        }
+        return newEditingCells;
+      });
+    }
+    setEditingCellCoord(null);
+  };
+
+  // Handle row delete (local only)
+  const handleLocalRowDelete = (rowIdx: number) => {
+    setDeletedRows(prev => {
+      const next = new Set(prev);
+      if (next.has(rowIdx)) next.delete(rowIdx);
+      else next.add(rowIdx);
+      return next;
+    });
+  };
+
+  // Cancel all changes
+  const handleCancelChanges = () => {
+    setEditingCells({});
+    setDeletedRows(new Set());
+    setEditingCellCoord(null);
+  };
+
+  const formatSqlValue = (val: any) => {
+    if (val === null || val === undefined) return 'NULL';
+    if (typeof val === 'number') return val;
+    return `'${val.toString().replace(/'/g, "''")}'`;
+  };
+
+  // Submit all changes to database
+  const handleSubmitChanges = async () => {
+    if (!selectedTable || !activeConnection) return;
+    
+    const sqls: string[] = [];
+    const primaryKeyCols = columns.filter(c => c.primaryKey).map(c => c.name);
+    
+    if (primaryKeyCols.length === 0) {
+      setToast({ message: '无法提交更改：该表没有主键，无法精确定位行。', type: 'error' });
+      return;
+    }
+
+    const quote = activeConnection.type === 'mysql' ? '`' : '"';
+
+    // 1. 处理删除
+    for (const rowIdx of Array.from(deletedRows)) {
+      const rowData = editOriginalData[rowIdx];
+      const whereClause = primaryKeyCols.map(pk => `${quote}${pk}${quote} = ${formatSqlValue(rowData[pk])}`).join(' AND ');
+      sqls.push(`DELETE FROM ${quote}${selectedTable}${quote} WHERE ${whereClause}`);
+    }
+
+    // 2. 处理修改
+    for (const rowIdxStr in editingCells) {
+      const rowIdx = parseInt(rowIdxStr);
+      if (deletedRows.has(rowIdx)) continue; // 已删除的行不再处理修改
+
+      const rowEdits = editingCells[rowIdx];
+      const rowData = editOriginalData[rowIdx];
+      const setClause = Object.entries(rowEdits).map(([col, val]) => `${quote}${col}${quote} = ${formatSqlValue(val)}`).join(', ');
+      const whereClause = primaryKeyCols.map(pk => `${quote}${pk}${quote} = ${formatSqlValue(rowData[pk])}`).join(' AND ');
+      sqls.push(`UPDATE ${quote}${selectedTable}${quote} SET ${setClause} WHERE ${whereClause}`);
+    }
+
+    if (sqls.length === 0) {
+      setToast({ message: '没有检测到任何变更', type: 'info' });
+      return;
+    }
+
+    setLoading(true);
+    try {
+      // 执行所有 SQL
+      for (const sql of sqls) {
+        const res = await window.electronAPI.executeQuery(sql);
+        if (!res.success) throw new Error(res.error || 'SQL 执行失败');
+      }
+
+      setToast({ message: `成功提交 ${sqls.length} 项变更`, type: 'success' });
+      handleCancelChanges();
+      // 刷新数据
+      handleSelectTable(selectedTable, currentPage, pageSize);
+    } catch (err: any) {
+      setToast({ message: err.message, type: 'error' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteDB = async (dbName: string) => {
+    const isRedis = activeConnection?.type === 'redis';
+    const confirmMsg = isRedis 
+      ? `确定要清空数据库 DB ${dbName} 吗？此操作将删除该库下所有 Key！`
+      : `确定要删除数据库 "${dbName}" 吗？此操作不可撤销！`;
+      
+    confirm({
+      title: isRedis ? '清空数据库' : '删除数据库',
+      message: confirmMsg,
+      type: 'danger',
+      onConfirm: async () => {
+        setLoading(true);
+        try {
+          const res = await window.electronAPI.deleteDatabase(dbName);
+          if (res.success) {
+            setToast({ message: isRedis ? `数据库 DB ${dbName} 已清空` : `数据库 ${dbName} 已删除`, type: 'success' });
+            await loadDatabases();
+          } else {
+            setToast({ message: res.error || '操作失败', type: 'error' });
+          }
+        } catch (err: any) {
+          setToast({ message: err.message, type: 'error' });
+        } finally {
+          setLoading(false);
+          setContextMenu(null);
+        }
+      }
+    });
+  }
+
+  const handleFormatSQL = (id: string) => {
+    const consoleTab = consoles.find(c => c.id === id);
+    if (!consoleTab || !consoleTab.sql.trim()) return;
+
+    try {
+      const formatted = format(consoleTab.sql, {
+        language: 
+          activeConnection?.type === 'mysql' ? 'mysql' : 
+          activeConnection?.type === 'postgresql' ? 'postgresql' : 
+          'sql',
+        tabWidth: 2,
+        keywordCase: 'upper',
+      });
+      setConsoles(prev => prev.map(c => c.id === id ? { ...c, sql: formatted } : c));
+    } catch (err) {
+      console.error('SQL Format Error:', err);
+    }
+  }
+
+  const handleRenameTable = async () => {
+    if (!renameData.newName || renameData.newName === renameData.oldName) {
+      setShowRenameModal(false);
+      return;
+    }
+    
+    setLoading(true);
+    try {
+      const result = await window.electronAPI.renameTable(renameData.oldName, renameData.newName);
+      if (result.success) {
+        const tableList = await window.electronAPI.getTables();
+        setTables(tableList);
+        if (selectedTable === renameData.oldName) {
+          setSelectedTable(renameData.newName);
+        }
+        setToast({ message: '重命名成功', type: 'success' });
+      } else {
+        setToast({ message: result.error || '重命名失败', type: 'error' });
+      }
+    } catch (err: any) {
+      setToast({ message: err.message, type: 'error' });
+    } finally {
+      setLoading(false);
+      setShowRenameModal(false);
+    }
+  };
+
+  const handleOpenAIModal = async (type: 'database' | 'table', name: string) => {
+    setAIContext({ type, name });
+    setAIMessages([]);
+    setAIPrompt('');
+    setShowAIModal(true);
+    setContextMenu(null);
+  }
+
+  const handleAIChat = async () => {
+    if (!aiPrompt.trim() || aiLoading) return;
+
+    const userMsg = aiPrompt;
+    setAIPrompt('');
+    setAIMessages(prev => [...prev, { role: 'user', content: userMsg }]);
+    setAILoading(true);
+
+    try {
+      // 准备上下文信息
+      let schemaInfo = '';
+      if (aiContext?.type === 'table') {
+        const cols = await window.electronAPI.getTableColumns(aiContext.name);
+        schemaInfo = `当前表: ${aiContext.name}\n结构:\n${cols.map(c => `${c.name} (${c.type})`).join('\n')}`;
+      } else if (aiContext?.type === 'database') {
+        const tables = await window.electronAPI.getTables();
+        schemaInfo = `当前数据库: ${aiContext.name}\n包含的表:\n${tables.map(t => t.name).join(', ')}`;
+      }
+
+      const messages = [
+        { 
+          role: 'system', 
+          content: `你是一个专业的 SQL 助手。
+当前环境: ${activeConnection?.type} 数据库。
+${schemaInfo}
+你的任务是根据用户的需求生成 SQL 语句。
+请直接给出 SQL 代码块，并附带简要说明。如果是查询请求，请尽量生成完整的 SELECT 语句。`
+        },
+        ...aiMessages.map(m => ({ role: m.role, content: m.content })),
+        { role: 'user', content: userMsg }
+      ];
+
+      const res = await window.electronAPI.aiChat(messages);
+      if (res.success && res.response) {
+        setAIMessages(prev => [...prev, { role: 'assistant', content: res.response! }]);
+      } else {
+        setToast({ message: res.error || 'AI 响应失败', type: 'error' });
+      }
+    } catch (err: any) {
+      setToast({ message: err.message, type: 'error' });
+    } finally {
+      setAILoading(false);
+    }
+  }
+
+  const handleApplyAISQL = (content: string) => {
+    // 提取 SQL 代码块
+    const sqlMatch = content.match(/```sql\n([\s\S]*?)\n```/) || content.match(/```([\s\S]*?)\n```/);
+    const sql = sqlMatch ? sqlMatch[1] : content;
+
+    if (activeConsoleId) {
+      setConsoles(prev => prev.map(c => c.id === activeConsoleId ? { ...c, sql: sql } : c));
+      setShowAIModal(false);
+    } else {
+      // 如果没有活跃的控制台，新建一个
+      const id = Math.random().toString(36).substr(2, 9);
+      const newConsole: ConsoleTab = {
+        id,
+        name: `AI 生成 - ${aiContext?.name || '查询'}`,
+        sql: sql,
+        executing: false,
+        dbName: selectedDatabase || undefined
+      };
+      setConsoles([...consoles, newConsole]);
+      setActiveConsoleId(id);
+      setShowAIModal(false);
+    }
+  }
+
+  const handleSelection = (e?: React.MouseEvent | React.KeyboardEvent) => {
+    // 延迟执行以确保 selection 已经更新
+    setTimeout(() => {
+      const textarea = document.querySelector('.sql-editor-container textarea') as HTMLTextAreaElement;
+      if (textarea && textarea.selectionStart !== textarea.selectionEnd) {
+        const selected = textarea.value.substring(textarea.selectionStart, textarea.selectionEnd);
+        setSelectedSql(selected);
+        setSelectionRange({ start: textarea.selectionStart, end: textarea.selectionEnd });
+        
+        // 计算选中内容第一个字符的位置
+        const container = document.querySelector('.sql-editor-container');
+        if (container) {
+          const rect = container.getBoundingClientRect();
+          
+          // 创建一个隐藏的 div 来模拟 textarea 内容并计算坐标
+          const div = document.createElement('div');
+          const style = window.getComputedStyle(textarea);
+          
+          // 复制 textarea 的样式
+          const properties = [
+            'direction', 'boxSizing', 'width', 'height', 'overflowX', 'overflowY',
+            'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth',
+            'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
+            'fontStyle', 'fontVariant', 'fontWeight', 'fontStretch', 'fontSize',
+            'lineHeight', 'fontFamily', 'textAlign', 'textTransform', 'textIndent',
+            'textDecoration', 'letterSpacing', 'wordSpacing', 'whiteSpace', 'wordBreak',
+            'wordWrap'
+          ];
+          
+          properties.forEach(prop => {
+            // @ts-ignore
+            div.style[prop] = style[prop];
+          });
+          
+          div.style.position = 'absolute';
+          div.style.visibility = 'hidden';
+          div.style.whiteSpace = 'pre-wrap';
+          div.style.wordWrap = 'break-word';
+          div.style.top = '0';
+          div.style.left = '0';
+          
+          // 获取 selectionStart 之前的文本
+          const textBefore = textarea.value.substring(0, textarea.selectionStart);
+          const span = document.createElement('span');
+          span.textContent = textBefore;
+          div.appendChild(span);
+          
+          // 插入一个标记元素来获取坐标
+          const marker = document.createElement('span');
+          marker.textContent = '|';
+          div.appendChild(marker);
+          
+          document.body.appendChild(div);
+          
+          const markerRect = marker.getBoundingClientRect();
+          const divRect = div.getBoundingClientRect();
+          
+          // 计算相对容器的位置，并加上滚动偏移
+          setSelectionPosition({
+            x: markerRect.left - divRect.left + textarea.offsetLeft - textarea.scrollLeft,
+            y: markerRect.top - divRect.top + textarea.offsetTop - textarea.scrollTop
+          });
+          
+          document.body.removeChild(div);
+        }
+      } else {
+        // 如果没有选中，或者点击了其他地方，只有在 AI 输入框没打开的时候才清除
+        if (!showAISelectionInput) {
+          setSelectedSql('');
+          setSelectionRange(null);
+          setSelectionPosition(null);
+        }
+      }
+    }, 0);
+  };
+
+  const handleAISelectionSubmit = async () => {
+    if (!aiSelectionPrompt.trim() || aiSelectionLoading || !selectedSql) return;
+
+    setAISelectionLoading(true);
+    try {
+      const activeConsole = consoles.find(c => c.id === activeConsoleId);
+      
+      // 获取当前数据库的所有表和结构
+      let schemaContext = '';
+      try {
+        const tableList = await window.electronAPI.getTables();
+        const schemaPromises = tableList.slice(0, 15).map(async (t) => {
+          const cols = await window.electronAPI.getTableColumns(t.name);
+          return `${t.name} (${cols.map(c => `${c.name} ${c.type}`).join(', ')})`;
+        });
+        const schemas = await Promise.all(schemaPromises);
+        schemaContext = schemas.length > 0 ? `当前数据库结构:\n${schemas.join('\n')}` : '（未获取到数据库结构）';
+      } catch (err) {
+        console.error('Failed to fetch schema for AI:', err);
+      }
+
+      const prompt = `
+你是一个 SQL 专家。
+当前数据库类型: ${activeConnection?.type || '未知'}
+${schemaContext}
+
+当前选中的 SQL 代码如下：
+\`\`\`sql
+${selectedSql}
+\`\`\`
+
+用户的指令是：${aiSelectionPrompt}
+
+请根据指令修改这段 SQL 或者给出建议。
+1. 如果指令是修改 SQL，请结合数据库结构信息，确保字段名和表名正确。
+2. 请只返回修改后的 SQL 代码块，包裹在 \`\`\`sql ... \`\`\` 中。
+3. 如果指令是询问建议，请根据结构给出简短专业的建议。
+`;
+
+      const result = await window.electronAPI.aiChat([
+        { role: 'user', content: prompt }
+      ]);
+
+      if (result.success && result.response) {
+        // 解析返回的内容
+        const sqlMatch = result.response.match(/```sql\n([\s\S]*?)\n```/) || result.response.match(/```([\s\S]*?)\n```/);
+        
+        if (sqlMatch) {
+          const newSql = sqlMatch[1];
+          // 替换选中的内容
+          if (selectionRange && activeConsoleId) {
+            setConsoles(prev => prev.map(c => {
+              if (c.id === activeConsoleId) {
+                const fullSql = c.sql;
+                const updatedSql = fullSql.substring(0, selectionRange.start) + newSql + fullSql.substring(selectionRange.end);
+                return { ...c, sql: updatedSql };
+              }
+              return c;
+            }));
+          }
+          setShowAISelectionInput(false);
+          setAISelectionPrompt('');
+          setSelectedSql('');
+          setSelectionRange(null);
+        } else {
+          // 如果不是 SQL 块，可能只是建议，显示在 Toast
+          setToast({ message: result.response, type: 'info' });
+          setShowAISelectionInput(false);
+        }
+      } else {
+        setToast({ message: result.error || 'AI 响应失败', type: 'error' });
+      }
+    } catch (err: any) {
+      setToast({ message: err.message, type: 'error' });
+    } finally {
+      setAISelectionLoading(false);
+    }
+  };
+
+  const handleConsoleDBChange = async (id: string, dbName: string) => {
+    setConsoles(prev => prev.map(c => c.id === id ? { ...c, dbName } : c));
+    if (dbName !== selectedDatabase) {
+      await window.electronAPI.useDatabase(dbName);
+      setSelectedDatabase(dbName);
+      const tableList = await window.electronAPI.getTables();
+      setTables(tableList);
+    }
+  }
+
+  const handleConsoleTableSelect = (tableName: string) => {
+    const activeConsole = consoles.find(c => c.id === activeConsoleId);
+    if (activeConsole) {
+      const sqlToAdd = `\nSELECT * FROM \`${tableName}\` LIMIT 100;`;
+      setConsoles(prev => prev.map(c => c.id === activeConsoleId ? { ...c, sql: c.sql + sqlToAdd } : c));
+    }
+  }
+
+  const handleDeleteTable = async (tableName: string) => {
+    const isRedis = activeConnection?.type === 'redis';
+    confirm({
+      title: isRedis ? '删除 Key' : '删除表',
+      message: `确定要删除 ${isRedis ? 'Key' : '表'} "${tableName}" 吗？此操作不可撤销！`,
+      type: 'danger',
+      onConfirm: async () => {
+        setLoading(true);
+        try {
+          const res = await window.electronAPI.deleteTable(tableName);
+          if (res.success) {
+            setToast({ message: isRedis ? `Key ${tableName} 已删除` : `表 ${tableName} 已删除`, type: 'success' });
+            if (isRedis) {
+              // Redis 删除的是 Key，刷新当前数据列表
+              handleSelectTable(selectedTable!, currentPage, pageSize);
+            } else {
+              // SQL 删除的是表，刷新表列表
+              const tableList = await window.electronAPI.getTables();
+              setTables(tableList);
+              if (selectedTable === tableName) {
+                setSelectedTable(null);
+                setData([]);
+                setColumns([]);
+              }
+            }
+          } else {
+            setToast({ message: res.error || '删除失败', type: 'error' });
+          }
+        } catch (err: any) {
+          setToast({ message: err.message, type: 'error' });
+        } finally {
+          setLoading(false);
+          setContextMenu(null);
+        }
+      }
+    });
+  };
+
+  const handleTableContextMenu = (e: React.MouseEvent, tableName: string) => {
+    e.preventDefault();
+    setContextMenu({ x: e.clientX, y: e.clientY, type: 'table', target: tableName });
+  };
+
+  const handleOpenSchemaModal = async (tableName: string) => {
+    setLoading(true);
+    try {
+      const [cols, idxs] = await Promise.all([
+        window.electronAPI.getTableColumns(tableName),
+        window.electronAPI.getTableIndexes(tableName)
+      ]);
+      // 为每一列添加一个唯一 ID，方便前端管理
+      const colsWithId = cols.map((c, i) => ({ ...c, id: Date.now() + i, originalName: c.name }));
+      const idxsWithId = idxs.map((idx, i) => ({ ...idx, id: Date.now() + 1000 + i, originalName: idx.name }));
+      setSchemaData({ tableName, columns: colsWithId, indexes: idxsWithId });
+      setActiveSchemaTab('columns');
+      setShowSchemaModal(true);
+    } catch (err: any) {
+      setToast({ message: err.message, type: 'error' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleUpdateSchema = async () => {
+    setLoading(true);
+    try {
+      if (schemaData.tableName === 'new_table' || !tables.some(t => t.name === schemaData.tableName)) {
+        // 创建新表 (暂不支持带索引创建，后续可扩展)
+        if (!schemaData.tableName || schemaData.tableName === 'new_table') {
+          setToast({ message: '请输入有效的表名', type: 'error' });
+          return;
+        }
+        const result = await window.electronAPI.createTable(schemaData.tableName, schemaData.columns, schemaData.indexes);
+        if (result.success) {
+          setShowSchemaModal(false);
+          setToast({ message: `表 ${schemaData.tableName} 创建成功`, type: 'success' });
+          const tableList = await window.electronAPI.getTables();
+          setTables(tableList);
+          handleSelectTable(schemaData.tableName);
+        } else {
+          setToast({ message: result.error || '创建表失败', type: 'error' });
+        }
+        return;
+      }
+
+      // 找出新增、修改、删除的列
+      const originalCols = await window.electronAPI.getTableColumns(schemaData.tableName);
+      const originalIdxs = await window.electronAPI.getTableIndexes(schemaData.tableName);
+      
+      const changes: any = {
+        added: schemaData.columns.filter(c => !originalCols.some(oc => oc.name === c.originalName)),
+        modified: schemaData.columns
+          .filter(c => originalCols.some(oc => oc.name === c.originalName))
+          .map(c => ({
+            oldName: c.originalName,
+            column: { ...c }
+          }))
+          .filter(m => {
+            const oc = originalCols.find(o => o.name === m.oldName);
+            return oc && (
+              oc.name !== m.column.name || 
+              oc.type !== m.column.type || 
+              oc.nullable !== m.column.nullable || 
+              oc.primaryKey !== m.column.primaryKey ||
+              oc.defaultValue !== m.column.defaultValue ||
+              oc.autoIncrement !== m.column.autoIncrement
+            );
+          }),
+        removed: originalCols
+          .filter(oc => !schemaData.columns.some(c => c.originalName === oc.name))
+          .map(oc => oc.name),
+        indexes: {
+          added: schemaData.indexes.filter(idx => {
+            // 新增的索引
+            const isNew = !originalIdxs.some(oi => oi.name === idx.originalName);
+            if (isNew) return true;
+            
+            // 检查现有索引是否被修改（名称、唯一性或包含列改变）
+            const oi = originalIdxs.find(o => o.name === idx.originalName);
+            const hasChanged = oi && (
+              oi.name !== idx.name ||
+              oi.unique !== idx.unique ||
+              JSON.stringify(oi.columns) !== JSON.stringify(idx.columns)
+            );
+            return !!hasChanged;
+          }),
+          removed: originalIdxs
+            .filter(oi => {
+              // 被删除的索引
+              const stillExists = schemaData.indexes.some(idx => idx.originalName === oi.name);
+              if (!stillExists) return true;
+              
+              // 被修改的索引需要先删除旧的再添加新的
+              const idx = schemaData.indexes.find(i => i.originalName === oi.name);
+              const hasChanged = idx && (
+                oi.name !== idx.name ||
+                oi.unique !== idx.unique ||
+                JSON.stringify(oi.columns) !== JSON.stringify(idx.columns)
+              );
+              return !!hasChanged;
+            })
+            .map(oi => oi.name)
+        }
+      };
+
+      const result = await window.electronAPI.updateTableSchema(schemaData.tableName, changes);
+      if (result.success) {
+        setShowSchemaModal(false);
+        setToast({ message: `表 ${schemaData.tableName} 修改成功`, type: 'success' });
+        // 刷新当前表数据
+        if (selectedTable === schemaData.tableName) {
+          handleSelectTable(schemaData.tableName);
+        }
+      } else {
+        setToast({ message: result.error || '修改失败', type: 'error' });
+      }
+    } catch (err: any) {
+      setToast({ message: err.message, type: 'error' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const totalPages = Math.ceil(totalRows / pageSize);
+
+  return (
+    <div className="flex h-screen bg-[#f8fafc] text-slate-700 font-sans selection:bg-blue-100 overflow-hidden">
+      <style>{editorStyles}</style>
+      {/* Sidebar */}
+      <motion.div 
+        initial={{ x: -20, opacity: 0 }}
+        animate={{ x: 0, opacity: 1 }}
+        className="w-72 bg-white border-r border-slate-200 flex flex-col z-20 shadow-xl"
+      >
+        <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-gradient-to-b from-slate-50 to-transparent">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center shadow-lg shadow-blue-600/20">
+              <Database size={18} className="text-white" />
+            </div>
+            <span className="font-bold text-xl tracking-tight text-slate-900">AiSqlBoy</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <motion.button 
+              whileHover={{ scale: 1.1 }}
+              whileTap={{ scale: 0.9 }}
+              onClick={() => setShowAddModal(true)}
+              className="w-8 h-8 flex items-center justify-center bg-slate-100 hover:bg-slate-200 rounded-full transition-colors border border-slate-200 text-slate-600"
+              title="添加连接"
+            >
+              <Plus size={16} />
+            </motion.button>
+          </div>
+        </div>
+        
+        <div className="flex-1 overflow-y-auto custom-scrollbar">
+          {/* Saved Connections */}
+          <div className="p-4 space-y-4">
+            <div className="px-2">
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] mb-3">我的连接</div>
+              <div className="space-y-1">
+                <AnimatePresence>
+                  {savedConnections.map((conn) => (
+                    <div key={conn.id} className="space-y-1">
+                      <motion.div
+                        layout
+                        initial={{ opacity: 0, y: 5 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.95 }}
+                        onClick={() => handleConnect(conn)}
+                        className={`group flex items-center justify-between px-3 py-2.5 rounded-xl cursor-pointer transition-all duration-300 relative overflow-hidden ${
+                          activeConnection?.id === conn.id 
+                          ? 'bg-blue-50 text-blue-600 border border-blue-100 shadow-sm' 
+                          : 'hover:bg-slate-50 text-slate-600 border border-transparent'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3 overflow-hidden z-10">
+                          <div className={`w-2 h-2 rounded-full ${
+                            conn.type === 'mysql' ? 'bg-orange-500' : 
+                            conn.type === 'postgresql' ? 'bg-blue-500' : 
+                            conn.type === 'redis' ? 'bg-red-500' : 
+                            'bg-green-500'
+                          }`} />
+                          <span className="truncate font-semibold">{conn.name}</span>
+                        </div>
+                        <div className="flex items-center gap-1 z-10">
+                          <motion.button 
+                            whileHover={{ scale: 1.1, color: '#2563eb' }}
+                            onClick={(e) => handleEditConnection(conn, e)}
+                            className="opacity-0 group-hover:opacity-100 p-1.5 hover:bg-blue-50 rounded-lg transition-all text-slate-400"
+                            title="修改配置"
+                          >
+                            <Settings size={12} />
+                          </motion.button>
+                          <motion.button 
+                            whileHover={{ scale: 1.1, color: '#ef4444' }}
+                            onClick={(e) => handleDeleteConnection(conn.id!, e)}
+                            className="opacity-0 group-hover:opacity-100 p-1.5 hover:bg-red-50 rounded-lg transition-all text-slate-400"
+                            title="删除连接"
+                          >
+                            <Trash2 size={12} />
+                          </motion.button>
+                          <ChevronRight size={14} className={`transition-transform duration-300 ${expandedConnections.has(conn.id!) ? 'rotate-90 opacity-100 text-blue-400' : 'opacity-0 group-hover:opacity-40'}`} />
+                        </div>
+                      </motion.div>
+
+                      {/* Connection Expansion (Databases) */}
+                      <AnimatePresence>
+                        {expandedConnections.has(conn.id!) && activeConnection?.id === conn.id && (
+                          <motion.div
+                            initial={{ height: 0, opacity: 0 }}
+                            animate={{ height: 'auto', opacity: 1 }}
+                            exit={{ height: 0, opacity: 0 }}
+                            transition={{ duration: 0.2, ease: "easeInOut" }}
+                            className="ml-4 pl-2 border-l border-slate-100 space-y-4 py-2 overflow-hidden"
+                          >
+                            {/* Database List */}
+                            <div className="px-2">
+                              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] mb-3 flex items-center gap-2">
+                                <Layout size={10} /> 数据库
+                              </div>
+                              <div className="grid grid-cols-1 gap-1">
+                                {databases.map((db) => (
+                                  <div key={db} className="space-y-1">
+                                    <motion.button
+                                      whileHover={{ x: 4 }}
+                                      onClick={() => handleSelectDatabase(db)}
+                                      onContextMenu={(e) => {
+                                        e.preventDefault();
+                                        setContextMenu({ x: e.clientX, y: e.clientY, type: 'database', target: db });
+                                      }}
+                                      className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm text-left transition-all duration-200 ${
+                                        selectedDatabase === db 
+                                        ? 'bg-blue-50 text-blue-600 border border-blue-100' 
+                                        : 'hover:bg-slate-50 text-slate-500 border border-transparent hover:text-slate-700'
+                                      }`}
+                                    >
+                                      <div className="flex items-center gap-3 truncate">
+                                        {activeConnection?.type === 'redis' ? (
+                                          <Server size={14} className={selectedDatabase === db ? 'text-blue-500' : 'text-slate-400'} />
+                                        ) : (
+                                          <Database size={14} className={selectedDatabase === db ? 'text-blue-500' : 'text-slate-400'} />
+                                        )}
+                                        <span className="truncate font-semibold">{activeConnection?.type === 'redis' ? `DB ${db}` : db}</span>
+                                      </div>
+                                      <ChevronRight size={12} className={`transition-transform duration-300 ${expandedDatabases.has(db) ? 'rotate-90' : ''} ${selectedDatabase === db ? 'opacity-100' : 'opacity-0'}`} />
+                                    </motion.button>
+
+                                    {/* Database Expansion (Tables) */}
+                                    <AnimatePresence>
+                                      {expandedDatabases.has(db) && selectedDatabase === db && (
+                                        <motion.div
+                                          initial={{ height: 0, opacity: 0 }}
+                                          animate={{ height: 'auto', opacity: 1 }}
+                                          exit={{ height: 0, opacity: 0 }}
+                                          transition={{ duration: 0.2, ease: "easeInOut" }}
+                                          className="ml-4 pl-2 border-l border-slate-100 py-1 space-y-1 overflow-hidden"
+                                        >
+                                          {tables.map((table) => (
+                                            <motion.button
+                                              whileHover={{ x: 4 }}
+                                              key={table.name}
+                                              onClick={() => handleSelectTable(table.name)}
+                                              onContextMenu={(e) => {
+                                                e.preventDefault();
+                                                setContextMenu({ x: e.clientX, y: e.clientY, type: 'table', target: table.name });
+                                              }}
+                                              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-left transition-all duration-200 ${
+                                                selectedTable === table.name 
+                                                ? 'bg-blue-600 text-white shadow-md' 
+                                                : 'hover:bg-slate-50 text-slate-500 hover:text-slate-700'
+                                              }`}
+                                            >
+                                              {activeConnection?.type === 'redis' ? (
+                                                <Key size={14} className={selectedTable === table.name ? 'text-blue-100' : 'text-slate-400'} />
+                                              ) : (
+                                                <Table size={14} className={selectedTable === table.name ? 'text-blue-100' : 'text-slate-400'} />
+                                              )}
+                                              <span className="truncate font-semibold">{table.name}</span>
+                                            </motion.button>
+                                          ))}
+                                          {tables.length === 0 && (
+                                            <div className="px-3 py-2 text-[10px] text-slate-400 italic">
+                                              {activeConnection?.type === 'redis' ? '暂无 Key' : '暂无数据表'}
+                                            </div>
+                                          )}
+                                        </motion.div>
+                                      )}
+                                    </AnimatePresence>
+                                  </div>
+                                ))}
+                                {databases.length === 0 && (
+                                  <div className="px-3 py-2 text-[10px] text-slate-400 italic">暂无数据库</div>
+                                )}
+                              </div>
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                  ))}
+                </AnimatePresence>
+                {savedConnections.length === 0 && (
+                  <div className="text-xs text-slate-400 italic p-6 text-center bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                    点击上方 + 号添加连接
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="p-4 border-t border-slate-100 bg-slate-50/50">
+          <motion.div 
+            whileHover={{ backgroundColor: '#f1f5f9' }}
+            onClick={() => setShowSettings(true)}
+            className="flex items-center gap-3 px-4 py-3 text-slate-600 transition-all cursor-pointer rounded-2xl hover:shadow-sm group"
+          >
+            <Settings size={18} className="group-hover:rotate-45 transition-transform duration-500" />
+            <span className="text-sm font-bold">系统设置</span>
+          </motion.div>
+        </div>
+      </motion.div>
+
+      {/* Main Content */}
+      <div className="flex-1 flex flex-col overflow-hidden relative">
+        {/* Background Gradients */}
+        <div className="absolute top-0 right-0 w-[500px] h-[500px] bg-blue-100/40 rounded-full blur-[120px] -z-10" />
+        <div className="absolute bottom-0 left-0 w-[300px] h-[300px] bg-indigo-100/30 rounded-full blur-[100px] -z-10" />
+
+        {/* Header */}
+        <header className="h-16 border-b border-slate-200 flex items-center px-8 justify-between bg-white/80 backdrop-blur-xl z-10 shadow-sm">
+          <div className="flex items-center gap-4">
+            <AnimatePresence mode="wait">
+              {activeConnection ? (
+                <motion.div 
+                  initial={{ opacity: 0, x: -10 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -10 }}
+                  className="flex items-center gap-3 px-4 py-2 bg-slate-50 border border-slate-200 rounded-2xl text-sm shadow-sm"
+                >
+                  <div className="flex items-center gap-2">
+                    <Activity size={14} className={loading ? 'text-yellow-500 animate-spin' : 'text-green-500'} />
+                    <span className="font-bold text-slate-900 tracking-tight">{activeConnection.name}</span>
+                  </div>
+                  <ChevronRight size={12} className="text-slate-300" />
+                  <span className="text-slate-500 font-semibold">{selectedDatabase || '选择数据库'}</span>
+                  {selectedTable && (
+                    <>
+                      <ChevronRight size={12} className="text-slate-300" />
+                      <span className="text-blue-600 font-bold">{selectedTable}</span>
+                    </>
+                  )}
+                </motion.div>
+              ) : (
+                <motion.div 
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  className="text-slate-400 text-sm font-semibold"
+                >
+                  就绪
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        </header>
+
+        {/* Content Area */}
+        <main className="flex-1 overflow-hidden flex flex-col relative">
+          {/* Tab Bar for Consoles */}
+          {consoles.length > 0 && (
+            <div className="flex bg-slate-50 border-b border-slate-200 px-4 pt-2 gap-1 overflow-x-auto custom-scrollbar">
+              {consoles.map(tab => (
+                <div 
+                  key={tab.id}
+                  onClick={() => {
+                    setActiveConsoleId(tab.id);
+                    setSelectedTable(null);
+                  }}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-t-xl text-xs font-bold transition-all cursor-pointer border-t border-x ${
+                    activeConsoleId === tab.id && !selectedTable
+                    ? 'bg-white border-slate-200 text-blue-600 shadow-[0_-2px_10px_rgba(0,0,0,0.05)]' 
+                    : 'border-transparent text-slate-400 hover:text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  <Play size={12} className={tab.executing ? 'animate-spin' : ''} />
+                  <span className="truncate max-w-[120px]">{tab.name}</span>
+                  <X 
+                    size={12} 
+                    className="hover:text-red-500 transition-colors" 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const newConsoles = consoles.filter(c => c.id !== tab.id);
+                      setConsoles(newConsoles);
+                      if (activeConsoleId === tab.id) {
+                        setActiveConsoleId(newConsoles.length > 0 ? newConsoles[0].id : null);
+                      }
+                    }}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+
+          <AnimatePresence mode="wait">
+            {selectedTable ? (
+              <motion.div 
+                key={selectedTable}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.4, ease: "easeOut" }}
+                className="flex-1 overflow-auto p-8 custom-scrollbar"
+              >
+                <div className="bg-white rounded-3xl border border-slate-200 overflow-hidden shadow-2xl shadow-slate-200/50 backdrop-blur-sm relative">
+                  {/* Floating Action Bar for Data Editing */}
+                  <AnimatePresence>
+                    {(Object.keys(editingCells).length > 0 || deletedRows.size > 0) && (
+                      <motion.div
+                        initial={{ y: 50, opacity: 0 }}
+                        animate={{ y: 0, opacity: 1 }}
+                        exit={{ y: 50, opacity: 0 }}
+                        className="absolute bottom-20 left-1/2 -translate-x-1/2 z-30 bg-slate-900 text-white px-6 py-3 rounded-2xl shadow-2xl flex items-center gap-6 border border-slate-700"
+                      >
+                        <div className="flex items-center gap-4 border-r border-slate-700 pr-4">
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 bg-yellow-400 rounded-full" />
+                            <span className="text-xs font-bold text-slate-300">
+                              {Object.keys(editingCells).length} 项修改
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 bg-red-400 rounded-full" />
+                            <span className="text-xs font-bold text-slate-300">
+                              {deletedRows.size} 行待删除
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <button
+                            onClick={handleCancelChanges}
+                            className="px-4 py-1.5 text-xs font-bold text-slate-400 hover:text-white transition-colors"
+                          >
+                            撤销全部
+                          </button>
+                          <button
+                            onClick={handleSubmitChanges}
+                            className="px-6 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl shadow-lg shadow-blue-600/20 transition-all flex items-center gap-2"
+                          >
+                            <Send size={14} />
+                            提交变更
+                          </button>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                  <div className="overflow-x-auto">
+                    <table className="w-full border-collapse">
+                      <thead>
+                        <tr className="bg-slate-50/50 border-b border-slate-100">
+                          {columns.map((col) => (
+                            <th
+                              key={col.name}
+                              className="px-6 py-5 text-left cursor-pointer hover:bg-slate-100/50 transition-colors group/th"
+                              onClick={() => handleSort(col.name)}
+                            >
+                              <div className="flex flex-col gap-1">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{col.type}</span>
+                                  <div className={`transition-all duration-300 ${sortConfig.column === col.name ? 'opacity-100' : 'opacity-0 group-hover/th:opacity-30'}`}>
+                                    {sortConfig.column === col.name && sortConfig.direction === 'ASC' && <ChevronRight size={12} className="-rotate-90 text-blue-500" />}
+                                    {sortConfig.column === col.name && sortConfig.direction === 'DESC' && <ChevronRight size={12} className="rotate-90 text-blue-500" />}
+                                    {sortConfig.column !== col.name && <RefreshCw size={10} className="text-slate-400" />}
+                                  </div>
+                                </div>
+                                <span className="text-sm font-bold text-slate-800 tracking-tight">{col.name}</span>
+                              </div>
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-50">
+                        {data.map((row, i) => {
+                          const isDeleted = deletedRows.has(i);
+                          return (
+                            <motion.tr 
+                              initial={{ opacity: 0 }}
+                              animate={{ opacity: 1 }}
+                              transition={{ delay: i * 0.02 }}
+                              key={i} 
+                              className={`group hover:bg-blue-50/40 transition-colors cursor-pointer ${isDeleted ? 'bg-red-50 opacity-60 grayscale-[0.5]' : ''}`}
+                              onContextMenu={(e) => {
+                                if (activeConnection?.type === 'redis' && row.key) {
+                                  e.preventDefault();
+                                  setContextMenu({ x: e.clientX, y: e.clientY, type: 'table', target: row.key });
+                                } else if (activeConnection?.type !== 'redis') {
+                                  e.preventDefault();
+                                  setContextMenu({ 
+                                    x: e.clientX, 
+                                    y: e.clientY, 
+                                    type: 'database', // 借用 database 类型来实现通用的行右键菜单，或者增加一个 'row' 类型
+                                    target: i.toString() 
+                                  });
+                                }
+                              }}
+                            >
+                              {columns.map((col) => {
+                                const isEditing = editingCellCoord?.rowIdx === i && editingCellCoord?.colName === col.name;
+                                const isModified = editingCells[i]?.[col.name] !== undefined;
+                                const displayValue = isModified ? editingCells[i][col.name] : row[col.name];
+                                
+                                const value = displayValue;
+                                const isLongText = value && value.toString().length > 50;
+                                const finalDisplayValue = isLongText 
+                                  ? value.toString().substring(0, 50) + '...' 
+                                  : (value === null ? 'NULL' : value.toString());
+
+                                return (
+                                  <td 
+                                    key={col.name} 
+                                    className={`px-6 py-4 text-sm text-slate-600 border-x border-transparent transition-all ${isModified ? 'bg-yellow-50/50 !text-yellow-700' : ''} ${isEditing ? 'ring-2 ring-blue-500 ring-inset z-10 !bg-white' : ''}`}
+                                    onDoubleClick={() => handleCellDoubleClick(i, col.name, row[col.name])}
+                                  >
+                                    {isEditing ? (
+                                      <input
+                                        autoFocus
+                                        className="w-full bg-transparent outline-none font-mono text-[13px] text-blue-600"
+                                        value={editValue}
+                                        onChange={(e) => setEditValue(e.target.value)}
+                                        onBlur={handleCellEditCommit}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter') handleCellEditCommit();
+                                          if (e.key === 'Escape') setEditingCellCoord(null);
+                                        }}
+                                      />
+                                    ) : (
+                                      <>
+                                        {value === null ? (
+                                          <span className="text-slate-300 italic font-mono text-xs tracking-tighter">NULL</span>
+                                        ) : (
+                                          <div className="flex items-center gap-3">
+                                            <span className={`truncate max-w-[400px] group-hover:text-slate-900 transition-colors font-mono text-[13px] ${isModified ? 'font-bold' : ''}`}>
+                                              {finalDisplayValue}
+                                            </span>
+                                            {isLongText && (
+                                              <motion.button
+                                                whileHover={{ scale: 1.1 }}
+                                                whileTap={{ scale: 0.9 }}
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  setTextDetail({ content: value.toString(), fieldName: col.name });
+                                                }}
+                                                className="text-blue-500 hover:text-blue-600 p-1.5 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors border border-blue-100"
+                                              >
+                                                <Plus size={10} />
+                                              </motion.button>
+                                            )}
+                                          </div>
+                                        )}
+                                      </>
+                                    )}
+                                  </td>
+                                );
+                              })}
+                            </motion.tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  
+                  {/* Pagination Controls */}
+                  {data.length > 0 && (
+                    <div className="px-6 py-4 border-t border-slate-100 bg-slate-50/50 flex items-center justify-between">
+                      <div className="flex items-center gap-4">
+                        <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">
+                          共 {totalRows} 条数据
+                        </span>
+                        <div className="h-4 w-px bg-slate-200" />
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-slate-500 font-semibold">每页显示</span>
+                          <select 
+                            value={pageSize}
+                            onChange={(e) => {
+                              const newSize = Number(e.target.value);
+                              setPageSize(newSize);
+                              handleSelectTable(selectedTable!, 1, newSize);
+                            }}
+                            className="bg-white border border-slate-200 rounded-lg text-xs font-bold px-2 py-1 outline-none focus:ring-2 focus:ring-blue-500/20 transition-all cursor-pointer"
+                          >
+                            {[20, 50, 100, 200, 500, 1000].map(size => (
+                              <option key={size} value={size}>{size}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          disabled={currentPage === 1 || loading}
+                          onClick={() => handleSelectTable(selectedTable!, currentPage - 1)}
+                          className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+                        >
+                          <ChevronRight size={14} className="rotate-180" />
+                        </button>
+                        
+                        <div className="flex items-center gap-1 px-2">
+                          <span className="text-sm font-bold text-blue-600">{currentPage}</span>
+                          <span className="text-sm text-slate-400">/</span>
+                          <span className="text-sm font-semibold text-slate-500">{totalPages || 1}</span>
+                        </div>
+
+                        <button
+                          disabled={currentPage === totalPages || totalPages === 0 || loading}
+                          onClick={() => handleSelectTable(selectedTable!, currentPage + 1)}
+                          className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+                        >
+                          <ChevronRight size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {data.length === 0 && (
+                    <div className="p-24 text-center">
+                      <motion.div 
+                        initial={{ scale: 0.9, opacity: 0 }}
+                        animate={{ scale: 1, opacity: 1 }}
+                        className="inline-flex flex-col items-center"
+                      >
+                        <div className="w-20 h-20 bg-slate-50 rounded-3xl flex items-center justify-center mb-6 border border-slate-100 shadow-inner">
+                          <Table size={32} className="text-slate-300" />
+                        </div>
+                        <h4 className="text-lg font-bold text-slate-400 tracking-tight">空表</h4>
+                        <p className="text-sm text-slate-500 mt-2">当前表中没有任何数据</p>
+                      </motion.div>
+                    </div>
+                  )}
+                </div>
+              </motion.div>
+            ) : activeConsoleId && consoles.find(c => c.id === activeConsoleId) ? (
+              <motion.div
+                key={activeConsoleId}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="flex-1 flex flex-col overflow-hidden"
+              >
+                {/* SQL Editor Area */}
+                <div className="flex-1 flex flex-col p-6 gap-4 overflow-y-auto custom-scrollbar">
+                  <div className="min-h-[400px] flex-1 bg-white rounded-3xl border border-slate-200 shadow-xl overflow-hidden flex flex-col">
+                    <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+                      <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-2">
+                          <div className={`w-2 h-2 rounded-full ${activeConnection?.type === 'redis' ? 'bg-red-500' : 'bg-blue-500'}`} />
+                          <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">
+                            {activeConnection?.type === 'redis' ? '命令编辑器' : 'SQL 编辑器'}
+                          </span>
+                        </div>
+                        
+                        {/* 数据库选择下拉框 */}
+                        <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-lg px-2 py-1 shadow-sm">
+                          {activeConnection?.type === 'redis' ? <Server size={12} className="text-slate-400" /> : <Database size={12} className="text-slate-400" />}
+                          <select 
+                            className="text-xs font-medium text-slate-600 outline-none bg-transparent cursor-pointer"
+                            value={consoles.find(c => c.id === activeConsoleId)?.dbName || ''}
+                            onChange={(e) => handleConsoleDBChange(activeConsoleId!, e.target.value)}
+                          >
+                            <option value="">{activeConnection?.type === 'redis' ? '选择 DB' : '选择数据库'}</option>
+                            {databases.map(db => (
+                              <option key={db} value={db}>{activeConnection?.type === 'redis' ? `DB ${db}` : db}</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        {/* 表选择下拉框（辅助输入） */}
+                        <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-lg px-2 py-1 shadow-sm">
+                          {activeConnection?.type === 'redis' ? <Key size={12} className="text-slate-400" /> : <Table size={12} className="text-slate-400" />}
+                          <select 
+                            className="text-xs font-medium text-slate-600 outline-none bg-transparent cursor-pointer"
+                            onChange={(e) => {
+                              if (e.target.value) {
+                                handleConsoleTableSelect(e.target.value);
+                                e.target.value = ""; // 重置以便下次选择
+                              }
+                            }}
+                          >
+                            <option value="">{activeConnection?.type === 'redis' ? '快速插入 Key' : '快速插入表查询'}</option>
+                            {tables.map(table => (
+                              <option key={table.name} value={table.name}>{table.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        {activeConnection?.type !== 'redis' && (
+                          <motion.button
+                            whileHover={{ scale: 1.05 }}
+                            whileTap={{ scale: 0.95 }}
+                            onClick={() => handleFormatSQL(activeConsoleId!)}
+                            className="px-4 py-2 bg-white border border-slate-200 text-slate-600 rounded-xl text-xs font-bold shadow-sm hover:bg-slate-50 transition-all flex items-center gap-2"
+                            title="格式化 SQL"
+                          >
+                            <AlignLeft size={14} />
+                            格式化
+                          </motion.button>
+                        )}
+                        <motion.button
+                          whileHover={{ scale: 1.05 }}
+                          whileTap={{ scale: 0.95 }}
+                          disabled={consoles.find(c => c.id === activeConsoleId)?.executing}
+                          onClick={() => handleExecuteSQL(activeConsoleId!)}
+                          className={`px-6 py-2 ${activeConnection?.type === 'redis' ? 'bg-red-600 hover:bg-red-700 shadow-red-600/20' : 'bg-blue-600 hover:bg-blue-700 shadow-blue-600/20'} disabled:bg-slate-300 text-white rounded-xl text-xs font-bold shadow-lg transition-all flex items-center gap-2`}
+                        >
+                          {consoles.find(c => c.id === activeConsoleId)?.executing ? <RefreshCw size={14} className="animate-spin" /> : <Play size={14} />}
+                          {activeConnection?.type === 'redis' ? '执行命令' : '执行查询'}
+                        </motion.button>
+                      </div>
+                    </div>
+                    <div 
+                      className="flex-1 overflow-auto custom-scrollbar p-6 sql-editor-container relative"
+                      onMouseUp={(e) => handleSelection(e)}
+                      onKeyUp={(e) => handleSelection(e)}
+                    >
+                      <Editor
+                        value={consoles.find(c => c.id === activeConsoleId)?.sql || ''}
+                        onValueChange={val => {
+                          setConsoles(prev => prev.map(c => c.id === activeConsoleId ? { ...c, sql: val } : c));
+                        }}
+                        highlight={code => activeConnection?.type === 'redis' ? code : Prism.highlight(code, Prism.languages.sql, 'sql')}
+                        padding={0}
+                        className="font-mono text-sm leading-relaxed text-slate-700 outline-none"
+                        placeholder={activeConnection?.type === 'redis' ? "在这里输入 Redis 命令 (例如: GET key)..." : "在这里输入 SQL 语句..."}
+                        style={{
+                          minHeight: '100%',
+                          width: '100%',
+                        }}
+                      />
+
+                      {/* AI Selection Floating Button */}
+                      <AnimatePresence>
+                        {selectedSql && selectionPosition && !showAISelectionInput && (
+                          <motion.div
+                            initial={{ opacity: 0, scale: 0.8 }}
+                            animate={{ 
+                              opacity: 1, 
+                              scale: 1,
+                              left: selectionPosition.x - 10,
+                              top: selectionPosition.y + 25 // 紧挨着首字符下方，且稍微往左移一点避免遮挡
+                            }}
+                            exit={{ opacity: 0, scale: 0.8 }}
+                            className="absolute z-20"
+                          >
+                            <motion.button
+                              whileHover={{ scale: 1.1 }}
+                              whileTap={{ scale: 0.9 }}
+                              onClick={() => setShowAISelectionInput(true)}
+                              className="w-8 h-8 bg-indigo-600 text-white rounded-full shadow-lg flex items-center justify-center hover:bg-indigo-700 transition-colors"
+                              title="使用 AI 修改选中的 SQL"
+                            >
+                              <Sparkles size={16} />
+                            </motion.button>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+
+                      {/* AI Selection Input Box */}
+                      <AnimatePresence>
+                        {showAISelectionInput && selectionPosition && (
+                          <motion.div
+                            ref={aiPopupRef}
+                            drag
+                            dragMomentum={false}
+                            initial={{ opacity: 0, scale: 0.9, y: -10 }}
+                            animate={{ 
+                              opacity: 1, 
+                              scale: 1,
+                              y: 0,
+                              left: Math.max(10, Math.min(selectionPosition.x - 160, 400)), 
+                              top: selectionPosition.y + 30 
+                            }}
+                            exit={{ opacity: 0, scale: 0.9, y: -10 }}
+                            className="absolute z-30 w-80 bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden cursor-default"
+                          >
+                            <div className="p-4 flex flex-col gap-3 ai-selection-input">
+                              <div className="flex items-center justify-between cursor-move select-none border-b border-slate-50 pb-2 mb-1">
+                                <span className="text-xs font-bold text-slate-700 flex items-center gap-2">
+                                  <div className="flex flex-col gap-0.5 mr-1">
+                                    <div className="w-3 h-0.5 bg-slate-300 rounded-full" />
+                                    <div className="w-3 h-0.5 bg-slate-300 rounded-full" />
+                                    <div className="w-3 h-0.5 bg-slate-300 rounded-full" />
+                                  </div>
+                                  <Bot size={14} className="text-indigo-600" />
+                                  AI 智能修改
+                                </span>
+                                <button 
+                                  onClick={() => setShowAISelectionInput(false)}
+                                  className="text-slate-400 hover:text-slate-600 p-1 hover:bg-slate-100 rounded-lg transition-colors"
+                                >
+                                  <X size={14} />
+                                </button>
+                              </div>
+                              <div className="relative">
+                                <textarea
+                                  autoFocus
+                                  value={aiSelectionPrompt}
+                                  onChange={(e) => setAISelectionPrompt(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter' && !e.shiftKey) {
+                                      e.preventDefault();
+                                      handleAISelectionSubmit();
+                                    }
+                                  }}
+                                  placeholder="输入修改指令，例如：'添加 WHERE 子句' 或 '格式化这段 SQL'..."
+                                  className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-black focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 resize-none !text-black !-webkit-text-fill-color-black"
+                                  style={{ WebkitTextFillColor: '#000' }}
+                                  rows={3}
+                                />
+                                {aiSelectionLoading && (
+                                  <div className="absolute inset-0 bg-white/50 backdrop-blur-[1px] flex items-center justify-center rounded-xl">
+                                    <Loader2 size={20} className="animate-spin text-indigo-600" />
+                                  </div>
+                                )}
+                              </div>
+                              <div className="flex justify-end gap-2">
+                                <button
+                                  onClick={() => setShowAISelectionInput(false)}
+                                  className="px-3 py-1.5 text-[10px] font-bold text-slate-500 hover:bg-slate-100 rounded-lg transition-colors"
+                                >
+                                  取消
+                                </button>
+                                <button
+                                  disabled={!aiSelectionPrompt.trim() || aiSelectionLoading}
+                                  onClick={handleAISelectionSubmit}
+                                  className="px-4 py-1.5 bg-indigo-600 text-white text-[10px] font-bold rounded-lg shadow-md shadow-indigo-600/20 hover:bg-indigo-700 disabled:bg-slate-300 transition-all flex items-center gap-2"
+                                >
+                                  {aiSelectionLoading ? '处理中...' : '提交指令'}
+                                  <Send size={12} />
+                                </button>
+                              </div>
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                  </div>
+
+                  {/* Results Area */}
+                  <div className="h-[300px] bg-white rounded-3xl border border-slate-200 shadow-xl overflow-hidden flex flex-col">
+                    <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50">
+                      <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">查询结果</span>
+                    </div>
+                    <div className="flex-1 overflow-auto custom-scrollbar">
+                      {consoles.find(c => c.id === activeConsoleId)?.error ? (
+                        <div className="p-8 text-red-500 font-mono text-sm whitespace-pre-wrap">
+                          {consoles.find(c => c.id === activeConsoleId)?.error}
+                        </div>
+                      ) : (Array.isArray(consoles.find(c => c.id === activeConsoleId)?.results)) ? (
+                        <table className="w-full border-collapse">
+                          <thead>
+                            <tr className="bg-slate-50 sticky top-0 z-10">
+                              {consoles.find(c => c.id === activeConsoleId)?.columns?.map(col => (
+                                <th key={col} className="px-4 py-3 text-left text-[10px] font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100">{col}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-50">
+                            {consoles.find(c => c.id === activeConsoleId)?.results?.map((row, i) => (
+                              <tr key={i} className="hover:bg-blue-50/30 transition-colors">
+                                {consoles.find(c => c.id === activeConsoleId)?.columns?.map(col => (
+                                  <td key={col} className="px-4 py-3 text-sm text-slate-600 font-mono">{row[col] === null ? 'NULL' : String(row[col])}</td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      ) : (
+                        <div className="h-full flex flex-col items-center justify-center text-slate-300">
+                          <Activity size={32} className="mb-2 opacity-20" />
+                          <span className="text-xs font-bold uppercase tracking-widest opacity-40">等待执行...</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </motion.div>
+            ) : (
+              <motion.div 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="h-full flex flex-col items-center justify-center relative overflow-hidden"
+              >
+                <div className="relative z-10 flex flex-col items-center">
+                  <motion.div 
+                    animate={{ 
+                      y: [0, -10, 0],
+                      rotate: [0, 5, -5, 0]
+                    }}
+                    transition={{ 
+                      duration: 6, 
+                      repeat: Infinity,
+                      ease: "easeInOut"
+                    }}
+                    className="w-32 h-32 bg-white rounded-[40px] flex items-center justify-center shadow-2xl shadow-slate-200/50 mb-10 border border-slate-100"
+                  >
+                    <Database size={56} className="text-blue-600 drop-shadow-md" />
+                  </motion.div>
+                  <h3 className="text-3xl font-bold text-slate-900 tracking-tighter mb-4">AiSqlBoy</h3>
+                  <p className="max-w-xs text-center text-slate-500 font-semibold leading-relaxed">
+                    新一代 AI 驱动的数据库管理工具。<br/>
+                    请从左侧选择一个连接开始探索。
+                  </p>
+                </div>
+                {/* Decoration Circles */}
+                <div className="absolute inset-0 flex items-center justify-center -z-10 opacity-40">
+                  <div className="w-[400px] h-[400px] border border-slate-200 rounded-full animate-[spin_20s_linear_infinite]" />
+                  <div className="w-[600px] h-[600px] border border-slate-200 rounded-full absolute animate-[spin_30s_linear_infinite_reverse]" />
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </main>
+      </div>
+
+      {/* Modals with AnimatePresence */}
+      <AnimatePresence>
+        <ConfirmModal 
+          show={showConfirm}
+          title={confirmOptions.title}
+          message={confirmOptions.message}
+          type={confirmOptions.type}
+          onConfirm={confirmOptions.onConfirm}
+          onCancel={() => setShowConfirm(false)}
+        />
+        {showAddModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowAddModal(false)}
+              className="absolute inset-0 bg-slate-900/20 backdrop-blur-md"
+            />
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 20 }}
+              className="bg-white border border-slate-200 rounded-[32px] shadow-2xl w-[480px] overflow-hidden z-10"
+            >
+              <div className="px-8 py-6 border-b border-slate-100 flex justify-between items-center bg-gradient-to-b from-slate-50 to-transparent">
+                <div>
+                  <h3 className="font-bold text-xl text-slate-900 tracking-tight">新建连接</h3>
+                  <p className="text-xs text-slate-500 mt-1 font-semibold">配置您的数据库连接信息</p>
+                </div>
+                <motion.button 
+                  whileHover={{ rotate: 90, scale: 1.1 }}
+                  onClick={() => setShowAddModal(false)} 
+                  className="w-10 h-10 flex items-center justify-center bg-slate-100 hover:bg-slate-200 rounded-full text-slate-400 transition-colors"
+                >
+                  <X size={20} />
+                </motion.button>
+              </div>
+              
+              <div className="p-8 space-y-6">
+                <div className="grid grid-cols-4 gap-2 p-1.5 bg-slate-100 rounded-2xl border border-slate-200">
+                  <button
+                    onClick={() => setNewConfig({ ...newConfig, type: 'mysql', port: 3306 })}
+                    className={`py-2 rounded-xl text-xs font-bold transition-all duration-300 ${
+                      newConfig.type === 'mysql' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                    }`}
+                  >
+                    MySQL
+                  </button>
+                  <button
+                    onClick={() => setNewConfig({ ...newConfig, type: 'postgresql', port: 5432 })}
+                    className={`py-2 rounded-xl text-xs font-bold transition-all duration-300 ${
+                      newConfig.type === 'postgresql' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                    }`}
+                  >
+                    PostgreSQL
+                  </button>
+                  <button
+                    onClick={() => setNewConfig({ ...newConfig, type: 'sqlite' })}
+                    className={`py-2 rounded-xl text-xs font-bold transition-all duration-300 ${
+                      newConfig.type === 'sqlite' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                    }`}
+                  >
+                    SQLite
+                  </button>
+                  <button
+                    onClick={() => setNewConfig({ ...newConfig, type: 'redis', port: 6379 })}
+                    className={`py-2 rounded-xl text-xs font-bold transition-all duration-300 ${
+                      newConfig.type === 'redis' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                    }`}
+                  >
+                    Redis
+                  </button>
+                </div>
+
+                <div className="space-y-5">
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">连接名称</label>
+                    <input
+                      type="text"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-slate-900 focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600 outline-none transition-all placeholder:text-slate-300"
+                      placeholder="例如: 生产环境主库"
+                      value={newConfig.name}
+                      onChange={(e) => setNewConfig({ ...newConfig, name: e.target.value })}
+                    />
+                  </div>
+
+                  {newConfig.type !== 'sqlite' ? (
+                    <>
+                      <div className="grid grid-cols-3 gap-4">
+                        <div className="col-span-2 space-y-2">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">主机地址</label>
+                          <input
+                            type="text"
+                            className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-slate-900 focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600 outline-none transition-all"
+                            value={newConfig.host}
+                            onChange={(e) => setNewConfig({ ...newConfig, host: e.target.value })}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">端口</label>
+                          <input
+                            type="number"
+                            className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-slate-900 focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600 outline-none transition-all"
+                            value={newConfig.port}
+                            onChange={(e) => setNewConfig({ ...newConfig, port: parseInt(e.target.value) })}
+                          />
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">用户名</label>
+                          <input
+                            type="text"
+                            className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-slate-900 focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600 outline-none transition-all"
+                            value={newConfig.user}
+                            onChange={(e) => setNewConfig({ ...newConfig, user: e.target.value })}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">密码</label>
+                          <input
+                            type="password"
+                            className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-slate-900 focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600 outline-none transition-all"
+                            value={newConfig.password}
+                            onChange={(e) => setNewConfig({ ...newConfig, password: e.target.value })}
+                          />
+                        </div>
+                      </div>
+                      {newConfig.type !== 'redis' && (
+                        <div className="space-y-2">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">数据库 (可选)</label>
+                          <input
+                            type="text"
+                            className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-slate-900 focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600 outline-none transition-all"
+                            placeholder="例如: user_db"
+                            value={newConfig.database}
+                            onChange={(e) => setNewConfig({ ...newConfig, database: e.target.value })}
+                          />
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">SQLite 文件路径</label>
+                      <input
+                        type="text"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-slate-900 focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600 outline-none transition-all"
+                        placeholder="C:/path/to/database.db"
+                        value={newConfig.database}
+                        onChange={(e) => setNewConfig({ ...newConfig, database: e.target.value })}
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="px-8 py-6 border-t border-slate-100 bg-slate-50 flex gap-3">
+                <button 
+                  onClick={() => setShowAddModal(false)}
+                  className="flex-1 py-3.5 rounded-2xl text-sm font-bold text-slate-500 hover:text-slate-700 hover:bg-slate-200/50 transition-all"
+                >
+                  取消
+                </button>
+                <motion.button 
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={handleSaveConnection}
+                  className="flex-[2] py-3.5 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl text-sm font-bold shadow-lg shadow-blue-600/20 transition-all"
+                >
+                  保存连接
+                </motion.button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Text Detail Modal */}
+      <AnimatePresence>
+        {textDetail && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-10">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setTextDetail(null)}
+              className="absolute inset-0 bg-slate-900/40 backdrop-blur-xl"
+            />
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0, y: 30 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 30 }}
+              className="bg-white border border-slate-200 rounded-[40px] shadow-3xl w-full max-w-3xl max-h-[80vh] flex flex-col overflow-hidden z-10"
+            >
+              <div className="px-10 py-8 border-b border-slate-100 flex justify-between items-center bg-gradient-to-b from-slate-50 to-transparent">
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 bg-blue-50 rounded-2xl flex items-center justify-center border border-blue-100">
+                    <Layout size="24" className="text-blue-600" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-2xl text-slate-900 tracking-tight">{textDetail.fieldName}</h3>
+                    <p className="text-[10px] text-slate-400 mt-1 font-bold uppercase tracking-widest">详细内容预览</p>
+                  </div>
+                </div>
+                <motion.button 
+                  whileHover={{ rotate: 90, scale: 1.1 }}
+                  onClick={() => setTextDetail(null)} 
+                  className="w-12 h-12 flex items-center justify-center bg-slate-100 hover:bg-slate-200 rounded-full text-slate-400 transition-colors"
+                >
+                  <X size={24} />
+                </motion.button>
+              </div>
+              <div className="p-10 overflow-y-auto custom-scrollbar flex-1">
+                <div className="bg-slate-50 rounded-3xl p-8 border border-slate-200 shadow-inner">
+                  <pre className="whitespace-pre-wrap break-all text-[15px] leading-relaxed text-slate-700 font-mono selection:bg-blue-100">
+                    {textDetail.content}
+                  </pre>
+                </div>
+              </div>
+              <div className="px-10 py-8 border-t border-slate-100 bg-slate-50 flex justify-end">
+                <motion.button 
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={() => setTextDetail(null)}
+                  className="px-10 py-3.5 bg-white hover:bg-slate-100 text-slate-700 rounded-2xl text-sm font-bold border border-slate-200 transition-all shadow-sm"
+                >
+                  关闭预览
+                </motion.button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Context Menu */}
+      <AnimatePresence>
+        {contextMenu && (
+          <ContextMenu
+            x={contextMenu.x}
+            y={contextMenu.y}
+            onClose={() => setContextMenu(null)}
+            options={
+              contextMenu.type === 'database' && /^\d+$/.test(contextMenu.target) ? [
+                {
+                  label: deletedRows.has(parseInt(contextMenu.target)) ? '取消删除' : '删除行',
+                  icon: <Trash2 size={14} />,
+                  onClick: () => handleLocalRowDelete(parseInt(contextMenu.target)),
+                  danger: !deletedRows.has(parseInt(contextMenu.target))
+                }
+              ] : contextMenu.type === 'database' ? [
+                { 
+                  label: activeConnection?.type === 'redis' ? '新建命令控制台' : '新建查询控制台', 
+                  icon: <Play size={14} />, 
+                  onClick: () => handleNewConsole(contextMenu.target) 
+                },
+                { 
+                  label: 'AI 助手', 
+                  icon: <Sparkles size={14} className="text-indigo-500" />, 
+                  onClick: () => handleOpenAIModal('database', contextMenu.target) 
+                },
+                ...(activeConnection?.type !== 'redis' ? [
+                  { 
+                    label: '添加表', 
+                    icon: <Plus size={14} />, 
+                    onClick: () => {
+                      setSchemaData({ tableName: 'new_table', columns: [], indexes: [] });
+                      setShowSchemaModal(true);
+                    } 
+                  }
+                ] : []),
+                { 
+                  label: '刷新', 
+                  icon: <RefreshCw size={14} />, 
+                  onClick: () => loadDatabases() 
+                },
+                ...(activeConnection?.type !== 'redis' ? [
+                  { 
+                    label: '导出 SQL (仅结构)', 
+                    icon: <Server size={14} />, 
+                    onClick: () => handleExportDB(false) 
+                  },
+                  { 
+                    label: '导出 SQL (结构 + 数据)', 
+                    icon: <Server size={14} />, 
+                    onClick: () => handleExportDB(true) 
+                  }
+                ] : []),
+                { 
+                  label: activeConnection?.type === 'redis' ? '清空数据库 (Flush)' : '删除数据库', 
+                  icon: <Trash2 size={14} />, 
+                  onClick: () => handleDeleteDB(contextMenu.target),
+                  danger: true 
+                },
+              ] : [
+                { 
+                  label: activeConnection?.type === 'redis' ? '查看 Key 内容' : '打开表', 
+                  icon: <Play size={14} />, 
+                  onClick: () => handleSelectTable(contextMenu.target) 
+                },
+                { 
+                  label: 'AI 助手', 
+                  icon: <Sparkles size={14} className="text-indigo-500" />, 
+                  onClick: () => handleOpenAIModal('table', contextMenu.target) 
+                },
+                { 
+                  label: '刷新列表', 
+                  icon: <RefreshCw size={14} />, 
+                  onClick: async () => {
+                    const tableList = await window.electronAPI.getTables();
+                    setTables(tableList);
+                  } 
+                },
+                ...(activeConnection?.type === 'redis' ? [
+                  ...(contextMenu.target !== 'Keys' ? [
+                    {
+                      label: '删除 Key',
+                      icon: <Trash2 size={14} />,
+                      onClick: () => handleDeleteTable(contextMenu.target),
+                      danger: true
+                    }
+                  ] : [])
+                ] : [
+                  { 
+                    label: '修改表结构', 
+                    icon: <Activity size={14} />, 
+                    onClick: () => handleOpenSchemaModal(contextMenu.target)
+                  },
+                  { 
+                    label: '重命名', 
+                    icon: <RefreshCw size={14} />, 
+                    onClick: () => {
+                      setRenameData({ oldName: contextMenu.target, newName: contextMenu.target });
+                      setShowRenameModal(true);
+                    } 
+                  },
+                  { 
+                    label: '删除表', 
+                    icon: <Trash2 size={14} />, 
+                    onClick: () => handleDeleteTable(contextMenu.target),
+                    danger: true 
+                  }
+                ])
+              ]
+            }
+          />
+        )}
+      </AnimatePresence>
+
+      {/* AI Settings Modal */}
+      <AnimatePresence>
+        {showSettings && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-6">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowSettings(false)}
+              className="absolute inset-0 bg-slate-900/20 backdrop-blur-md"
+            />
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 20 }}
+              className="bg-white border border-slate-200 rounded-[32px] shadow-2xl w-[400px] overflow-hidden z-10"
+            >
+              <div className="px-8 py-6 border-b border-slate-100 flex justify-between items-center bg-gradient-to-b from-slate-50 to-transparent">
+                <div className="flex items-center gap-2">
+                  <Bot size={20} className="text-indigo-600" />
+                  <h3 className="font-bold text-lg text-slate-900 tracking-tight">AI 设置</h3>
+                </div>
+                <motion.button 
+                  whileHover={{ rotate: 90, scale: 1.1 }}
+                  onClick={() => setShowSettings(false)} 
+                  className="w-8 h-8 flex items-center justify-center bg-slate-100 hover:bg-slate-200 rounded-full text-slate-400 transition-colors"
+                >
+                  <X size={16} />
+                </motion.button>
+              </div>
+              
+              <div className="p-8 space-y-4">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">DeepSeek API Key</label>
+                  <input
+                    type="password"
+                    autoFocus
+                    placeholder="sk-..."
+                    className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-slate-900 focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600 outline-none transition-all"
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                  />
+                  <p className="text-xs text-slate-400 px-1">请从 DeepSeek 官网获取 API Key 以启用 AI 功能</p>
+                </div>
+              </div>
+
+              <div className="px-8 py-6 border-t border-slate-100 bg-slate-50 flex gap-3">
+                <button 
+                  onClick={() => setShowSettings(false)}
+                  className="flex-1 py-3 rounded-2xl text-sm font-bold text-slate-500 hover:text-slate-700 hover:bg-slate-200/50 transition-all"
+                >
+                  取消
+                </button>
+                <motion.button 
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={handleSaveSettings}
+                  className="flex-[2] py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl text-sm font-bold shadow-lg shadow-indigo-600/20 transition-all"
+                >
+                  保存配置
+                </motion.button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* AI Chat Modal */}
+      <AnimatePresence>
+        {showAIModal && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-6">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowAIModal(false)}
+              className="absolute inset-0 bg-slate-900/20 backdrop-blur-md"
+            />
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 20 }}
+              className="bg-white border border-slate-200 rounded-[32px] shadow-2xl w-[600px] h-[500px] overflow-hidden z-10 flex flex-col"
+            >
+              <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-gradient-to-b from-indigo-50/50 to-transparent">
+                <div className="flex items-center gap-2">
+                  <Sparkles size={18} className="text-indigo-600" />
+                  <div>
+                    <h3 className="font-bold text-base text-slate-900">AI 助手</h3>
+                    <p className="text-xs text-slate-500">
+                      当前上下文: {aiContext?.type === 'database' ? '数据库' : '表'} {aiContext?.name}
+                    </p>
+                  </div>
+                </div>
+                <motion.button 
+                  whileHover={{ rotate: 90, scale: 1.1 }}
+                  onClick={() => setShowAIModal(false)} 
+                  className="w-8 h-8 flex items-center justify-center bg-slate-100 hover:bg-slate-200 rounded-full text-slate-400 transition-colors"
+                >
+                  <X size={16} />
+                </motion.button>
+              </div>
+              
+              <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-slate-50/50">
+                {aiMessages.length === 0 && (
+                  <div className="flex flex-col items-center justify-center h-full text-slate-400 gap-3">
+                    <Bot size={40} className="text-slate-300" />
+                    <p className="text-sm">告诉我你想查什么，或者需要生成什么 SQL</p>
+                  </div>
+                )}
+                {aiMessages.map((msg, i) => (
+                  <motion.div 
+                    key={i}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}
+                  >
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
+                      msg.role === 'user' ? 'bg-slate-200' : 'bg-indigo-100 text-indigo-600'
+                    }`}>
+                      {msg.role === 'user' ? <AlignLeft size={16} /> : <Bot size={16} />}
+                    </div>
+                    <div className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
+                      msg.role === 'user' 
+                        ? 'bg-white border border-slate-200 shadow-sm text-slate-700' 
+                        : 'bg-indigo-600 text-white shadow-md shadow-indigo-600/10'
+                    }`}>
+                      {msg.role === 'assistant' ? (
+                        <div className="space-y-2">
+                          <div className="whitespace-pre-wrap">{msg.content.split('```')[0]}</div>
+                          {(msg.content.match(/```sql\n([\s\S]*?)\n```/) || msg.content.match(/```([\s\S]*?)\n```/)) && (
+                            <div className="mt-2">
+                              <div className="bg-black/20 rounded-lg p-3 font-mono text-xs overflow-x-auto">
+                                {(msg.content.match(/```sql\n([\s\S]*?)\n```/) || msg.content.match(/```([\s\S]*?)\n```/))![1]}
+                              </div>
+                              <button 
+                                onClick={() => handleApplyAISQL(msg.content)}
+                                className="mt-2 w-full py-1.5 bg-white/20 hover:bg-white/30 rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-2"
+                              >
+                                <Play size={12} /> 应用到控制台
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        msg.content
+                      )}
+                    </div>
+                  </motion.div>
+                ))}
+                {aiLoading && (
+                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex gap-3">
+                    <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center shrink-0">
+                      <Bot size={16} />
+                    </div>
+                    <div className="bg-white border border-slate-200 rounded-2xl px-4 py-3 shadow-sm flex items-center gap-2">
+                      <Loader2 size={16} className="animate-spin text-indigo-600" />
+                      <span className="text-xs text-slate-500">AI 思考中...</span>
+                    </div>
+                  </motion.div>
+                )}
+              </div>
+
+              <div className="p-4 bg-white border-t border-slate-100 flex gap-2">
+                <input
+                  type="text"
+                  placeholder="输入你的需求..."
+                  className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-sm focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600 outline-none transition-all"
+                  value={aiPrompt}
+                  onChange={(e) => setAIPrompt(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleAIChat()}
+                />
+                <motion.button 
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={handleAIChat}
+                  disabled={aiLoading || !aiPrompt.trim()}
+                  className="w-10 h-10 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl flex items-center justify-center shadow-lg shadow-indigo-600/20 transition-all"
+                >
+                  <Send size={18} />
+                </motion.button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Rename Table Modal */}
+      <AnimatePresence>
+        {showRenameModal && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-6">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowRenameModal(false)}
+              className="absolute inset-0 bg-slate-900/20 backdrop-blur-md"
+            />
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 20 }}
+              className="bg-white border border-slate-200 rounded-[32px] shadow-2xl w-[400px] overflow-hidden z-10"
+            >
+              <div className="px-8 py-6 border-b border-slate-100 flex justify-between items-center bg-gradient-to-b from-slate-50 to-transparent">
+                <h3 className="font-bold text-lg text-slate-900 tracking-tight">重命名数据表</h3>
+                <motion.button 
+                  whileHover={{ rotate: 90, scale: 1.1 }}
+                  onClick={() => setShowRenameModal(false)} 
+                  className="w-8 h-8 flex items-center justify-center bg-slate-100 hover:bg-slate-200 rounded-full text-slate-400 transition-colors"
+                >
+                  <X size={16} />
+                </motion.button>
+              </div>
+              
+              <div className="p-8 space-y-4">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">旧名称</label>
+                  <input
+                    type="text"
+                    disabled
+                    className="w-full bg-slate-100 border border-slate-200 rounded-2xl px-4 py-3 text-slate-400 outline-none transition-all"
+                    value={renameData.oldName}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">新名称</label>
+                  <input
+                    type="text"
+                    autoFocus
+                    className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-slate-900 focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600 outline-none transition-all"
+                    value={renameData.newName}
+                    onChange={(e) => setRenameData({ ...renameData, newName: e.target.value })}
+                    onKeyDown={(e) => e.key === 'Enter' && handleRenameTable()}
+                  />
+                </div>
+              </div>
+
+              <div className="px-8 py-6 border-t border-slate-100 bg-slate-50 flex gap-3">
+                <button 
+                  onClick={() => setShowRenameModal(false)}
+                  className="flex-1 py-3 rounded-2xl text-sm font-bold text-slate-500 hover:text-slate-700 hover:bg-slate-200/50 transition-all"
+                >
+                  取消
+                </button>
+                <motion.button 
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={handleRenameTable}
+                  className="flex-[2] py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl text-sm font-bold shadow-lg shadow-blue-600/20 transition-all"
+                >
+                  确认重命名
+                </motion.button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+      {/* Schema Editor Modal */}
+      <AnimatePresence>
+        {showSchemaModal && (
+          <div className="fixed inset-0 z-[120] flex items-center justify-center p-6">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowSchemaModal(false)}
+              className="absolute inset-0 bg-slate-900/20 backdrop-blur-md"
+            />
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 20 }}
+              className="bg-white border border-slate-200 rounded-[32px] shadow-2xl w-[900px] max-h-[85vh] flex flex-col overflow-hidden z-10"
+            >
+              <div className="px-8 py-6 border-b border-slate-100 flex justify-between items-center bg-gradient-to-b from-slate-50 to-transparent">
+                <div>
+                  <h3 className="font-bold text-lg text-slate-900 tracking-tight">
+                    {tables.some(t => t.name === schemaData.tableName) ? '修改表结构' : '创建新表'}
+                  </h3>
+                  <div className="text-xs text-slate-500 mt-1 font-semibold flex items-center gap-2">
+                    <Table size={12} />
+                    {tables.some(t => t.name === schemaData.tableName) ? (
+                      <span>{schemaData.tableName}</span>
+                    ) : (
+                      <input
+                        type="text"
+                        placeholder="输入表名..."
+                        value={schemaData.tableName === 'new_table' ? '' : schemaData.tableName}
+                        onChange={(e) => setSchemaData({ ...schemaData, tableName: e.target.value })}
+                        className="bg-white border border-slate-200 rounded px-2 py-0.5 outline-none focus:border-blue-500 font-mono"
+                      />
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <motion.button
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={() => {
+                      if (activeSchemaTab === 'columns') {
+                        const newCol = { id: Date.now(), name: 'new_column', type: 'VARCHAR(255)', nullable: true, primaryKey: false, autoIncrement: false, originalName: null };
+                        setSchemaData({ ...schemaData, columns: [...schemaData.columns, newCol] });
+                      } else {
+                        const newIdx = { id: Date.now(), name: `idx_${schemaData.tableName}_${Date.now().toString().slice(-4)}`, columns: [], unique: false, originalName: null };
+                        setSchemaData({ ...schemaData, indexes: [...schemaData.indexes, newIdx] });
+                      }
+                    }}
+                    className="flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-600 rounded-xl text-xs font-bold hover:bg-blue-100 transition-colors"
+                  >
+                    <Plus size={14} /> {activeSchemaTab === 'columns' ? '添加列' : '添加索引'}
+                  </motion.button>
+                  <motion.button 
+                    whileHover={{ rotate: 90, scale: 1.1 }}
+                    onClick={() => setShowSchemaModal(false)} 
+                    className="w-8 h-8 flex items-center justify-center bg-slate-100 hover:bg-slate-200 rounded-full text-slate-400 transition-colors"
+                  >
+                    <X size={16} />
+                  </motion.button>
+                </div>
+              </div>
+              
+              <div className="px-8 py-2 border-b border-slate-100 flex gap-6 bg-slate-50/30">
+                <button
+                  onClick={() => setActiveSchemaTab('columns')}
+                  className={`py-2 text-xs font-bold transition-all relative ${
+                    activeSchemaTab === 'columns' ? 'text-blue-600' : 'text-slate-400 hover:text-slate-600'
+                  }`}
+                >
+                  字段设计
+                  {activeSchemaTab === 'columns' && (
+                    <motion.div layoutId="schemaTab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600 rounded-full" />
+                  )}
+                </button>
+                <button
+                  onClick={() => setActiveSchemaTab('indexes')}
+                  className={`py-2 text-xs font-bold transition-all relative ${
+                    activeSchemaTab === 'indexes' ? 'text-blue-600' : 'text-slate-400 hover:text-slate-600'
+                  }`}
+                >
+                  索引设计
+                  {activeSchemaTab === 'indexes' && (
+                    <motion.div layoutId="schemaTab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600 rounded-full" />
+                  )}
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-auto p-0">
+                {activeSchemaTab === 'columns' ? (
+                  <table className="w-full border-collapse">
+                    <thead className="sticky top-0 bg-slate-50 z-10 shadow-sm">
+                      <tr>
+                        <th className="px-6 py-3 text-left text-[10px] font-bold text-slate-400 uppercase tracking-widest">列名</th>
+                        <th className="px-6 py-3 text-left text-[10px] font-bold text-slate-400 uppercase tracking-widest">类型</th>
+                        <th className="px-6 py-3 text-center text-[10px] font-bold text-slate-400 uppercase tracking-widest w-20">允许空</th>
+                        <th className="px-6 py-3 text-center text-[10px] font-bold text-slate-400 uppercase tracking-widest w-20">主键</th>
+                        <th className="px-6 py-3 text-center text-[10px] font-bold text-slate-400 uppercase tracking-widest w-20">自增</th>
+                        <th className="px-6 py-3 text-left text-[10px] font-bold text-slate-400 uppercase tracking-widest">默认值</th>
+                        <th className="px-6 py-3 text-center text-[10px] font-bold text-slate-400 uppercase tracking-widest w-16">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {schemaData.columns.map((col, idx) => (
+                        <motion.tr 
+                          key={col.id}
+                          initial={{ opacity: 0, x: -10 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          className="group hover:bg-slate-50/50 transition-colors"
+                        >
+                          <td className="px-6 py-3">
+                            <input 
+                              type="text" 
+                              value={col.name}
+                              onChange={(e) => {
+                                const newCols = [...schemaData.columns];
+                                newCols[idx].name = e.target.value;
+                                setSchemaData({ ...schemaData, columns: newCols });
+                              }}
+                              className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none text-sm font-mono text-slate-700 font-semibold"
+                            />
+                          </td>
+                          <td className="px-6 py-3 relative group/type">
+                              <div className="flex items-center">
+                                <input 
+                                  type="text" 
+                                  value={col.type}
+                                  onChange={(e) => {
+                                    const newCols = [...schemaData.columns];
+                                    newCols[idx].type = e.target.value;
+                                    setSchemaData({ ...schemaData, columns: newCols });
+                                  }}
+                                  className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none text-sm text-blue-600 font-mono pr-6 relative z-10"
+                                  placeholder="选择或输入类型..."
+                                />
+                                <div className="absolute right-4 pointer-events-none text-slate-300 group-hover/type:text-blue-400 transition-colors z-20">
+                                  <ChevronRight size={12} className="rotate-90" />
+                                </div>
+                                <select 
+                                  value=""
+                                  onChange={(e) => {
+                                    const newCols = [...schemaData.columns];
+                                    newCols[idx].type = e.target.value;
+                                    setSchemaData({ ...schemaData, columns: newCols });
+                                  }}
+                                  className="absolute inset-0 opacity-0 cursor-pointer w-full z-0"
+                                >
+                                  <option value="" disabled>选择常用类型...</option>
+                                  {(
+                                    activeConnection?.type === 'sqlite' ? DB_TYPES.sqlite : 
+                                    activeConnection?.type === 'postgresql' ? DB_TYPES.postgresql : 
+                                    DB_TYPES.mysql
+                                  ).map(type => (
+                                    <option key={type} value={type}>{type}</option>
+                                  ))}
+                                </select>
+                              </div>
+                            </td>
+                          <td className="px-6 py-3 text-center">
+                            <input 
+                              type="checkbox" 
+                              checked={col.nullable}
+                              onChange={(e) => {
+                                const newCols = [...schemaData.columns];
+                                newCols[idx].nullable = e.target.checked;
+                                setSchemaData({ ...schemaData, columns: newCols });
+                              }}
+                              className="rounded text-blue-600 focus:ring-blue-500"
+                            />
+                          </td>
+                          <td className="px-6 py-3 text-center">
+                            <input 
+                              type="checkbox" 
+                              checked={col.primaryKey}
+                              onChange={(e) => {
+                                const newCols = [...schemaData.columns];
+                                newCols[idx].primaryKey = e.target.checked;
+                                setSchemaData({ ...schemaData, columns: newCols });
+                              }}
+                              className="rounded text-blue-600 focus:ring-blue-500"
+                            />
+                          </td>
+                          <td className="px-6 py-3 text-center">
+                            <input 
+                              type="checkbox" 
+                              checked={col.autoIncrement}
+                              onChange={(e) => {
+                                const newCols = [...schemaData.columns];
+                                newCols[idx].autoIncrement = e.target.checked;
+                                setSchemaData({ ...schemaData, columns: newCols });
+                              }}
+                              className="rounded text-blue-600 focus:ring-blue-500"
+                            />
+                          </td>
+                          <td className="px-6 py-3">
+                            <input 
+                              type="text" 
+                              value={col.defaultValue || ''}
+                              placeholder="NULL"
+                              onChange={(e) => {
+                                const newCols = [...schemaData.columns];
+                                newCols[idx].defaultValue = e.target.value;
+                                setSchemaData({ ...schemaData, columns: newCols });
+                              }}
+                              className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none text-xs text-slate-500"
+                            />
+                          </td>
+                          <td className="px-6 py-3 text-center">
+                            <button 
+                              onClick={() => {
+                                const newCols = schemaData.columns.filter(c => c.id !== col.id);
+                                setSchemaData({ ...schemaData, columns: newCols });
+                              }}
+                              className="text-slate-300 hover:text-red-500 transition-colors p-1"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </td>
+                        </motion.tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <div className="p-0">
+                    <table className="w-full border-collapse">
+                      <thead className="sticky top-0 bg-slate-50 z-10 shadow-sm">
+                        <tr>
+                          <th className="px-6 py-3 text-left text-[10px] font-bold text-slate-400 uppercase tracking-widest">索引名称</th>
+                          <th className="px-6 py-3 text-left text-[10px] font-bold text-slate-400 uppercase tracking-widest">包含字段</th>
+                          <th className="px-6 py-3 text-center text-[10px] font-bold text-slate-400 uppercase tracking-widest w-24">唯一</th>
+                          <th className="px-6 py-3 text-center text-[10px] font-bold text-slate-400 uppercase tracking-widest w-16">操作</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-50">
+                        {schemaData.indexes.map((idx, i) => (
+                          <motion.tr 
+                            key={idx.id}
+                            initial={{ opacity: 0, x: -10 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            className="group hover:bg-slate-50/50 transition-colors"
+                          >
+                            <td className="px-6 py-3">
+                              <input 
+                                type="text" 
+                                value={idx.name}
+                                onChange={(e) => {
+                                  const newIdxs = [...schemaData.indexes];
+                                  newIdxs[i].name = e.target.value;
+                                  setSchemaData({ ...schemaData, indexes: newIdxs });
+                                }}
+                                className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none text-sm font-mono text-slate-700 font-semibold"
+                              />
+                            </td>
+                            <td className="px-6 py-3">
+                              <div className="flex flex-wrap gap-1">
+                                {idx.columns.map((colName: string, colIdx: number) => (
+                                  <div key={colIdx} className="bg-blue-50 text-blue-600 px-2 py-0.5 rounded flex items-center gap-1 text-xs font-semibold">
+                                    {colName}
+                                    <X 
+                                      size={10} 
+                                      className="cursor-pointer hover:text-red-500" 
+                                      onClick={() => {
+                                        const newIdxs = [...schemaData.indexes];
+                                        newIdxs[i].columns = newIdxs[i].columns.filter((_: any, ci: number) => ci !== colIdx);
+                                        setSchemaData({ ...schemaData, indexes: newIdxs });
+                                      }}
+                                    />
+                                  </div>
+                                ))}
+                                <select
+                                  value=""
+                                  onChange={(e) => {
+                                    if (!e.target.value) return;
+                                    const newIdxs = [...schemaData.indexes];
+                                    if (!newIdxs[i].columns.includes(e.target.value)) {
+                                      newIdxs[i].columns.push(e.target.value);
+                                      setSchemaData({ ...schemaData, indexes: newIdxs });
+                                    }
+                                  }}
+                                  className="text-xs bg-slate-100 border-none rounded px-1 outline-none text-slate-500 cursor-pointer"
+                                >
+                                  <option value="">+ 添加字段</option>
+                                  {schemaData.columns.map(c => (
+                                    <option key={c.name} value={c.name}>{c.name}</option>
+                                  ))}
+                                </select>
+                              </div>
+                            </td>
+                            <td className="px-6 py-3 text-center">
+                              <input 
+                                type="checkbox" 
+                                checked={idx.unique}
+                                onChange={(e) => {
+                                  const newIdxs = [...schemaData.indexes];
+                                  newIdxs[i].unique = e.target.checked;
+                                  setSchemaData({ ...schemaData, indexes: newIdxs });
+                                }}
+                                className="rounded text-blue-600 focus:ring-blue-500"
+                              />
+                            </td>
+                            <td className="px-6 py-3 text-center">
+                              <button 
+                                onClick={() => {
+                                  const newIdxs = schemaData.indexes.filter((_, idxIdx) => idxIdx !== i);
+                                  setSchemaData({ ...schemaData, indexes: newIdxs });
+                                }}
+                                className="text-slate-300 hover:text-red-500 transition-colors p-1"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </td>
+                          </motion.tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {schemaData.indexes.length === 0 && (
+                      <div className="p-12 text-center text-slate-400 flex flex-col items-center gap-3">
+                        <Activity size={32} className="opacity-20" />
+                        <p className="text-sm">暂无索引，点击右上角添加</p>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="px-8 py-6 border-t border-slate-100 bg-slate-50 flex gap-3 justify-end">
+                <button 
+                  onClick={() => setShowSchemaModal(false)}
+                  className="px-6 py-3 rounded-2xl text-sm font-bold text-slate-500 hover:text-slate-700 hover:bg-slate-200/50 transition-all"
+                >
+                  取消
+                </button>
+                <motion.button 
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={handleUpdateSchema}
+                  className="px-8 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl text-sm font-bold shadow-lg shadow-blue-600/20 transition-all flex items-center gap-2"
+                >
+                  <Server size={14} /> 保存修改
+                </motion.button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Global Toast */}
+      <AnimatePresence>
+        {toast && (
+          <Toast 
+            message={toast.message} 
+            type={toast.type} 
+            onClose={() => setToast(null)} 
+          />
+        )}
+      </AnimatePresence>
+    </div>
+  )
+}
+
+export default App
