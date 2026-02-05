@@ -14,6 +14,12 @@ declare global {
       getSavedConnections: () => Promise<ConnectionConfig[]>
       saveConnection: (config: ConnectionConfig) => Promise<any>
       deleteConnection: (id: number) => Promise<any>
+      
+      // Console Management
+      getConsoles: (connectionId?: number) => Promise<any[]>
+      saveConsole: (console: any) => Promise<any>
+      deleteConsole: (id: string) => Promise<any>
+      
       connectDB: (config: ConnectionConfig) => Promise<{ success: boolean; error?: string }>
       getDatabases: () => Promise<string[]>
       useDatabase: (dbName: string) => Promise<{ success: boolean; error?: string }>
