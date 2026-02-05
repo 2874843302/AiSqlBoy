@@ -1,13 +1,14 @@
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const sqlite3 = require('sqlite3');
+import type { Database } from 'sqlite3';
 
 import { app } from 'electron';
 import { join } from 'path';
 import { ConnectionConfig } from '../../shared/types';
 
 export class InternalDBService {
-  private db: sqlite3.Database;
+  private db: Database;
 
   constructor() {
     const userDataPath = app.getPath('userData');
@@ -36,6 +37,51 @@ export class InternalDBService {
           value TEXT
         )
       `);
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS consoles (
+          id TEXT PRIMARY KEY,
+          connectionId INTEGER,
+          name TEXT NOT NULL,
+          sql TEXT,
+          dbName TEXT,
+          createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+    });
+  }
+
+  saveConsole(console: any): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.db.run(
+        'INSERT OR REPLACE INTO consoles (id, connectionId, name, sql, dbName) VALUES (?, ?, ?, ?, ?)',
+        [console.id, console.connectionId, console.name, console.sql, console.dbName],
+        (err) => {
+          if (err) reject(err);
+          else resolve();
+        }
+      );
+    });
+  }
+
+  deleteConsole(id: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.db.run('DELETE FROM consoles WHERE id = ?', [id], (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  }
+
+  getConsoles(connectionId?: number): Promise<any[]> {
+    return new Promise((resolve, reject) => {
+      const query = connectionId 
+        ? 'SELECT * FROM consoles WHERE connectionId = ? ORDER BY createdAt ASC'
+        : 'SELECT * FROM consoles ORDER BY createdAt ASC';
+      const params = connectionId ? [connectionId] : [];
+      this.db.all(query, params, (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows);
+      });
     });
   }
 
@@ -59,24 +105,49 @@ export class InternalDBService {
 
   saveConnection(config: ConnectionConfig): Promise<void> {
     return new Promise((resolve, reject) => {
-      const stmt = this.db.prepare(`
-        INSERT INTO connections (name, type, host, port, user, password, database)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `);
-      stmt.run(
-        config.name,
-        config.type,
-        config.host || null,
-        config.port || null,
-        config.user || null,
-        config.password || null,
-        config.database || null,
-        (err: Error | null) => {
-          if (err) reject(err);
-          else resolve();
-        }
-      );
-      stmt.finalize();
+      if (config.id) {
+        // 更新现有连接
+        const stmt = this.db.prepare(`
+          UPDATE connections 
+          SET name = ?, type = ?, host = ?, port = ?, user = ?, password = ?, database = ?
+          WHERE id = ?
+        `);
+        stmt.run(
+          config.name,
+          config.type,
+          config.host || null,
+          config.port || null,
+          config.user || null,
+          config.password || null,
+          config.database || null,
+          config.id,
+          (err: Error | null) => {
+            if (err) reject(err);
+            else resolve();
+          }
+        );
+        stmt.finalize();
+      } else {
+        // 插入新连接
+        const stmt = this.db.prepare(`
+          INSERT INTO connections (name, type, host, port, user, password, database)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `);
+        stmt.run(
+          config.name,
+          config.type,
+          config.host || null,
+          config.port || null,
+          config.user || null,
+          config.password || null,
+          config.database || null,
+          (err: Error | null) => {
+            if (err) reject(err);
+            else resolve();
+          }
+        );
+        stmt.finalize();
+      }
     });
   }
 

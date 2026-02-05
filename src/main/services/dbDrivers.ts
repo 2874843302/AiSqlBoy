@@ -1,6 +1,7 @@
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const sqlite3 = require('sqlite3');
+import type { Database } from 'sqlite3';
 
 import mysql from 'mysql2/promise';
 import pg from 'pg';
@@ -35,7 +36,7 @@ export interface IDatabaseDriver {
 }
 
 export class SQLiteDriver implements IDatabaseDriver {
-  private db: sqlite3.Database | null = null;
+  private db: Database | null = null;
   constructor(private config: ConnectionConfig) {}
 
   async connect(): Promise<void> {
@@ -303,7 +304,7 @@ export class SQLiteDriver implements IDatabaseDriver {
         this.db!.all(sql, (err, rows) => {
           if (err) reject(err);
           else {
-            const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
+            const columns = rows.length > 0 ? Object.keys(rows[0] as any) : [];
             resolve({ data: rows, columns });
           }
         });

@@ -7,6 +7,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveConnection: (config: ConnectionConfig) => ipcRenderer.invoke('save-connection', config),
   deleteConnection: (id: number) => ipcRenderer.invoke('delete-connection', id),
   
+  // Console Management
+  getConsoles: (connectionId?: number) => ipcRenderer.invoke('get-consoles', connectionId),
+  saveConsole: (console: any) => ipcRenderer.invoke('save-console', console),
+  deleteConsole: (id: string) => ipcRenderer.invoke('delete-console', id),
+  
   // External DB
   connectDB: (config: ConnectionConfig) => ipcRenderer.invoke('connect-db', config),
   getDatabases: () => ipcRenderer.invoke('get-databases'),
@@ -31,5 +36,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Dialogs
     showConfirmDialog: (options: { message: string, title?: string, type?: 'question' | 'warning' | 'error' | 'info' }) => 
         ipcRenderer.invoke('show-confirm-dialog', options),
+
+    // Auto Update
+    checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+    downloadUpdate: () => ipcRenderer.invoke('download-update'),
+    quitAndInstall: () => ipcRenderer.invoke('quit-and-install'),
+    onUpdateMessage: (callback: (message: string) => void) => 
+        ipcRenderer.on('update-message', (_, message) => callback(message)),
+    onUpdateAvailable: (callback: (info: any) => void) => 
+        ipcRenderer.on('update-available', (_, info) => callback(info)),
+    onUpdateNotAvailable: (callback: (info: any) => void) => 
+        ipcRenderer.on('update-not-available', (_, info) => callback(info)),
+    onUpdateError: (callback: (error: string) => void) => 
+        ipcRenderer.on('update-error', (_, error) => callback(error)),
+    onDownloadProgress: (callback: (progress: any) => void) => 
+        ipcRenderer.on('download-progress', (_, progress) => callback(progress)),
+    onUpdateDownloaded: (callback: (info: any) => void) => 
+        ipcRenderer.on('update-downloaded', (_, info) => callback(info)),
   }
 )

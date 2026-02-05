@@ -1,19 +1,30 @@
 import { app, BrowserWindow, ipcMain, dialog } from 'electron'
 import { join } from 'path'
+import { autoUpdater } from 'electron-updater'
 import { internalDB } from './services/internalDB'
 import { SQLiteDriver, MySQLDriver, PostgreSQLDriver, RedisDriver, IDatabaseDriver } from './services/dbDrivers'
 import { aiService } from './services/aiService'
 import fs from 'fs'
 import { ConnectionConfig } from '../shared/types'
 
+// 配置自动更新
+autoUpdater.autoDownload = false // 默认不自动下载，由用户选择
+autoUpdater.autoInstallOnAppQuit = true // 程序退出时自动安装
+
 let mainWindow: BrowserWindow | null = null
 let currentDriver: IDatabaseDriver | null = null
+
+// 定义路径常量
+const isDev = !!process.env.VITE_DEV_SERVER_URL
+const DIST_PATH = join(__dirname, '../..')
 
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
-    icon: join(__dirname, '../../src/assets/app.ico'),
+    icon: isDev 
+      ? join(__dirname, '../../src/assets/app.ico')
+      : join(DIST_PATH, 'dist/app.ico'),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       nodeIntegration: true,
@@ -24,7 +35,7 @@ function createWindow() {
   if (process.env.VITE_DEV_SERVER_URL) {
     mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL)
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    mainWindow.loadFile(join(DIST_PATH, 'dist/index.html'))
   }
 }
 
@@ -34,10 +45,46 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+
+  // 自动检查更新逻辑
+  autoUpdater.on('checking-for-update', () => {
+    mainWindow?.webContents.send('update-message', '正在检查更新...')
+  })
+  autoUpdater.on('update-available', (info) => {
+    mainWindow?.webContents.send('update-available', info)
+  })
+  autoUpdater.on('update-not-available', (info) => {
+    mainWindow?.webContents.send('update-not-available', info)
+  })
+  autoUpdater.on('error', (err) => {
+    mainWindow?.webContents.send('update-error', err.message)
+  })
+  autoUpdater.on('download-progress', (progressObj) => {
+    mainWindow?.webContents.send('download-progress', progressObj)
+  })
+  autoUpdater.on('update-downloaded', (info) => {
+    mainWindow?.webContents.send('update-downloaded', info)
+  })
+
+  // 启动时自动检查一次更新
+  autoUpdater.checkForUpdatesAndNotify()
 })
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
+})
+
+// 自动更新 IPC 处理器
+ipcMain.handle('check-for-updates', async () => {
+  return autoUpdater.checkForUpdates()
+})
+
+ipcMain.handle('download-update', async () => {
+  return autoUpdater.downloadUpdate()
+})
+
+ipcMain.handle('quit-and-install', async () => {
+  autoUpdater.quitAndInstall()
 })
 
 // Internal DB IPC (Connection Management)
@@ -51,6 +98,19 @@ ipcMain.handle('save-connection', async (_, config: ConnectionConfig) => {
 
 ipcMain.handle('delete-connection', async (_, id: number) => {
   return internalDB.deleteConnection(id)
+})
+
+// Console Management IPC
+ipcMain.handle('get-consoles', async (_, connectionId?: number) => {
+  return internalDB.getConsoles(connectionId)
+})
+
+ipcMain.handle('save-console', async (_, console: any) => {
+  return internalDB.saveConsole(console)
+})
+
+ipcMain.handle('delete-console', async (_, id: string) => {
+  return internalDB.deleteConsole(id)
 })
 
 // External DB IPC (Data Browsing)
@@ -238,16 +298,20 @@ ipcMain.handle('get-setting', async (_, key: string) => {
 })
 
 // Native Dialog IPC
-ipcMain.handle('show-confirm-dialog', async (_, options: { message: string, title?: string, type?: 'question' | 'warning' | 'error' | 'info' }) => {
+ipcMain.handle('show-confirm-dialog', async (_, options: { message: string, title?: string, type?: 'question' | 'warning' | 'error' | 'info', buttons?: string[] }) => {
   if (!mainWindow) return false
   const result = await dialog.showMessageBox(mainWindow, {
     type: options.type || 'question',
-    buttons: ['确定', '取消'],
+    buttons: options.buttons || ['确定', '取消'],
     defaultId: 0,
-    cancelId: 1,
+    cancelId: options.buttons ? options.buttons.length - 1 : 1,
     title: options.title || '确认',
     message: options.message,
     detail: '',
   })
+  // 如果提供了自定义按钮，返回索引，否则返回布尔值
+  if (options.buttons) {
+    return result.response
+  }
   return result.response === 0
 })

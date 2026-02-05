@@ -23,8 +23,15 @@
   "build": {
     "appId": "com.aisqlboy.app",
     "productName": "AiSqlBoy",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "2874843302",
+        "repo": "AiSqlBoy"
+      }
+    ],
     "directories": {
-      "output": "release/${version}"
+      "output": "release1.0/${version}"
     },
     "win": {
       "icon": "src/assets/app.ico",
@@ -40,6 +47,7 @@
   "dependencies": {
     "@tailwindcss/vite": "^4.1.18",
     "@types/pg": "^8.16.0",
+    "electron-updater": "^6.7.3",
     "framer-motion": "^12.30.0",
     "lucide-react": "^0.563.0",
     "mysql2": "^3.16.2",
@@ -58,9 +66,11 @@
     "@types/prismjs": "^1.26.5",
     "@types/react": "^19.2.10",
     "@types/react-dom": "^19.2.3",
+    "@types/sqlite3": "^3.1.11",
     "@vitejs/plugin-react": "^5.1.3",
     "autoprefixer": "^10.4.24",
-    "electron": "^40.1.0",
+    "electron": "^33.0.0",
+    "electron-builder": "^26.7.0",
     "postcss": "^8.5.6",
     "tailwindcss": "^4.1.18",
     "typescript": "^5.9.3",
