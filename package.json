@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build && electron-builder",
+    "publish": "tsc && vite build && electron-builder --publish always",
     "preview": "vite preview"
   },
   "repository": {

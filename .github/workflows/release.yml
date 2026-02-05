@@ -11,6 +11,9 @@ jobs:
   release:
     runs-on: windows-latest
 
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -27,4 +30,4 @@ jobs:
       - name: Build and Publish
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: npm run build
+        run: npm run publish
