@@ -1,6 +1,6 @@
 {
   "name": "aisqlboy",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "",
   "main": "dist-electron/main/index.js",
   "scripts": {
