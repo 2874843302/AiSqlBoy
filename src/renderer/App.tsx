@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Database, Table, Play, Plus, Trash2, X, Server, HardDrive, RefreshCw, ChevronRight, Layout, Settings, Activity, AlignLeft, Bot, Sparkles, Send, Loader2, Key, Search, ArrowUp, ArrowDown, FileJson, Save } from 'lucide-react'
+import { Database, Table, Play, Plus, Trash2, X, Server, HardDrive, RefreshCw, ChevronRight, Layout, Settings, Activity, AlignLeft, Bot, Sparkles, Send, Loader2, Key, Search, ArrowUp, ArrowDown, FileJson, Save, Terminal } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ConnectionConfig } from '../shared/types'
 import { format } from 'sql-formatter'
@@ -93,6 +93,9 @@ const editorStyles = `
   .token.punctuation { color: #64748b; }
   .token.function { color: #7c3aed; }
   .token.operator { color: #475569; }
+  /* Redis 高亮 */
+  .token.redis-command { color: #dc2626; font-weight: bold; text-transform: uppercase; }
+  .token.redis-key { color: #7c3aed; }
 `;
 
 // Context Menu Component
@@ -438,6 +441,8 @@ const App: React.FC = () => {
     tableName?: string; // 新增：表名上下文
     isDirty?: boolean;
     savedSql?: string;
+    currentPage?: number;
+    pageSize?: number;
   }
   const [consoles, setConsoles] = useState<ConsoleTab[]>([]);
   const [activeConsoleId, setActiveConsoleId] = useState<string | null>(null);
@@ -611,6 +616,10 @@ const App: React.FC = () => {
   const [showScrollButtons, setShowScrollButtons] = useState(false);
   const [showResultsScrollButtons, setShowResultsScrollButtons] = useState(false);
 
+  // Load Saved Consoles Modal State
+  const [showLoadConsoleModal, setShowLoadConsoleModal] = useState(false);
+  const [savedConsoles, setSavedConsoles] = useState<any[]>([]);
+
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
       if (isResizingSidebar) {
@@ -647,7 +656,7 @@ const App: React.FC = () => {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
-        if (selectedTable) {
+        if (selectedTable || activeConsoleId) {
           e.preventDefault();
           searchInputRef.current?.focus();
         }
@@ -743,8 +752,23 @@ const App: React.FC = () => {
     const matches: {rowIdx: number, colName: string}[] = [];
     const term = searchTerm.toLowerCase();
 
-    data.forEach((row, rowIdx) => {
-      columns.forEach((col) => {
+    // 根据当前视图选择搜索数据源
+    let searchData: any[] = [];
+    let searchColumns: any[] = [];
+
+    if (activeConsoleId) {
+      const activeConsole = consoles.find(c => c.id === activeConsoleId);
+      if (activeConsole && activeConsole.results) {
+        searchData = activeConsole.results;
+        searchColumns = activeConsole.columns?.map(c => ({ name: c })) || [];
+      }
+    } else {
+      searchData = data;
+      searchColumns = columns;
+    }
+
+    searchData.forEach((row, rowIdx) => {
+      searchColumns.forEach((col) => {
         const value = row[col.name];
         if (value !== null && value !== undefined && value.toString().toLowerCase().includes(term)) {
           matches.push({ rowIdx, colName: col.name });
@@ -754,18 +778,37 @@ const App: React.FC = () => {
 
     setSearchMatches(matches);
     setCurrentMatchIdx(matches.length > 0 ? 0 : -1);
-  }, [searchTerm, data, columns]);
+  }, [searchTerm, data, columns, activeConsoleId, consoles]);
 
   // 定位到当前匹配项
   useEffect(() => {
     if (currentMatchIdx >= 0 && searchMatches[currentMatchIdx]) {
       const { rowIdx, colName } = searchMatches[currentMatchIdx];
+      
+      // 如果是在控制台视图，且匹配项不在当前页，则切换页面
+      if (activeConsoleId) {
+        const activeConsole = consoles.find(c => c.id === activeConsoleId);
+        if (activeConsole && activeConsole.results) {
+          const size = activeConsole.pageSize || 50;
+          const matchPage = Math.floor(rowIdx / size) + 1;
+          if (activeConsole.currentPage !== matchPage) {
+            setConsoles(prev => prev.map(c => c.id === activeConsoleId ? { ...c, currentPage: matchPage } : c));
+            return; // 等待下一轮渲染
+          }
+        }
+      } else if (selectedTable) {
+        // 数据浏览模式暂不支持跨页搜索定位（因为数据是按需加载的）
+      }
+
       const element = document.querySelector(`[data-row-idx="${rowIdx}"][data-col-name="${colName}"]`);
       if (element) {
         element.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+        // 添加一个临时的闪烁效果
+        element.classList.add('search-match-highlight');
+        setTimeout(() => element.classList.remove('search-match-highlight'), 2000);
       }
     }
-  }, [currentMatchIdx, searchMatches]);
+  }, [currentMatchIdx, searchMatches, activeConsoleId]);
 
   const handleNextMatch = () => {
     if (searchMatches.length > 0) {
@@ -1026,7 +1069,13 @@ const App: React.FC = () => {
 
       const res = await window.electronAPI.executeQuery(sqlToExecute);
       if (res.success) {
-        setConsoles(prev => prev.map(c => c.id === id ? { ...c, results: res.data, columns: res.columns, executing: false } : c));
+        setConsoles(prev => prev.map(c => c.id === id ? { 
+          ...c, 
+          results: res.data, 
+          columns: res.columns, 
+          executing: false,
+          currentPage: 1 // 重置到第一页
+        } : c));
         
         // 如果执行的是创建/删除数据库语句，刷新数据库列表
         const upperSql = consoleTab.sql.trim().toUpperCase();
@@ -1071,7 +1120,9 @@ const App: React.FC = () => {
       dbName: dbName,
       tableName: tableName,
       isDirty: true,
-      savedSql: ''
+      savedSql: '',
+      currentPage: 1,
+      pageSize: 50
     };
     setConsoles([...consoles, newConsole]);
     setActiveConsoleId(id);
@@ -1108,6 +1159,27 @@ const App: React.FC = () => {
     
     setShowConsoleRenameModal(false);
   }
+
+  const handleOpenLoadConsoleModal = async () => {
+    try {
+      const allSaved = await window.electronAPI.getConsoles(activeConnection?.id);
+      setSavedConsoles(allSaved);
+      setShowLoadConsoleModal(true);
+    } catch (err: any) {
+      setToast({ message: `加载失败: ${err.message}`, type: 'error' });
+    }
+  };
+
+  const handleRestoreConsole = (savedTab: any) => {
+    // 检查是否已在当前标签页中
+    if (consoles.some(c => c.id === savedTab.id)) {
+      setActiveConsoleId(savedTab.id);
+    } else {
+      setConsoles(prev => [...prev, { ...savedTab, isDirty: false, savedSql: savedTab.sql }]);
+      setActiveConsoleId(savedTab.id);
+    }
+    setShowLoadConsoleModal(false);
+  };
 
   const handleExportDB = async (includeData: boolean) => {
     if (activeConnection?.type === 'redis') {
@@ -2136,11 +2208,11 @@ ${selectedSql}
                                         : 'hover:bg-slate-50 text-slate-500 border border-transparent hover:text-slate-700'
                                       }`}
                                     >
-                                      <div className="flex items-center gap-3 truncate">
+                                      <div className="flex items-center gap-3 min-w-0">
                                         {activeConnection?.type === 'redis' ? (
-                                          <Server size={16} className={selectedDatabase === db ? 'text-blue-500' : 'text-slate-400'} />
+                                          <Server size={16} className={`flex-shrink-0 ${selectedDatabase === db ? 'text-blue-500' : 'text-slate-400'}`} />
                                         ) : (
-                                          <Database size={16} className={selectedDatabase === db ? 'text-blue-500' : 'text-slate-400'} />
+                                          <Database size={16} className={`flex-shrink-0 ${selectedDatabase === db ? 'text-blue-500' : 'text-slate-400'}`} />
                                         )}
                                         <span className="truncate font-semibold">{activeConnection?.type === 'redis' ? `DB ${db}` : db}</span>
                                       </div>
@@ -2173,9 +2245,9 @@ ${selectedSql}
                                               }`}
                                             >
                                               {activeConnection?.type === 'redis' ? (
-                                                <Key size={16} className={selectedTable === table.name ? 'text-blue-100' : 'text-slate-400'} />
+                                                <Key size={16} className={`flex-shrink-0 ${selectedTable === table.name ? 'text-blue-100' : 'text-slate-400'}`} />
                                               ) : (
-                                                <Table size={16} className={selectedTable === table.name ? 'text-blue-100' : 'text-slate-400'} />
+                                                <Table size={16} className={`flex-shrink-0 ${selectedTable === table.name ? 'text-blue-100' : 'text-slate-400'}`} />
                                               )}
                                               <span className="truncate font-semibold">{table.name}</span>
                                             </motion.button>
@@ -2266,13 +2338,13 @@ ${selectedSql}
           </div>
 
           {/* Search Bar */}
-          {selectedTable && (
+          {(selectedTable || activeConsoleId) && (
             <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-2xl px-3 py-1.5 focus-within:ring-2 focus-within:ring-blue-500/20 focus-within:border-blue-500/50 transition-all shadow-sm">
               <Search size={14} className="text-slate-400" />
               <input 
                 ref={searchInputRef}
                 type="text"
-                placeholder="搜索表格数据 (Ctrl+F)..."
+                placeholder="搜索结果数据 (Ctrl+F)..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 onKeyDown={(e) => {
@@ -2324,10 +2396,10 @@ ${selectedSql}
         <main className="flex-1 overflow-hidden flex flex-col relative">
           {/* Tab Bar for Consoles */}
           {consoles.length > 0 && (
-            <div className="flex bg-slate-50 border-b border-slate-200 px-4 pt-2 gap-1 overflow-x-auto custom-scrollbar">
-              {consoles.map(tab => (
+            <div className="flex bg-slate-50 border-b border-slate-200 px-4 pt-2 gap-1 overflow-x-auto custom-scrollbar items-end">
+              {consoles.map((tab, idx) => (
                 <div 
-                  key={tab.id}
+                  key={tab.id || `console-${idx}`}
                   title={tab.name}
                   onClick={() => {
                     setActiveConsoleId(tab.id);
@@ -2358,6 +2430,15 @@ ${selectedSql}
                   />
                 </div>
               ))}
+              
+              {/* Add Button */}
+              <button
+                onClick={handleOpenLoadConsoleModal}
+                className="mb-1 p-1.5 rounded-lg hover:bg-slate-200 text-slate-400 hover:text-slate-600 transition-all flex-shrink-0"
+                title="加载已保存的控制台"
+              >
+                <Plus size={16} />
+              </button>
             </div>
           )}
 
@@ -2779,7 +2860,39 @@ ${selectedSql}
                           updateSuggestions();
                         }}
                         onKeyDown={handleEditorKeyDown as any}
-                        highlight={code => activeConnection?.type === 'redis' ? code : Prism.highlight(code, Prism.languages.sql, 'sql')}
+                        highlight={code => {
+                          if (activeConnection?.type === 'redis') {
+                            // 简易的 Redis 命令高亮逻辑
+                            const redisCommands = [
+                              'GET', 'SET', 'DEL', 'EXISTS', 'EXPIRE', 'TTL', 'KEYS', 'SCAN', 'FLUSHDB', 'FLUSHALL',
+                              'HGET', 'HSET', 'HDEL', 'HGETALL', 'HKEYS', 'HVALS',
+                              'LPUSH', 'RPUSH', 'LPOP', 'RPOP', 'LRANGE', 'LLEN',
+                              'SADD', 'SREM', 'SMEMBERS', 'SISMEMBER',
+                              'ZADD', 'ZREM', 'ZRANGE', 'ZCARD', 'ZSCORE',
+                              'PUBLISH', 'SUBSCRIBE', 'PSUBSCRIBE',
+                              'INFO', 'PING', 'SELECT', 'AUTH', 'QUIT', 'CONFIG'
+                            ];
+                            
+                            // 转义正则
+                            const escapedCode = code
+                              .replace(/&/g, "&amp;")
+                              .replace(/</g, "&lt;")
+                              .replace(/>/g, "&gt;")
+                              .replace(/"/g, "&quot;")
+                              .replace(/'/g, "&#039;");
+
+                            // 匹配第一个单词作为命令
+                            const parts = escapedCode.split(/(\s+)/);
+                            if (parts.length > 0) {
+                              const firstWord = parts[0].toUpperCase();
+                              if (redisCommands.includes(firstWord)) {
+                                parts[0] = `<span class="token redis-command">${parts[0]}</span>`;
+                              }
+                            }
+                            return parts.join('');
+                          }
+                          return Prism.highlight(code, Prism.languages.sql, 'sql');
+                        }}
                         padding={0}
                         className="font-mono text-sm leading-relaxed text-slate-700 outline-none"
                         placeholder={activeConnection?.type === 'redis' ? "在这里输入 Redis 命令 (例如: GET key)..." : "在这里输入 SQL 语句..."}
@@ -2953,69 +3066,177 @@ ${selectedSql}
                       className="absolute top-0 left-0 w-full h-1 cursor-row-resize hover:bg-blue-500/20 active:bg-blue-500/40 z-30 transition-colors"
                       onMouseDown={() => setIsResizingResults(true)}
                     />
-                    <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 shrink-0">
+                    <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 shrink-0 flex items-center justify-between">
                       <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">查询结果</span>
+                      {activeConsoleId && consoles.find(c => c.id === activeConsoleId)?.results && (
+                        <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full uppercase tracking-tight">
+                          共 {consoles.find(c => c.id === activeConsoleId)?.results?.length} 条
+                        </span>
+                      )}
                     </div>
-                    <div className="flex-1 relative overflow-hidden">
+                    <div className="flex-1 relative overflow-hidden flex flex-col">
                       <div 
-                        className="h-full overflow-auto custom-scrollbar"
+                        className="flex-1 overflow-auto custom-scrollbar"
                         ref={resultsContainerRef}
                         onScroll={(e) => handleContainerScroll(e, 'results')}
                       >
-                        {consoles.find(c => c.id === activeConsoleId)?.error ? (
-                          <div className="p-8 text-red-500 font-mono text-sm whitespace-pre-wrap">
-                            {consoles.find(c => c.id === activeConsoleId)?.error}
-                          </div>
-                        ) : (Array.isArray(consoles.find(c => c.id === activeConsoleId)?.results)) ? (
-                          <table className="w-full border-collapse">
-                            <thead>
-                              <tr className="bg-slate-50 sticky top-0 z-10">
-                                {consoles.find(c => c.id === activeConsoleId)?.columns?.map(col => (
-                                  <th key={col} className="px-4 py-3 text-left text-[10px] font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100">{col}</th>
-                                ))}
-                              </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-50">
-                              {consoles.find(c => c.id === activeConsoleId)?.results?.map((row, i) => (
-                                <tr key={i} className="hover:bg-blue-50/30 transition-colors">
-                                  {consoles.find(c => c.id === activeConsoleId)?.columns?.map(col => (
-                                    <td key={col} className="px-4 py-3 text-sm text-slate-600 font-mono">
-                                      {row[col] === null ? (
-                                        <span className="text-slate-300 italic font-mono text-xs tracking-tighter">NULL</span>
-                                      ) : (
-                                        <div className="flex items-center gap-3">
-                                          <span className="truncate max-w-[400px] font-mono text-[13px]">
-                                            {String(row[col]).length > 50 ? String(row[col]).substring(0, 50) + '...' : String(row[col])}
-                                          </span>
-                                          {String(row[col]).length > 50 && (
-                                            <motion.button
-                                              whileHover={{ scale: 1.1 }}
-                                              whileTap={{ scale: 0.9 }}
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                setTextDetail({ content: row[col], fieldName: col });
-                                                setIsJsonFormatted(false);
-                                              }}
-                                              className="text-blue-500 hover:text-blue-600 p-1.5 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors border border-blue-100"
-                                            >
-                                              <Plus size={10} />
-                                            </motion.button>
-                                          )}
-                                        </div>
-                                      )}
-                                    </td>
-                                  ))}
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        ) : (
-                          <div className="h-full flex flex-col items-center justify-center text-slate-300">
-                            <Activity size={32} className="mb-2 opacity-20" />
-                            <span className="text-xs font-bold uppercase tracking-widest opacity-40">等待执行...</span>
-                          </div>
-                        )}
+                        {(() => {
+                          const activeConsole = consoles.find(c => c.id === activeConsoleId);
+                          if (!activeConsole) return null;
+                          if (activeConsole.error) {
+                            return (
+                              <div className="p-8 text-red-500 font-mono text-sm whitespace-pre-wrap">
+                                {activeConsole.error}
+                              </div>
+                            );
+                          }
+                          if (Array.isArray(activeConsole.results)) {
+                            if (activeConsole.results.length === 0) {
+                              return (
+                                <div className="h-full flex flex-col items-center justify-center text-slate-300">
+                                  <Activity size={32} className="mb-2 opacity-20" />
+                                  <span className="text-xs font-bold uppercase tracking-widest opacity-40">执行成功，无返回结果</span>
+                                </div>
+                              );
+                            }
+                            
+                            const page = activeConsole.currentPage || 1;
+                            const size = activeConsole.pageSize || 50;
+                            const paginatedResults = activeConsole.results.slice((page - 1) * size, page * size);
+                            
+                            return (
+                              <table className="w-full border-collapse">
+                                <thead>
+                                  <tr className="bg-slate-50 sticky top-0 z-10">
+                                    {activeConsole.columns?.map(col => (
+                                      <th key={col} className="px-4 py-3 text-left text-[10px] font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100">{col}</th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-50">
+                                  {paginatedResults.map((row, i) => {
+                                    const actualRowIdx = (page - 1) * size + i;
+                                    return (
+                                      <tr key={i} className="hover:bg-blue-50/30 transition-colors">
+                                        {activeConsole.columns?.map(col => (
+                                          <td 
+                                            key={col} 
+                                            className="px-4 py-3 text-sm text-slate-600 font-mono"
+                                            data-row-idx={actualRowIdx}
+                                            data-col-name={col}
+                                          >
+                                            {row[col] === null ? (
+                                              <span className="text-slate-300 italic font-mono text-xs tracking-tighter">NULL</span>
+                                            ) : (
+                                              <div className="flex items-center gap-3">
+                                                <span className="truncate max-w-[400px] font-mono text-[13px]">
+                                                  {searchTerm ? (
+                                                    (() => {
+                                                      const text = String(row[col]);
+                                                      const displayText = text.length > 50 ? text.substring(0, 50) + '...' : text;
+                                                      const parts = displayText.split(new RegExp(`(${searchTerm})`, 'gi'));
+                                                      return parts.map((part, index) => 
+                                                        part.toLowerCase() === searchTerm.toLowerCase() ? (
+                                                          <mark key={index} className="bg-yellow-200 text-slate-900 rounded-sm px-0.5">{part}</mark>
+                                                        ) : part
+                                                      );
+                                                    })()
+                                                  ) : (
+                                                    String(row[col]).length > 50 ? String(row[col]).substring(0, 50) + '...' : String(row[col])
+                                                  )}
+                                                </span>
+                                                {String(row[col]).length > 50 && (
+                                                  <motion.button
+                                                    whileHover={{ scale: 1.1 }}
+                                                    whileTap={{ scale: 0.9 }}
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      setTextDetail({ content: row[col], fieldName: col });
+                                                      setIsJsonFormatted(false);
+                                                    }}
+                                                    className="text-blue-500 hover:text-blue-600 p-1.5 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors border border-blue-100"
+                                                  >
+                                                    <Plus size={10} />
+                                                  </motion.button>
+                                                )}
+                                              </div>
+                                            )}
+                                          </td>
+                                        ))}
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            );
+                          }
+                          return (
+                            <div className="h-full flex flex-col items-center justify-center text-slate-300">
+                              <Activity size={32} className="mb-2 opacity-20" />
+                              <span className="text-xs font-bold uppercase tracking-widest opacity-40">等待执行...</span>
+                            </div>
+                          );
+                        })()}
                       </div>
+
+                      {/* Console Pagination Controls */}
+                      {(() => {
+                        const activeConsole = consoles.find(c => c.id === activeConsoleId);
+                        if (!activeConsole || !activeConsole.results || activeConsole.results.length === 0) return null;
+                        
+                        const total = activeConsole.results.length;
+                        const page = activeConsole.currentPage || 1;
+                        const size = activeConsole.pageSize || 50;
+                        const totalPages = Math.ceil(total / size);
+                        
+                        if (totalPages <= 1) return null;
+
+                        return (
+                          <div className="px-6 py-3 border-t border-slate-100 bg-slate-50/50 flex items-center justify-between shrink-0">
+                            <div className="flex items-center gap-4">
+                              <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                                第 {page} / {totalPages} 页 (共 {total} 条)
+                              </div>
+                              <div className="h-3 w-px bg-slate-200" />
+                              <div className="flex items-center gap-2">
+                                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">每页</span>
+                                <select 
+                                  value={size}
+                                  onChange={(e) => {
+                                    const newSize = Number(e.target.value);
+                                    setConsoles(prev => prev.map(c => c.id === activeConsoleId ? { ...c, pageSize: newSize, currentPage: 1 } : c));
+                                  }}
+                                  className="bg-white border border-slate-200 rounded text-[10px] font-bold px-1 py-0.5 outline-none focus:ring-1 focus:ring-blue-500/20 transition-all cursor-pointer text-slate-500"
+                                >
+                                  {[20, 50, 100, 200, 500].map(s => (
+                                    <option key={s} value={s}>{s}</option>
+                                  ))}
+                                </select>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button 
+                                disabled={page === 1}
+                                onClick={() => {
+                                  setConsoles(prev => prev.map(c => c.id === activeConsoleId ? { ...c, currentPage: page - 1 } : c));
+                                }}
+                                className="w-7 h-7 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 disabled:opacity-30 transition-all"
+                              >
+                                <ChevronRight size={12} className="rotate-180" />
+                              </button>
+                              <button 
+                                disabled={page === totalPages}
+                                onClick={() => {
+                                  setConsoles(prev => prev.map(c => c.id === activeConsoleId ? { ...c, currentPage: page + 1 } : c));
+                                }}
+                                className="w-7 h-7 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 disabled:opacity-30 transition-all"
+                              >
+                                <ChevronRight size={12} />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })()}
 
                       {/* 查询结果区域的一键回到顶部/底部悬浮按钮 */}
                       <AnimatePresence>
@@ -3024,7 +3245,7 @@ ${selectedSql}
                             initial={{ opacity: 0, scale: 0.8 }}
                             animate={{ opacity: 1, scale: 1 }}
                             exit={{ opacity: 0, scale: 0.8 }}
-                            className="absolute right-6 bottom-6 z-40 flex flex-col gap-2"
+                            className="absolute right-6 bottom-16 z-40 flex flex-col gap-2"
                           >
                             <motion.button
                               whileHover={{ scale: 1.1 }}
@@ -4148,6 +4369,91 @@ ${selectedSql}
                 >
                   <Server size={14} /> 保存修改
                 </motion.button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Load Console Modal */}
+      <AnimatePresence>
+        {showLoadConsoleModal && (
+          <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-md z-[100] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="bg-white rounded-[32px] w-full max-w-2xl overflow-hidden shadow-2xl border border-slate-200"
+            >
+              <div className="px-8 py-6 border-b border-slate-100 flex items-center justify-between bg-white">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-blue-50 flex items-center justify-center">
+                    <Terminal size={20} className="text-blue-600" />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-bold text-slate-900 tracking-tight">恢复控制台</h3>
+                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">选择要重新加载的查询控制台</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setShowLoadConsoleModal(false)}
+                  className="p-2 hover:bg-slate-100 rounded-xl transition-colors text-slate-400 hover:text-slate-600"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              <div className="p-8 max-h-[400px] overflow-y-auto custom-scrollbar bg-slate-50/50">
+                <div className="grid grid-cols-1 gap-3">
+                  {savedConsoles.length > 0 ? (
+                     savedConsoles.map((tab, idx) => {
+                       const isOpen = consoles.some(c => c.id === tab.id);
+                       return (
+                         <motion.div
+                           key={tab.id || `saved-${idx}`}
+                          whileHover={{ scale: 1.01, x: 5 }}
+                          onClick={() => handleRestoreConsole(tab)}
+                          className={`p-4 rounded-2xl border transition-all cursor-pointer flex items-center justify-between ${
+                            isOpen 
+                            ? 'bg-blue-50/50 border-blue-100' 
+                            : 'bg-white border-slate-200 hover:border-blue-400 hover:shadow-md'
+                          }`}
+                        >
+                          <div className="flex items-center gap-4">
+                            <div className={`p-2 rounded-xl ${isOpen ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-500'}`}>
+                              <Play size={16} />
+                            </div>
+                            <div>
+                              <div className="font-bold text-slate-800 text-sm flex items-center gap-2">
+                                {tab.name}
+                                {isOpen && <span className="text-[10px] bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded-full uppercase">已打开</span>}
+                              </div>
+                              <div className="text-xs text-slate-400 font-medium mt-0.5 flex items-center gap-2">
+                                <Activity size={12} />
+                                {tab.dbName} {tab.tableName ? `· ${tab.tableName}` : ''}
+                              </div>
+                            </div>
+                          </div>
+                          <ChevronRight size={16} className={isOpen ? 'text-blue-400' : 'text-slate-300'} />
+                        </motion.div>
+                      );
+                    })
+                  ) : (
+                    <div className="py-12 text-center text-slate-400 flex flex-col items-center gap-3">
+                      <Terminal size={48} className="opacity-10" />
+                      <p className="font-bold text-sm">暂无已保存的控制台</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="px-8 py-6 border-t border-slate-100 bg-white flex justify-end">
+                <button 
+                  onClick={() => setShowLoadConsoleModal(false)}
+                  className="px-6 py-3 rounded-2xl text-sm font-bold text-slate-500 hover:text-slate-700 hover:bg-slate-50 transition-all"
+                >
+                  关闭
+                </button>
               </div>
             </motion.div>
           </div>

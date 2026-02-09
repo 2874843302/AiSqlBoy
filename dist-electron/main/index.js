@@ -34279,6 +34279,15 @@ BEGIN TRANSACTION;
       }
     });
   }
+  async ping() {
+    if (!this.db) return;
+    return new Promise((resolve, reject) => {
+      this.db.get("SELECT 1", (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  }
 }
 class MySQLDriver {
   constructor(config) {
@@ -34465,21 +34474,51 @@ SET FOREIGN_KEY_CHECKS=0;
   }
   async executeQuery(sql) {
     if (!this.connection) throw new Error("Not connected");
-    const [rows, fields] = await this.connection.query(sql);
-    if (!fields) {
-      const header = rows;
-      return {
-        data: [{
-          结果: "执行成功",
-          影响行数: header.affectedRows || 0,
-          插入ID: header.insertId || 0,
-          信息: header.info || ""
-        }],
-        columns: ["结果", "影响行数", "插入ID", "信息"]
-      };
+    try {
+      const [rows, fields] = await this.connection.query(sql);
+      if (!fields) {
+        const header = rows;
+        return {
+          data: [{
+            结果: "执行成功",
+            影响行数: header.affectedRows || 0,
+            插入ID: header.insertId || 0,
+            信息: header.info || ""
+          }],
+          columns: ["结果", "影响行数", "插入ID", "信息"]
+        };
+      }
+      const columns = fields?.map((f) => f.name) || [];
+      return { data: rows, columns };
+    } catch (error2) {
+      const isConnectionError = error2.code === "PROTOCOL_CONNECTION_LOST" || error2.code === "ECONNRESET" || error2.code === "PROTOCOL_ENQUEUE_AFTER_FATAL_ERROR" || error2.message.includes("closed") || error2.message.includes("connection lost");
+      if (isConnectionError) {
+        try {
+          await this.connect();
+          const [rows, fields] = await this.connection.query(sql);
+          if (!fields) {
+            const header = rows;
+            return {
+              data: [{ 结果: "执行成功", 影响行数: header.affectedRows || 0, 插入ID: header.insertId || 0, 信息: header.info || "" }],
+              columns: ["结果", "影响行数", "插入ID", "信息"]
+            };
+          }
+          const columns = fields?.map((f) => f.name) || [];
+          return { data: rows, columns };
+        } catch (reconnectError) {
+          throw new Error(`连接已断开且重连失败: ${reconnectError.message}`);
+        }
+      }
+      throw error2;
     }
-    const columns = fields?.map((f) => f.name) || [];
-    return { data: rows, columns };
+  }
+  async ping() {
+    if (!this.connection) return;
+    try {
+      await this.connection.query("SELECT 1");
+    } catch (error2) {
+      await this.connect();
+    }
   }
 }
 class PostgreSQLDriver {
@@ -34668,28 +34707,57 @@ class PostgreSQLDriver {
   }
   async executeQuery(sql) {
     if (!this.client) throw new Error("Not connected");
-    const res = await this.client.query(sql);
-    if (Array.isArray(res)) {
-      const lastRes = res[res.length - 1];
+    try {
+      const res = await this.client.query(sql);
+      if (Array.isArray(res)) {
+        const lastRes = res[res.length - 1];
+        return {
+          data: lastRes.rows,
+          columns: lastRes.fields?.map((f) => f.name) || []
+        };
+      }
+      if (res.command !== "SELECT" && res.command !== "SHOW") {
+        return {
+          data: [{
+            结果: "执行成功",
+            命令: res.command,
+            影响行数: res.rowCount || 0
+          }],
+          columns: ["结果", "命令", "影响行数"]
+        };
+      }
       return {
-        data: lastRes.rows,
-        columns: lastRes.fields?.map((f) => f.name) || []
+        data: res.rows,
+        columns: res.fields?.map((f) => f.name) || []
       };
+    } catch (error2) {
+      const isConnectionError = error2.message.includes("closed") || error2.message.includes("terminating") || error2.message.includes("connection lost") || error2.code === "ECONNRESET";
+      if (isConnectionError) {
+        try {
+          await this.connect();
+          const res = await this.client.query(sql);
+          const finalRes = Array.isArray(res) ? res[res.length - 1] : res;
+          if (finalRes.command !== "SELECT" && finalRes.command !== "SHOW") {
+            return {
+              data: [{ 结果: "执行成功", 命令: finalRes.command, 影响行数: finalRes.rowCount || 0 }],
+              columns: ["结果", "命令", "影响行数"]
+            };
+          }
+          return { data: finalRes.rows, columns: finalRes.fields?.map((f) => f.name) || [] };
+        } catch (reconnectError) {
+          throw new Error(`连接已断开且重连失败: ${reconnectError.message}`);
+        }
+      }
+      throw error2;
     }
-    if (res.command !== "SELECT" && res.command !== "SHOW") {
-      return {
-        data: [{
-          结果: "执行成功",
-          命令: res.command,
-          影响行数: res.rowCount || 0
-        }],
-        columns: ["结果", "命令", "影响行数"]
-      };
+  }
+  async ping() {
+    if (!this.client) return;
+    try {
+      await this.client.query("SELECT 1");
+    } catch (error2) {
+      await this.connect();
     }
-    return {
-      data: res.rows,
-      columns: res.fields?.map((f) => f.name) || []
-    };
   }
 }
 class RedisDriver {
@@ -34839,7 +34907,28 @@ class RedisDriver {
         columns: ["结果"]
       };
     } catch (err) {
+      const isConnectionError = err.message.includes("closed") || err.message.includes("Socket") || err.message.includes("reconnecting") || err.message.includes("connection lost");
+      if (isConnectionError) {
+        try {
+          await this.connect();
+          const res = await this.client.sendCommand(args);
+          return {
+            data: [{ 结果: res === null ? "null" : typeof res === "object" ? JSON.stringify(res) : res.toString() }],
+            columns: ["结果"]
+          };
+        } catch (reconnectError) {
+          throw new Error(`Redis 连接已断开且重连失败: ${reconnectError.message}`);
+        }
+      }
       throw new Error(`Redis 执行失败: ${err.message}`);
+    }
+  }
+  async ping() {
+    if (!this.client) return;
+    try {
+      await this.client.ping();
+    } catch (error2) {
+      await this.connect();
     }
   }
 }
@@ -34882,6 +34971,25 @@ mainExports.autoUpdater.autoDownload = false;
 mainExports.autoUpdater.autoInstallOnAppQuit = true;
 let mainWindow = null;
 let currentDriver = null;
+let heartbeatTimer = null;
+function startHeartbeat() {
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  heartbeatTimer = setInterval(async () => {
+    if (currentDriver) {
+      try {
+        await currentDriver.ping();
+      } catch (e) {
+        console.log("Heartbeat failed, connection might be lost");
+      }
+    }
+  }, 3e4);
+}
+function stopHeartbeat() {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+}
 const isDev = !!process.env.VITE_DEV_SERVER_URL;
 const DIST_PATH = require$$1$3.join(__dirname, "../..");
 function createWindow() {
@@ -34973,8 +35081,10 @@ require$$1$5.ipcMain.handle("connect-db", async (_, config) => {
       throw new Error("Unsupported database type");
     }
     await currentDriver.connect();
+    startHeartbeat();
     return { success: true };
   } catch (error2) {
+    stopHeartbeat();
     return { success: false, error: error2.message };
   }
 });

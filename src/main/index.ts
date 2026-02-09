@@ -13,6 +13,28 @@ autoUpdater.autoInstallOnAppQuit = true // 程序退出时自动安装
 
 let mainWindow: BrowserWindow | null = null
 let currentDriver: IDatabaseDriver | null = null
+let heartbeatTimer: NodeJS.Timeout | null = null
+
+function startHeartbeat() {
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  heartbeatTimer = setInterval(async () => {
+    if (currentDriver) {
+      try {
+        // 使用驱动程序自定义的 ping 方法
+        await currentDriver.ping();
+      } catch (e) {
+        console.log('Heartbeat failed, connection might be lost');
+      }
+    }
+  }, 30000); // 每 30 秒发送一次心跳
+}
+
+function stopHeartbeat() {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+}
 
 // 定义路径常量
 const isDev = !!process.env.VITE_DEV_SERVER_URL
@@ -133,8 +155,10 @@ ipcMain.handle('connect-db', async (_, config: ConnectionConfig) => {
     }
 
     await currentDriver.connect()
+    startHeartbeat()
     return { success: true }
   } catch (error: any) {
+    stopHeartbeat()
     return { success: false, error: error.message }
   }
 })

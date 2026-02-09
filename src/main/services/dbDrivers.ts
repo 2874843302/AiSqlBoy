@@ -33,6 +33,7 @@ export interface IDatabaseDriver {
   exportDatabase(includeData: boolean): Promise<string>;
   deleteDatabase(dbName: string): Promise<void>;
   executeQuery(sql: string): Promise<{ data: any[], columns: string[] }>;
+  ping(): Promise<void>;
 }
 
 export class SQLiteDriver implements IDatabaseDriver {
@@ -325,6 +326,16 @@ export class SQLiteDriver implements IDatabaseDriver {
       }
     });
   }
+
+  async ping(): Promise<void> {
+    if (!this.db) return;
+    return new Promise((resolve, reject) => {
+      this.db!.get('SELECT 1', (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  }
 }
 
 export class MySQLDriver implements IDatabaseDriver {
@@ -541,24 +552,62 @@ export class MySQLDriver implements IDatabaseDriver {
 
   async executeQuery(sql: string): Promise<{ data: any[], columns: string[] }> {
     if (!this.connection) throw new Error('Not connected');
-    const [rows, fields] = await this.connection.query(sql);
-    
-    // 如果没有 fields，说明不是 SELECT 语句（可能是 INSERT, UPDATE, DELETE, CREATE 等）
-    if (!fields) {
-       const header = rows as any;
-       return { 
-         data: [{ 
-           结果: '执行成功', 
-           影响行数: header.affectedRows || 0,
-           插入ID: header.insertId || 0,
-           信息: header.info || ''
-         }], 
-         columns: ['结果', '影响行数', '插入ID', '信息'] 
-       };
-     }
-    
-    const columns = (fields as any[])?.map(f => f.name) || [];
-    return { data: rows as any[], columns };
+    try {
+      const [rows, fields] = await this.connection.query(sql);
+      
+      if (!fields) {
+         const header = rows as any;
+         return { 
+           data: [{ 
+             结果: '执行成功', 
+             影响行数: header.affectedRows || 0,
+             插入ID: header.insertId || 0,
+             信息: header.info || ''
+           }], 
+           columns: ['结果', '影响行数', '插入ID', '信息'] 
+         };
+       }
+      
+      const columns = (fields as any[])?.map(f => f.name) || [];
+      return { data: rows as any[], columns };
+    } catch (error: any) {
+      // 增强自动重连逻辑
+      const isConnectionError = 
+        error.code === 'PROTOCOL_CONNECTION_LOST' || 
+        error.code === 'ECONNRESET' || 
+        error.code === 'PROTOCOL_ENQUEUE_AFTER_FATAL_ERROR' ||
+        error.message.includes('closed') ||
+        error.message.includes('connection lost');
+
+      if (isConnectionError) {
+        try {
+          await this.connect();
+          const [rows, fields] = await this.connection!.query(sql);
+          if (!fields) {
+            const header = rows as any;
+            return { 
+              data: [{ 结果: '执行成功', 影响行数: header.affectedRows || 0, 插入ID: header.insertId || 0, 信息: header.info || '' }], 
+              columns: ['结果', '影响行数', '插入ID', '信息'] 
+            };
+          }
+          const columns = (fields as any[])?.map(f => f.name) || [];
+          return { data: rows as any[], columns };
+        } catch (reconnectError: any) {
+          throw new Error(`连接已断开且重连失败: ${reconnectError.message}`);
+        }
+      }
+      throw error;
+    }
+  }
+
+  async ping(): Promise<void> {
+    if (!this.connection) return;
+    try {
+      await this.connection.query('SELECT 1');
+    } catch (error: any) {
+      // 如果 ping 失败，尝试重连
+      await this.connect();
+    }
   }
 }
 
@@ -774,32 +823,68 @@ export class PostgreSQLDriver implements IDatabaseDriver {
 
   async executeQuery(sql: string): Promise<{ data: any[], columns: string[] }> {
     if (!this.client) throw new Error('Not connected');
-    const res = await this.client.query(sql);
-    
-    if (Array.isArray(res)) {
-      // 多条语句执行
-      const lastRes = res[res.length - 1];
+    try {
+      const res = await this.client.query(sql);
+      
+      if (Array.isArray(res)) {
+        // 多条语句执行
+        const lastRes = res[res.length - 1];
+        return { 
+          data: lastRes.rows, 
+          columns: lastRes.fields?.map(f => f.name) || [] 
+        };
+      }
+
+      if (res.command !== 'SELECT' && res.command !== 'SHOW') {
+        return {
+          data: [{
+            结果: '执行成功',
+            命令: res.command,
+            影响行数: res.rowCount || 0
+          }],
+          columns: ['结果', '命令', '影响行数']
+        };
+      }
+
       return { 
-        data: lastRes.rows, 
-        columns: lastRes.fields?.map(f => f.name) || [] 
+        data: res.rows, 
+        columns: res.fields?.map(f => f.name) || [] 
       };
-    }
+    } catch (error: any) {
+      // PostgreSQL 自动重连处理
+      const isConnectionError = 
+        error.message.includes('closed') || 
+        error.message.includes('terminating') || 
+        error.message.includes('connection lost') ||
+        error.code === 'ECONNRESET';
 
-    if (res.command !== 'SELECT' && res.command !== 'SHOW') {
-      return {
-        data: [{
-          结果: '执行成功',
-          命令: res.command,
-          影响行数: res.rowCount || 0
-        }],
-        columns: ['结果', '命令', '影响行数']
-      };
+      if (isConnectionError) {
+        try {
+          await this.connect();
+          const res = await this.client!.query(sql);
+          const finalRes = Array.isArray(res) ? res[res.length - 1] : res;
+          if (finalRes.command !== 'SELECT' && finalRes.command !== 'SHOW') {
+            return {
+              data: [{ 结果: '执行成功', 命令: finalRes.command, 影响行数: finalRes.rowCount || 0 }],
+              columns: ['结果', '命令', '影响行数']
+            };
+          }
+          return { data: finalRes.rows, columns: finalRes.fields?.map(f => f.name) || [] };
+        } catch (reconnectError: any) {
+          throw new Error(`连接已断开且重连失败: ${reconnectError.message}`);
+        }
+      }
+      throw error;
     }
+  }
 
-    return { 
-      data: res.rows, 
-      columns: res.fields?.map(f => f.name) || [] 
-    };
+  async ping(): Promise<void> {
+    if (!this.client) return;
+    try {
+      await this.client.query('SELECT 1');
+    } catch (error: any) {
+      await this.connect();
+    }
   }
 }
 
@@ -981,7 +1066,35 @@ export class RedisDriver implements IDatabaseDriver {
         columns: ['结果']
       };
     } catch (err: any) {
+      // Redis 自动重连处理
+      const isConnectionError = 
+        err.message.includes('closed') || 
+        err.message.includes('Socket') || 
+        err.message.includes('reconnecting') ||
+        err.message.includes('connection lost');
+
+      if (isConnectionError) {
+        try {
+          await this.connect();
+          const res = await this.client!.sendCommand(args);
+          return {
+            data: [{ 结果: (res === null ? 'null' : (typeof res === 'object' ? JSON.stringify(res) : res.toString())) }],
+            columns: ['结果']
+          };
+        } catch (reconnectError: any) {
+          throw new Error(`Redis 连接已断开且重连失败: ${reconnectError.message}`);
+        }
+      }
       throw new Error(`Redis 执行失败: ${err.message}`);
+    }
+  }
+
+  async ping(): Promise<void> {
+    if (!this.client) return;
+    try {
+      await this.client.ping();
+    } catch (error: any) {
+      await this.connect();
     }
   }
 }
