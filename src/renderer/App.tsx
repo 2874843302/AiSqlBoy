@@ -33,7 +33,16 @@ declare global {
       updateTableSchema: (tableName: string, changes: any) => Promise<{ success: boolean; error?: string }>
         exportDatabase: (includeData: boolean) => Promise<{ success: boolean; error?: string }>
         deleteDatabase: (dbName: string) => Promise<{ success: boolean; error?: string }>
-        executeQuery: (sql: string) => Promise<{ success: boolean; data: any[]; columns: string[]; error?: string }>
+        executeQuery: (sql: string) => Promise<{ 
+          success: boolean; 
+          data: any[]; 
+          columns: string[]; 
+          error?: string;
+          hasMore?: boolean;
+          isAutoLimited?: boolean;
+          totalCount?: number;
+          executionTime?: number;
+        }>
         aiChat: (messages: any[]) => Promise<{ success: boolean; response?: string; error?: string }>
         saveSetting: (key: string, value: string) => Promise<void>
         getSetting: (key: string) => Promise<string | null>
@@ -4003,7 +4012,7 @@ ${selectedSql}
                         </p>
                       </div>
                       
-                      {updateStatus.type === 'idle' || updateStatus.type === 'not-available' || updateStatus.type === 'error' ? (
+                      {['idle', 'not-available', 'error'].includes(updateStatus.type) ? (
                         <motion.button
                           whileHover={{ scale: 1.05 }}
                           whileTap={{ scale: 0.95 }}
@@ -4011,7 +4020,7 @@ ${selectedSql}
                           disabled={updateStatus.type === 'checking'}
                           className="px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-700 shadow-sm hover:shadow-md hover:border-indigo-200 transition-all flex items-center gap-2 disabled:opacity-50"
                         >
-                          {updateStatus.type === 'checking' ? (
+                          {(updateStatus.type as string) === 'checking' ? (
                             <Loader2 size={14} className="animate-spin text-indigo-600" />
                           ) : (
                             <RefreshCw size={14} className="text-indigo-600" />
