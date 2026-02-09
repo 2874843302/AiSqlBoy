@@ -34992,6 +34992,9 @@ function stopHeartbeat() {
 }
 const isDev = !!process.env.VITE_DEV_SERVER_URL;
 const DIST_PATH = require$$1$3.join(__dirname, "../..");
+if (isDev) {
+  mainExports.autoUpdater.forceDevUpdateConfig = true;
+}
 function createWindow() {
   mainWindow = new require$$1$5.BrowserWindow({
     width: 1200,
@@ -35045,6 +35048,9 @@ require$$1$5.ipcMain.handle("download-update", async () => {
 });
 require$$1$5.ipcMain.handle("quit-and-install", async () => {
   mainExports.autoUpdater.quitAndInstall();
+});
+require$$1$5.ipcMain.handle("get-app-version", () => {
+  return require$$1$5.app.getVersion();
 });
 require$$1$5.ipcMain.handle("get-saved-connections", async () => {
   return internalDB.getConnections();
@@ -35208,8 +35214,28 @@ require$$1$5.ipcMain.handle("delete-database", async (_, dbName) => {
 require$$1$5.ipcMain.handle("execute-query", async (_, sql) => {
   if (!currentDriver) return { success: false, error: "Not connected" };
   try {
-    const result = await currentDriver.executeQuery(sql);
-    return { success: true, ...result };
+    const MAX_ROWS_PER_FETCH = 1e4;
+    const hasLimit = /\blimit\b\s+\d+/i.test(sql);
+    let executionSql = sql;
+    const isSelect = sql.trim().toUpperCase().startsWith("SELECT");
+    let autoLimited = false;
+    if (isSelect && !hasLimit) {
+      executionSql = `${sql.trim().replace(/;$/, "")} LIMIT ${MAX_ROWS_PER_FETCH + 1}`;
+      autoLimited = true;
+    }
+    const result = await currentDriver.executeQuery(executionSql);
+    let hasMore = false;
+    if (autoLimited && result.data && result.data.length > MAX_ROWS_PER_FETCH) {
+      result.data = result.data.slice(0, MAX_ROWS_PER_FETCH);
+      hasMore = true;
+    }
+    return {
+      success: true,
+      ...result,
+      hasMore,
+      totalCount: result.data ? result.data.length : 0,
+      isAutoLimited: autoLimited
+    };
   } catch (error2) {
     return { success: false, error: error2.message };
   }

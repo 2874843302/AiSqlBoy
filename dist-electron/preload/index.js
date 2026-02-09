@@ -33,6 +33,7 @@ electron.contextBridge.exposeInMainWorld(
     // Dialogs
     showConfirmDialog: (options) => electron.ipcRenderer.invoke("show-confirm-dialog", options),
     // Auto Update
+    getAppVersion: () => electron.ipcRenderer.invoke("get-app-version"),
     checkForUpdates: () => electron.ipcRenderer.invoke("check-for-updates"),
     downloadUpdate: () => electron.ipcRenderer.invoke("download-update"),
     quitAndInstall: () => electron.ipcRenderer.invoke("quit-and-install"),

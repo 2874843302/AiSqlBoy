@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Database, Table, Play, Plus, Trash2, X, Server, HardDrive, RefreshCw, ChevronRight, Layout, Settings, Activity, AlignLeft, Bot, Sparkles, Send, Loader2, Key, Search, ArrowUp, ArrowDown, FileJson, Save, Terminal } from 'lucide-react'
+import { Database, Table, Play, Plus, Trash2, X, Server, HardDrive, RefreshCw, ChevronRight, Layout, Settings, Activity, AlignLeft, Bot, Sparkles, Send, Loader2, Key, Search, ArrowUp, ArrowDown, FileJson, Save, Terminal, Download, CheckCircle2 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ConnectionConfig } from '../shared/types'
 import { format } from 'sql-formatter'
@@ -38,6 +38,7 @@ declare global {
         saveSetting: (key: string, value: string) => Promise<void>
         getSetting: (key: string) => Promise<string | null>
         // Auto Update
+        getAppVersion: () => Promise<string>
         checkForUpdates: () => Promise<any>
         downloadUpdate: () => Promise<any>
         quitAndInstall: () => Promise<void>
@@ -393,6 +394,10 @@ const App: React.FC = () => {
   const [activeSchemaTab, setActiveSchemaTab] = useState<'columns' | 'indexes'>('columns');
   const [textDetail, setTextDetail] = useState<{ content: any; fieldName: string } | null>(null)
   const [isJsonFormatted, setIsJsonFormatted] = useState(false);
+  const [rowLimit, setRowLimit] = useState(10000); // 新增：大数据量限制行数
+  const [useVirtualScroll, setUseVirtualScroll] = useState(true); // 是否开启虚拟滚动
+  const [viewportHeight, setViewportHeight] = useState(0); // 视口高度
+  const ROW_HEIGHT = 48; // 预估行高
 
   // JSON Helper Functions
   const isJsonLike = (val: any) => {
@@ -423,6 +428,7 @@ const App: React.FC = () => {
   const [pageSize, setPageSize] = useState(20);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalRows, setTotalRows] = useState(0);
+  const [tableExecutionTime, setTableExecutionTime] = useState<number | null>(null); // 新增：表格查询耗时
   
   // Sorting State
   const [sortConfig, setSortConfig] = useState<{ column: string; direction: 'ASC' | 'DESC' | null }>({ column: '', direction: null });
@@ -443,6 +449,10 @@ const App: React.FC = () => {
     savedSql?: string;
     currentPage?: number;
     pageSize?: number;
+    executionTime?: number; // 新增：执行耗时 (ms)
+    hasMore?: boolean;      // 是否还有更多数据
+    isAutoLimited?: boolean; // 是否被自动限制了行数
+    totalCount?: number;     // 当前获取的数据条数
   }
   const [consoles, setConsoles] = useState<ConsoleTab[]>([]);
   const [activeConsoleId, setActiveConsoleId] = useState<string | null>(null);
@@ -548,6 +558,7 @@ const App: React.FC = () => {
   const [aiMessages, setAIMessages] = useState<{ role: 'user' | 'assistant', content: string }[]>([]);
   const [aiContext, setAIContext] = useState<{ type: 'database' | 'table', name: string } | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [appVersion, setAppVersion] = useState('1.0.0');
   const [apiKey, setApiKey] = useState('');
 
   // Auto Update State
@@ -613,6 +624,7 @@ const App: React.FC = () => {
   const searchInputRef = React.useRef<HTMLInputElement>(null);
   const tableContainerRef = React.useRef<HTMLDivElement>(null);
   const resultsContainerRef = React.useRef<HTMLDivElement>(null);
+  const [scrollTop, setScrollTop] = useState(0); // 记录滚动位置
   const [showScrollButtons, setShowScrollButtons] = useState(false);
   const [showResultsScrollButtons, setShowResultsScrollButtons] = useState(false);
 
@@ -694,6 +706,9 @@ const App: React.FC = () => {
   useEffect(() => {
     loadSavedConnections()
     loadSettings()
+    
+    // 获取应用版本
+    window.electronAPI.getAppVersion().then(setAppVersion);
 
     // 注册更新监听器
     window.electronAPI.onUpdateMessage((message) => {
@@ -848,6 +863,10 @@ const App: React.FC = () => {
     } else {
       // 查询结果视图滚动超过 100px 时显示按钮
       setShowResultsScrollButtons(target.scrollTop > 100);
+      setScrollTop(target.scrollTop);
+      if (viewportHeight !== target.clientHeight) {
+        setViewportHeight(target.clientHeight);
+      }
     }
   };
 
@@ -1011,12 +1030,16 @@ const App: React.FC = () => {
     setSelectedTable(tableName)
     setCurrentPage(page);
     setLoading(true)
+    setTableExecutionTime(null);
     try {
       const offset = (page - 1) * size;
+      const startTime = Date.now();
       const [cols, dataRes] = await Promise.all([
         window.electronAPI.getTableColumns(tableName),
         window.electronAPI.getTableData(tableName, size, offset, sortCol || undefined, sortDir || undefined)
       ])
+      const endTime = Date.now();
+      setTableExecutionTime(endTime - startTime);
       setColumns(cols)
       setData(dataRes.data)
       setEditOriginalData(JSON.parse(JSON.stringify(dataRes.data))) // 深拷贝原始数据用于比对
@@ -1042,6 +1065,45 @@ const App: React.FC = () => {
     handleSelectTable(selectedTable!, 1, pageSize, nextDir ? columnName : '', nextDir);
   };
 
+  const stripSqlComments = (sql: string) => {
+    if (!sql) return '';
+    
+    // 1. 移除多行注释 /* ... */
+    let cleaned = sql.replace(/\/\*[\s\S]*?\*\//g, '');
+    
+    // 2. 移除单行注释 -- 或 # 或 //
+    // 注意：这里简单处理，不考虑字符串内部的情况
+    cleaned = cleaned.split('\n').map(line => {
+      // 匹配 -- 或 # 或 // 开头的注释，但要排除它们出现在引号内的情况（简单处理）
+      const dashIndex = line.indexOf('--');
+      const hashIndex = line.indexOf('#');
+      const doubleSlashIndex = line.indexOf('//');
+      
+      const indices = [dashIndex, hashIndex, doubleSlashIndex].filter(i => i !== -1);
+      let commentIndex = indices.length > 0 ? Math.min(...indices) : -1;
+      
+      if (commentIndex !== -1) {
+        return line.substring(0, commentIndex);
+      }
+      return line;
+    }).join('\n');
+    
+    return cleaned.trim();
+  };
+
+  const handleLoadMore = async (id: string) => {
+    const consoleTab = consoles.find(c => c.id === id);
+    if (!consoleTab || consoleTab.executing) return;
+
+    // 简单策略：如果是被自动限制的，建议用户增加 LIMIT。
+    // 如果我们要实现点击加载更多，我们需要解析 SQL 并修改 LIMIT/OFFSET。
+    // 对于目前的简单版本，我们告知用户如何操作。
+    setToast({ 
+      message: '请在 SQL 中手动添加或修改 LIMIT 语句来获取更多数据。例如：LIMIT 10000 OFFSET 10000', 
+      type: 'info' 
+    });
+  };
+
   const handleExecuteSQL = async (id: string) => {
     const consoleTab = consoles.find(c => c.id === id);
     if (!consoleTab) return;
@@ -1055,9 +1117,13 @@ const App: React.FC = () => {
       sqlToExecute = consoleTab.sql;
     }
 
+    // 在执行前清理注释内容
+    sqlToExecute = stripSqlComments(sqlToExecute);
+
     if (!sqlToExecute.trim()) return;
 
-    setConsoles(prev => prev.map(c => c.id === id ? { ...c, executing: true, error: undefined } : c));
+    let startTime = Date.now();
+    setConsoles(prev => prev.map(c => c.id === id ? { ...c, executing: true, error: undefined, executionTime: undefined } : c));
     try {
       // 如果控制台指定了数据库且当前未切换到该库，则先切换
       if (consoleTab.dbName && consoleTab.dbName !== selectedDatabase) {
@@ -1066,15 +1132,33 @@ const App: React.FC = () => {
         const tableList = await window.electronAPI.getTables();
         setTables(tableList);
       }
-
+      
+      startTime = Date.now();
       const res = await window.electronAPI.executeQuery(sqlToExecute);
+      const endTime = Date.now();
+      const duration = endTime - startTime;
+
       if (res.success) {
+        let processedData = res.data;
+        
+        // 移除旧的强制截断逻辑，改用主进程返回的 hasMore 状态
+        if (res.isAutoLimited && res.hasMore) {
+          setToast({ 
+            message: `已自动加载前 10,000 条数据。如果需要查看更多，请手动添加 LIMIT 或点击下方按钮。`, 
+            type: 'info' 
+          });
+        }
+
         setConsoles(prev => prev.map(c => c.id === id ? { 
           ...c, 
-          results: res.data, 
+          results: processedData, 
           columns: res.columns, 
           executing: false,
-          currentPage: 1 // 重置到第一页
+          currentPage: 1,
+          executionTime: duration,
+          hasMore: res.hasMore,
+          isAutoLimited: res.isAutoLimited,
+          totalCount: res.totalCount
         } : c));
         
         // 如果执行的是创建/删除数据库语句，刷新数据库列表
@@ -1083,11 +1167,13 @@ const App: React.FC = () => {
           await loadDatabases();
         }
       } else {
-        setConsoles(prev => prev.map(c => c.id === id ? { ...c, error: res.error, executing: false } : c));
+        setConsoles(prev => prev.map(c => c.id === id ? { ...c, error: res.error, executing: false, executionTime: duration } : c));
         setToast({ message: res.error || 'SQL 执行失败', type: 'error' });
       }
     } catch (err: any) {
-      setConsoles(prev => prev.map(c => c.id === id ? { ...c, error: err.message, executing: false } : c));
+      const endTime = Date.now();
+      const duration = endTime - (startTime || endTime);
+      setConsoles(prev => prev.map(c => c.id === id ? { ...c, error: err.message, executing: false, executionTime: duration } : c));
       setToast({ message: err.message, type: 'error' });
     }
   }
@@ -2590,6 +2676,14 @@ ${selectedSql}
                         <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">
                           共 {totalRows} 条数据
                         </span>
+                        {tableExecutionTime !== null && (
+                          <>
+                            <div className="h-4 w-px bg-slate-200" />
+                            <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">
+                              耗时 {tableExecutionTime < 1000 ? `${tableExecutionTime}ms` : `${(tableExecutionTime / 1000).toFixed(2)}s`}
+                            </span>
+                          </>
+                        )}
                         <div className="h-4 w-px bg-slate-200" />
                         <div className="flex items-center gap-2">
                           <span className="text-xs text-slate-500 font-semibold">每页显示</span>
@@ -3067,12 +3161,33 @@ ${selectedSql}
                       onMouseDown={() => setIsResizingResults(true)}
                     />
                     <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 shrink-0 flex items-center justify-between">
-                      <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">查询结果</span>
-                      {activeConsoleId && consoles.find(c => c.id === activeConsoleId)?.results && (
-                        <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full uppercase tracking-tight">
-                          共 {consoles.find(c => c.id === activeConsoleId)?.results?.length} 条
-                        </span>
-                      )}
+                      <div className="flex items-center gap-4">
+                        <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">查询结果</span>
+                        {activeConsoleId && (
+                          <div className="flex items-center gap-2">
+                            {consoles.find(c => c.id === activeConsoleId)?.results && (
+                              <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full uppercase tracking-tight">
+                                已加载 {consoles.find(c => c.id === activeConsoleId)?.results?.length} 条
+                              </span>
+                            )}
+                            {consoles.find(c => c.id === activeConsoleId)?.isAutoLimited && (
+                              <span className="text-[10px] font-bold text-amber-500 bg-amber-50 border border-amber-100 px-2 py-0.5 rounded-full uppercase tracking-tight flex items-center gap-1">
+                                <Activity size={10} /> 自动限制 (MAX 10,000)
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-3">
+                        {activeConsoleId && consoles.find(c => c.id === activeConsoleId)?.hasMore && (
+                          <button 
+                            onClick={() => handleLoadMore(activeConsoleId)}
+                            className="text-[10px] font-bold text-blue-600 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 px-3 py-1 rounded-full uppercase tracking-widest transition-colors flex items-center gap-1.5"
+                          >
+                            <Plus size={12} /> 加载更多数据
+                          </button>
+                        )}
+                      </div>
                     </div>
                     <div className="flex-1 relative overflow-hidden flex flex-col">
                       <div 
@@ -3083,6 +3198,19 @@ ${selectedSql}
                         {(() => {
                           const activeConsole = consoles.find(c => c.id === activeConsoleId);
                           if (!activeConsole) return null;
+                          
+                          if (activeConsole.executing) {
+                            return (
+                              <div className="h-full flex flex-col items-center justify-center">
+                                <div className="relative">
+                                  <div className="w-12 h-12 border-4 border-blue-100 rounded-full" />
+                                  <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin absolute top-0 left-0" />
+                                </div>
+                                <span className="mt-4 text-slate-400 font-bold text-[10px] uppercase tracking-widest animate-pulse">正在执行查询...</span>
+                              </div>
+                            );
+                          }
+
                           if (activeConsole.error) {
                             return (
                               <div className="p-8 text-red-500 font-mono text-sm whitespace-pre-wrap">
@@ -3102,72 +3230,83 @@ ${selectedSql}
                             
                             const page = activeConsole.currentPage || 1;
                             const size = activeConsole.pageSize || 50;
-                            const paginatedResults = activeConsole.results.slice((page - 1) * size, page * size);
+                            const results = activeConsole.results || [];
                             
+                            // 虚拟列表计算
+                            const startIdx = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - 5);
+                            const endIdx = Math.min(results.length, Math.floor((scrollTop + viewportHeight) / ROW_HEIGHT) + 5);
+                            const visibleResults = results.slice(startIdx, endIdx);
+                            const paddingTop = startIdx * ROW_HEIGHT;
+                            const paddingBottom = Math.max(0, (results.length - endIdx) * ROW_HEIGHT);
+
                             return (
-                              <table className="w-full border-collapse">
-                                <thead>
-                                  <tr className="bg-slate-50 sticky top-0 z-10">
-                                    {activeConsole.columns?.map(col => (
-                                      <th key={col} className="px-4 py-3 text-left text-[10px] font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100">{col}</th>
-                                    ))}
-                                  </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-50">
-                                  {paginatedResults.map((row, i) => {
-                                    const actualRowIdx = (page - 1) * size + i;
-                                    return (
-                                      <tr key={i} className="hover:bg-blue-50/30 transition-colors">
-                                        {activeConsole.columns?.map(col => (
-                                          <td 
-                                            key={col} 
-                                            className="px-4 py-3 text-sm text-slate-600 font-mono"
-                                            data-row-idx={actualRowIdx}
-                                            data-col-name={col}
-                                          >
-                                            {row[col] === null ? (
-                                              <span className="text-slate-300 italic font-mono text-xs tracking-tighter">NULL</span>
-                                            ) : (
-                                              <div className="flex items-center gap-3">
-                                                <span className="truncate max-w-[400px] font-mono text-[13px]">
-                                                  {searchTerm ? (
-                                                    (() => {
-                                                      const text = String(row[col]);
-                                                      const displayText = text.length > 50 ? text.substring(0, 50) + '...' : text;
-                                                      const parts = displayText.split(new RegExp(`(${searchTerm})`, 'gi'));
-                                                      return parts.map((part, index) => 
-                                                        part.toLowerCase() === searchTerm.toLowerCase() ? (
-                                                          <mark key={index} className="bg-yellow-200 text-slate-900 rounded-sm px-0.5">{part}</mark>
-                                                        ) : part
-                                                      );
-                                                    })()
-                                                  ) : (
-                                                    String(row[col]).length > 50 ? String(row[col]).substring(0, 50) + '...' : String(row[col])
+                              <div style={{ height: results.length * ROW_HEIGHT || 'auto', minHeight: '100%' }}>
+                                <table className="w-full border-collapse table-fixed">
+                                  <thead>
+                                    <tr className="bg-slate-50 sticky top-0 z-10 h-[48px]">
+                                      {activeConsole.columns?.map(col => (
+                                        <th key={col} className="px-4 py-3 text-left text-[10px] font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100 overflow-hidden truncate">{col}</th>
+                                      ))}
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-slate-50">
+                                    {paddingTop > 0 && <tr><td colSpan={activeConsole.columns?.length} style={{ height: paddingTop }}></td></tr>}
+                                    {visibleResults.map((row, i) => {
+                                      const actualRowIdx = startIdx + i;
+                                      return (
+                                        <tr key={actualRowIdx} className="hover:bg-blue-50/30 transition-colors h-[48px]">
+                                          {activeConsole.columns?.map(col => (
+                                            <td 
+                                              key={col} 
+                                              className="px-4 py-3 text-sm text-slate-600 font-mono overflow-hidden truncate"
+                                              data-row-idx={actualRowIdx}
+                                              data-col-name={col}
+                                            >
+                                              {row[col] === null ? (
+                                                <span className="text-slate-300 italic font-mono text-xs tracking-tighter">NULL</span>
+                                              ) : (
+                                                <div className="flex items-center gap-3 overflow-hidden">
+                                                  <span className="truncate max-w-[400px] font-mono text-[13px]">
+                                                    {searchTerm ? (
+                                                      (() => {
+                                                        const text = String(row[col]);
+                                                        const displayText = text.length > 50 ? text.substring(0, 50) + '...' : text;
+                                                        const parts = displayText.split(new RegExp(`(${searchTerm})`, 'gi'));
+                                                        return parts.map((part, index) => 
+                                                          part.toLowerCase() === searchTerm.toLowerCase() ? (
+                                                            <mark key={index} className="bg-yellow-200 text-slate-900 rounded-sm px-0.5">{part}</mark>
+                                                          ) : part
+                                                        );
+                                                      })()
+                                                    ) : (
+                                                      String(row[col]).length > 50 ? String(row[col]).substring(0, 50) + '...' : String(row[col])
+                                                    )}
+                                                  </span>
+                                                  {String(row[col]).length > 50 && (
+                                                    <motion.button
+                                                      whileHover={{ scale: 1.1 }}
+                                                      whileTap={{ scale: 0.9 }}
+                                                      onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        setTextDetail({ content: row[col], fieldName: col });
+                                                        setIsJsonFormatted(false);
+                                                      }}
+                                                      className="flex-shrink-0 text-blue-500 hover:text-blue-600 p-1 bg-blue-50 hover:bg-blue-100 rounded transition-colors border border-blue-100"
+                                                    >
+                                                      <Plus size={8} />
+                                                    </motion.button>
                                                   )}
-                                                </span>
-                                                {String(row[col]).length > 50 && (
-                                                  <motion.button
-                                                    whileHover={{ scale: 1.1 }}
-                                                    whileTap={{ scale: 0.9 }}
-                                                    onClick={(e) => {
-                                                      e.stopPropagation();
-                                                      setTextDetail({ content: row[col], fieldName: col });
-                                                      setIsJsonFormatted(false);
-                                                    }}
-                                                    className="text-blue-500 hover:text-blue-600 p-1.5 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors border border-blue-100"
-                                                  >
-                                                    <Plus size={10} />
-                                                  </motion.button>
-                                                )}
-                                              </div>
-                                            )}
-                                          </td>
-                                        ))}
-                                      </tr>
-                                    );
-                                  })}
-                                </tbody>
-                              </table>
+                                                </div>
+                                              )}
+                                            </td>
+                                          ))}
+                                        </tr>
+                                      );
+                                    })}
+                                    {paddingBottom > 0 && <tr><td colSpan={activeConsole.columns?.length} style={{ height: paddingBottom }}></td></tr>}
+                                  </tbody>
+                                </table>
+                              </div>
                             );
                           }
                           return (
@@ -3182,58 +3321,81 @@ ${selectedSql}
                       {/* Console Pagination Controls */}
                       {(() => {
                         const activeConsole = consoles.find(c => c.id === activeConsoleId);
-                        if (!activeConsole || !activeConsole.results || activeConsole.results.length === 0) return null;
+                        if (!activeConsole) return null;
                         
-                        const total = activeConsole.results.length;
+                        // 只要有执行时间、有结果或有错误，就显示状态栏
+                        const hasExecutionTime = activeConsole.executionTime !== undefined;
+                        const hasResults = Array.isArray(activeConsole.results);
+                        const hasError = !!activeConsole.error;
+                        
+                        if (!hasExecutionTime && !hasResults && !hasError) return null;
+
+                        const total = activeConsole.results?.length || 0;
                         const page = activeConsole.currentPage || 1;
                         const size = activeConsole.pageSize || 50;
                         const totalPages = Math.ceil(total / size);
-                        
-                        if (totalPages <= 1) return null;
 
                         return (
                           <div className="px-6 py-3 border-t border-slate-100 bg-slate-50/50 flex items-center justify-between shrink-0">
                             <div className="flex items-center gap-4">
-                              <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
-                                第 {page} / {totalPages} 页 (共 {total} 条)
-                              </div>
-                              <div className="h-3 w-px bg-slate-200" />
+                              {total > 0 && (
+                                <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                                  第 {page} / {totalPages} 页 (共 {total} 条)
+                                </div>
+                              )}
+                              {hasExecutionTime && (
+                                <>
+                                  {total > 0 && <div className="h-3 w-px bg-slate-200" />}
+                                  <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                                    耗时 {activeConsole.executionTime! < 1000 
+                                      ? `${activeConsole.executionTime}ms` 
+                                      : `${(activeConsole.executionTime! / 1000).toFixed(2)}s`}
+                                  </div>
+                                </>
+                              )}
+                              {total > 0 && (
+                                <>
+                                  <div className="h-3 w-px bg-slate-200" />
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">每页</span>
+                                    <select 
+                                      value={size}
+                                      onChange={(e) => {
+                                        const newSize = Number(e.target.value);
+                                        setConsoles(prev => prev.map(c => c.id === activeConsoleId ? { ...c, pageSize: newSize, currentPage: 1 } : c));
+                                      }}
+                                      className="bg-white border border-slate-200 rounded text-[10px] font-bold px-1 py-0.5 outline-none focus:ring-1 focus:ring-blue-500/20 transition-all cursor-pointer text-slate-500"
+                                    >
+                                      {[20, 50, 100, 200, 500].map(s => (
+                                        <option key={s} value={s}>{s}</option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                            {totalPages > 1 && (
                               <div className="flex items-center gap-2">
-                                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">每页</span>
-                                <select 
-                                  value={size}
-                                  onChange={(e) => {
-                                    const newSize = Number(e.target.value);
-                                    setConsoles(prev => prev.map(c => c.id === activeConsoleId ? { ...c, pageSize: newSize, currentPage: 1 } : c));
+                                <button 
+                                  disabled={page === 1}
+                                  onClick={() => {
+                                    setConsoles(prev => prev.map(c => c.id === activeConsoleId ? { ...c, currentPage: page - 1 } : c));
                                   }}
-                                  className="bg-white border border-slate-200 rounded text-[10px] font-bold px-1 py-0.5 outline-none focus:ring-1 focus:ring-blue-500/20 transition-all cursor-pointer text-slate-500"
+                                  className="w-7 h-7 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 disabled:opacity-30 transition-all"
                                 >
-                                  {[20, 50, 100, 200, 500].map(s => (
-                                    <option key={s} value={s}>{s}</option>
-                                  ))}
-                                </select>
+                                  <ChevronRight size={12} className="rotate-180" />
+                                </button>
+                                <button 
+                                  disabled={page === totalPages}
+                                  onClick={() => {
+                                    setConsoles(prev => prev.map(c => c.id === activeConsoleId ? { ...c, currentPage: page + 1 } : c));
+                                  }}
+                                  className="w-7 h-7 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 disabled:opacity-30 transition-all"
+                                >
+                                  <ChevronRight size={12} />
+                                </button>
                               </div>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <button 
-                                disabled={page === 1}
-                                onClick={() => {
-                                  setConsoles(prev => prev.map(c => c.id === activeConsoleId ? { ...c, currentPage: page - 1 } : c));
-                                }}
-                                className="w-7 h-7 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 disabled:opacity-30 transition-all"
-                              >
-                                <ChevronRight size={12} className="rotate-180" />
-                              </button>
-                              <button 
-                                disabled={page === totalPages}
-                                onClick={() => {
-                                  setConsoles(prev => prev.map(c => c.id === activeConsoleId ? { ...c, currentPage: page + 1 } : c));
-                                }}
-                                className="w-7 h-7 flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 disabled:opacity-30 transition-all"
-                              >
-                                <ChevronRight size={12} />
-                              </button>
-                            </div>
+                            )}
                           </div>
                         );
                       })()}
@@ -3790,7 +3952,7 @@ ${selectedSql}
               <div className="px-8 py-6 border-b border-slate-100 flex justify-between items-center bg-gradient-to-b from-slate-50 to-transparent">
                 <div className="flex items-center gap-2">
                   <Bot size={20} className="text-indigo-600" />
-                  <h3 className="font-bold text-lg text-slate-900 tracking-tight">AI 设置</h3>
+                  <h3 className="font-bold text-lg text-slate-900 tracking-tight">系统设置</h3>
                 </div>
                 <motion.button 
                   whileHover={{ rotate: 90, scale: 1.1 }}
@@ -3801,18 +3963,127 @@ ${selectedSql}
                 </motion.button>
               </div>
               
-              <div className="p-8 space-y-4">
-                <div className="space-y-2">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">DeepSeek API Key</label>
-                  <input
-                    type="password"
-                    autoFocus
-                    placeholder="sk-..."
-                    className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-slate-900 focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600 outline-none transition-all"
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                  />
-                  <p className="text-xs text-slate-400 px-1">请从 DeepSeek 官网获取 API Key 以启用 AI 功能</p>
+              <div className="p-8 space-y-8 max-h-[400px] overflow-y-auto custom-scrollbar">
+                {/* AI Section */}
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Sparkles size={14} className="text-indigo-500" />
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em]">AI 功能配置</span>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">DeepSeek API Key</label>
+                    <input
+                      type="password"
+                      autoFocus
+                      placeholder="sk-..."
+                      className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-slate-900 focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600 outline-none transition-all"
+                      value={apiKey}
+                      onChange={(e) => setApiKey(e.target.value)}
+                    />
+                    <p className="text-xs text-slate-400 px-1">请从 DeepSeek 官网获取 API Key 以启用 AI 功能</p>
+                  </div>
+                </div>
+
+                {/* Update Section */}
+                <div className="pt-6 border-t border-slate-100 space-y-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <RefreshCw size={14} className="text-indigo-500" />
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em]">软件更新</span>
+                  </div>
+                  
+                  <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-bold text-slate-900">当前版本</span>
+                          <span className="text-xs px-2 py-0.5 bg-slate-200 text-slate-600 rounded-full font-medium">v{appVersion}</span>
+                        </div>
+                        <p className="text-xs text-slate-500">
+                          {updateStatus.message || '检查新版本以获取最新功能和修复'}
+                        </p>
+                      </div>
+                      
+                      {updateStatus.type === 'idle' || updateStatus.type === 'not-available' || updateStatus.type === 'error' ? (
+                        <motion.button
+                          whileHover={{ scale: 1.05 }}
+                          whileTap={{ scale: 0.95 }}
+                          onClick={handleCheckUpdates}
+                          disabled={updateStatus.type === 'checking'}
+                          className="px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-700 shadow-sm hover:shadow-md hover:border-indigo-200 transition-all flex items-center gap-2 disabled:opacity-50"
+                        >
+                          {updateStatus.type === 'checking' ? (
+                            <Loader2 size={14} className="animate-spin text-indigo-600" />
+                          ) : (
+                            <RefreshCw size={14} className="text-indigo-600" />
+                          )}
+                          检查更新
+                        </motion.button>
+                      ) : null}
+                    </div>
+
+                    {/* Progress or Actions */}
+                    {updateStatus.type === 'available' && (
+                      <div className="mt-4 pt-4 border-t border-slate-200/50 space-y-4">
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex-1">
+                            <p className="text-xs font-bold text-indigo-600">发现新版本 v{updateStatus.info?.version}</p>
+                            {updateStatus.info?.releaseNotes && (
+                              <div className="mt-2 text-[10px] text-slate-500 line-clamp-2 overflow-hidden whitespace-pre-wrap">
+                                {typeof updateStatus.info.releaseNotes === 'string' 
+                                  ? updateStatus.info.releaseNotes.replace(/<[^>]*>?/gm, '') 
+                                  : Array.isArray(updateStatus.info.releaseNotes) 
+                                    ? updateStatus.info.releaseNotes.map((n: any) => typeof n === 'string' ? n : n.note).join(', ').replace(/<[^>]*>?/gm, '')
+                                    : ''}
+                              </div>
+                            )}
+                          </div>
+                          <motion.button
+                            whileHover={{ scale: 1.05 }}
+                            whileTap={{ scale: 0.95 }}
+                            onClick={handleDownloadUpdate}
+                            className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold shadow-lg shadow-indigo-600/20 flex items-center gap-2 shrink-0"
+                          >
+                            <Download size={14} />
+                            立即下载
+                          </motion.button>
+                        </div>
+                      </div>
+                    )}
+
+                    {updateStatus.type === 'downloading' && (
+                      <div className="mt-4 pt-4 border-t border-slate-200/50 space-y-2">
+                        <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider">
+                          <span className="text-indigo-600">正在下载...</span>
+                          <span className="text-slate-400">{Math.round(updateStatus.progress || 0)}%</span>
+                        </div>
+                        <div className="h-1.5 w-full bg-slate-200 rounded-full overflow-hidden">
+                          <motion.div 
+                            className="h-full bg-indigo-600"
+                            initial={{ width: 0 }}
+                            animate={{ width: `${updateStatus.progress || 0}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {updateStatus.type === 'downloaded' && (
+                      <div className="mt-4 pt-4 border-t border-slate-200/50 flex items-center justify-between gap-4">
+                        <div className="flex-1 flex items-center gap-2">
+                          <CheckCircle2 size={16} className="text-emerald-500" />
+                          <p className="text-xs font-bold text-emerald-600">更新已就绪</p>
+                        </div>
+                        <motion.button
+                          whileHover={{ scale: 1.05 }}
+                          whileTap={{ scale: 0.95 }}
+                          onClick={handleInstallUpdate}
+                          className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold shadow-lg shadow-emerald-600/20 flex items-center gap-2"
+                        >
+                          <Play size={14} />
+                          重启并安装
+                        </motion.button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -3831,6 +4102,133 @@ ${selectedSql}
                 >
                   保存配置
                 </motion.button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Update Modal */}
+      <AnimatePresence>
+        {showUpdateModal && (
+          <div className="fixed inset-0 z-[120] flex items-center justify-center p-6">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowUpdateModal(false)}
+              className="absolute inset-0 bg-slate-900/40 backdrop-blur-md"
+            />
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 20 }}
+              className="bg-white border border-slate-200 rounded-[32px] shadow-2xl w-[400px] overflow-hidden z-10"
+            >
+              <div className="px-8 py-6 border-b border-slate-100 flex justify-between items-center bg-gradient-to-b from-indigo-50 to-transparent">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center">
+                    <ArrowUp size={18} className="text-indigo-600" />
+                  </div>
+                  <h3 className="font-bold text-lg text-slate-900 tracking-tight">发现新版本</h3>
+                </div>
+                <motion.button 
+                  whileHover={{ rotate: 90, scale: 1.1 }}
+                  onClick={() => setShowUpdateModal(false)} 
+                  className="w-8 h-8 flex items-center justify-center bg-slate-100 hover:bg-slate-200 rounded-full text-slate-400 transition-colors"
+                >
+                  <X size={16} />
+                </motion.button>
+              </div>
+              
+              <div className="p-8 space-y-6">
+                <div className="flex flex-col items-center text-center space-y-2">
+                  <div className="text-4xl font-black text-slate-900 tracking-tighter italic">
+                    v{updateStatus.info?.version}
+                  </div>
+                  <p className="text-sm text-slate-500 leading-relaxed">
+                    发现了一个新版本，包含了多项改进和错误修复。建议立即更新以获得最佳体验。
+                  </p>
+                </div>
+
+                {updateStatus.info?.releaseNotes && (
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2">
+                      <Sparkles size={14} className="text-indigo-500" />
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">更新内容</span>
+                    </div>
+                    <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4 max-h-[150px] overflow-y-auto custom-scrollbar">
+                      {typeof updateStatus.info.releaseNotes === 'string' ? (
+                        <div 
+                          className="text-xs text-slate-600 leading-relaxed whitespace-pre-wrap"
+                          dangerouslySetInnerHTML={{ __html: updateStatus.info.releaseNotes }}
+                        />
+                      ) : Array.isArray(updateStatus.info.releaseNotes) ? (
+                        <ul className="space-y-2">
+                          {updateStatus.info.releaseNotes.map((note: any, i: number) => (
+                            <li key={i} className="text-xs text-slate-600 leading-relaxed flex gap-2">
+                              <span className="text-indigo-400 font-bold">•</span>
+                              <div dangerouslySetInnerHTML={{ __html: typeof note === 'string' ? note : note.note }} />
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
+                    </div>
+                  </div>
+                )}
+
+                {updateStatus.type === 'downloading' ? (
+                  <div className="space-y-3">
+                    <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider">
+                      <span className="text-indigo-600">正在下载...</span>
+                      <span className="text-slate-400">{Math.round(updateStatus.progress || 0)}%</span>
+                    </div>
+                    <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden border border-slate-200/50 p-0.5">
+                      <motion.div 
+                        className="h-full bg-indigo-600 rounded-full shadow-sm shadow-indigo-600/20"
+                        initial={{ width: 0 }}
+                        animate={{ width: `${updateStatus.progress || 0}%` }}
+                      />
+                    </div>
+                  </div>
+                ) : updateStatus.type === 'downloaded' ? (
+                  <div className="flex items-center justify-center gap-2 py-2 bg-emerald-50 rounded-2xl border border-emerald-100">
+                    <CheckCircle2 size={16} className="text-emerald-500" />
+                    <span className="text-xs font-bold text-emerald-600">下载完成，准备安装</span>
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="px-8 py-6 border-t border-slate-100 bg-slate-50 flex gap-3">
+                <button 
+                  onClick={() => setShowUpdateModal(false)}
+                  disabled={updateStatus.type === 'downloading'}
+                  className="flex-1 py-3 rounded-2xl text-sm font-bold text-slate-500 hover:text-slate-700 hover:bg-slate-200/50 transition-all disabled:opacity-50"
+                >
+                  稍后再说
+                </button>
+                {updateStatus.type === 'downloaded' ? (
+                  <motion.button 
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={handleInstallUpdate}
+                    className="flex-[2] py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl text-sm font-bold shadow-lg shadow-emerald-600/20 transition-all flex items-center justify-center gap-2"
+                  >
+                    <Play size={16} />
+                    立即重启安装
+                  </motion.button>
+                ) : (
+                  <motion.button 
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={handleDownloadUpdate}
+                    disabled={updateStatus.type === 'downloading'}
+                    className="flex-[2] py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl text-sm font-bold shadow-lg shadow-indigo-600/20 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                  >
+                    <Download size={16} />
+                    {updateStatus.type === 'downloading' ? '正在下载...' : '立即下载更新'}
+                  </motion.button>
+                )}
               </div>
             </motion.div>
           </div>

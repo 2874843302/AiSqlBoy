@@ -38,6 +38,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('show-confirm-dialog', options),
 
     // Auto Update
+    getAppVersion: () => ipcRenderer.invoke('get-app-version'),
     checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
     downloadUpdate: () => ipcRenderer.invoke('download-update'),
     quitAndInstall: () => ipcRenderer.invoke('quit-and-install'),

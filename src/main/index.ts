@@ -40,6 +40,12 @@ function stopHeartbeat() {
 const isDev = !!process.env.VITE_DEV_SERVER_URL
 const DIST_PATH = join(__dirname, '../..')
 
+// 开发环境开启更新检测配置
+if (isDev) {
+  autoUpdater.forceDevUpdateConfig = true
+  // 可以在这里指定一个本地或测试用的 dev-app-update.yml 路径，如果没有则默认读取根目录
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
@@ -107,6 +113,10 @@ ipcMain.handle('download-update', async () => {
 
 ipcMain.handle('quit-and-install', async () => {
   autoUpdater.quitAndInstall()
+})
+
+ipcMain.handle('get-app-version', () => {
+  return app.getVersion()
 })
 
 // Internal DB IPC (Connection Management)
@@ -296,8 +306,40 @@ ipcMain.handle('delete-database', async (_, dbName: string) => {
 ipcMain.handle('execute-query', async (_, sql: string) => {
   if (!currentDriver) return { success: false, error: 'Not connected' }
   try {
-    const result = await currentDriver.executeQuery(sql)
-    return { success: true, ...result }
+    // 这里的 MAX_ROWS 是为了防止单次 IPC 传输过载
+    // 我们应该鼓励用户使用分页，而不是一次性拉取所有数据
+    const MAX_ROWS_PER_FETCH = 10000;
+    
+    // 简单的正则表达式检查是否已经有 LIMIT
+    const hasLimit = /\blimit\b\s+\d+/i.test(sql);
+    let executionSql = sql;
+    
+    // 如果是 SELECT 语句且没有 LIMIT，我们自动加上 LIMIT 以保护性能
+    // 但我们会告知用户这一点
+    const isSelect = sql.trim().toUpperCase().startsWith('SELECT');
+    let autoLimited = false;
+    
+    if (isSelect && !hasLimit) {
+      // 这里的 10001 是为了判断是否还有更多数据
+      executionSql = `${sql.trim().replace(/;$/, '')} LIMIT ${MAX_ROWS_PER_FETCH + 1}`;
+      autoLimited = true;
+    }
+
+    const result = await currentDriver.executeQuery(executionSql);
+    
+    let hasMore = false;
+    if (autoLimited && result.data && result.data.length > MAX_ROWS_PER_FETCH) {
+      result.data = result.data.slice(0, MAX_ROWS_PER_FETCH);
+      hasMore = true;
+    }
+    
+    return { 
+      success: true, 
+      ...result, 
+      hasMore, 
+      totalCount: result.data ? result.data.length : 0,
+      isAutoLimited: autoLimited
+    }
   } catch (error: any) {
     return { success: false, error: error.message }
   }
