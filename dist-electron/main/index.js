@@ -34300,8 +34300,10 @@ class MySQLDriver {
       port: this.config.port,
       user: this.config.user,
       password: this.config.password,
-      database: this.config.database
+      database: this.config.database,
       // 可以为空
+      multipleStatements: true
+      // 允许执行多条 SQL 语句
     });
   }
   async disconnect() {
@@ -34472,39 +34474,64 @@ SET FOREIGN_KEY_CHECKS=0;
     if (!this.connection) throw new Error("Not connected");
     await this.connection.query(`DROP DATABASE ${dbName}`);
   }
+  processResults(results, fields) {
+    if (Array.isArray(results) && (fields === void 0 || Array.isArray(fields))) {
+      const isMulti = results.length > 0 && (results[0]?.constructor?.name === "ResultSetHeader" || results[0]?.constructor?.name === "OkPacket" || Array.isArray(results[0]));
+      if (isMulti) {
+        const allData = [];
+        const multiResults = results;
+        const multiFields = Array.isArray(fields) ? fields : [];
+        multiResults.forEach((res, index) => {
+          const f = multiFields[index];
+          if (!f || !Array.isArray(f)) {
+            allData.push({
+              查询编号: index + 1,
+              结果: "执行成功",
+              影响行数: res.affectedRows !== void 0 ? res.affectedRows : res.length || 0,
+              信息: res.info || res.message || ""
+            });
+          } else {
+            allData.push({
+              查询编号: index + 1,
+              结果: `返回了 ${res.length} 条数据`,
+              提示: "多语句模式下暂不支持直接展示 SELECT 数据"
+            });
+          }
+        });
+        return {
+          data: allData,
+          columns: allData.length > 0 ? Object.keys(allData[0]) : ["结果"]
+        };
+      }
+    }
+    if (!fields || Array.isArray(fields) && fields.length === 0) {
+      const header = results;
+      return {
+        data: [{
+          结果: "执行成功",
+          影响行数: header.affectedRows || 0,
+          插入ID: header.insertId || 0,
+          信息: header.info || header.message || ""
+        }],
+        columns: ["结果", "影响行数", "插入ID", "信息"]
+      };
+    }
+    const fieldArray = Array.isArray(fields) ? fields : [];
+    const columns = fieldArray.map((f) => f && typeof f === "object" ? f.name : "未知列") || [];
+    return { data: Array.isArray(results) ? results : [], columns };
+  }
   async executeQuery(sql) {
     if (!this.connection) throw new Error("Not connected");
     try {
-      const [rows, fields] = await this.connection.query(sql);
-      if (!fields) {
-        const header = rows;
-        return {
-          data: [{
-            结果: "执行成功",
-            影响行数: header.affectedRows || 0,
-            插入ID: header.insertId || 0,
-            信息: header.info || ""
-          }],
-          columns: ["结果", "影响行数", "插入ID", "信息"]
-        };
-      }
-      const columns = fields?.map((f) => f.name) || [];
-      return { data: rows, columns };
+      const [results, fields] = await this.connection.query(sql);
+      return this.processResults(results, fields);
     } catch (error2) {
       const isConnectionError = error2.code === "PROTOCOL_CONNECTION_LOST" || error2.code === "ECONNRESET" || error2.code === "PROTOCOL_ENQUEUE_AFTER_FATAL_ERROR" || error2.message.includes("closed") || error2.message.includes("connection lost");
       if (isConnectionError) {
         try {
           await this.connect();
-          const [rows, fields] = await this.connection.query(sql);
-          if (!fields) {
-            const header = rows;
-            return {
-              data: [{ 结果: "执行成功", 影响行数: header.affectedRows || 0, 插入ID: header.insertId || 0, 信息: header.info || "" }],
-              columns: ["结果", "影响行数", "插入ID", "信息"]
-            };
-          }
-          const columns = fields?.map((f) => f.name) || [];
-          return { data: rows, columns };
+          const [results, fields] = await this.connection.query(sql);
+          return this.processResults(results, fields);
         } catch (reconnectError) {
           throw new Error(`连接已断开且重连失败: ${reconnectError.message}`);
         }

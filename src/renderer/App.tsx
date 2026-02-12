@@ -1078,12 +1078,14 @@ const App: React.FC = () => {
     if (!sql) return '';
     
     // 1. 移除多行注释 /* ... */
+    // 使用非贪婪匹配，确保不会误删两条多行注释之间的正常 SQL
     let cleaned = sql.replace(/\/\*[\s\S]*?\*\//g, '');
     
     // 2. 移除单行注释 -- 或 # 或 //
-    // 注意：这里简单处理，不考虑字符串内部的情况
+    // 改进：按行处理，但保留行尾的换行符，避免多条 SQL 被挤到同一行导致语法错误
     cleaned = cleaned.split('\n').map(line => {
-      // 匹配 -- 或 # 或 // 开头的注释，但要排除它们出现在引号内的情况（简单处理）
+      // 匹配 -- 或 # 或 // 开头的注释
+      // 注意：这里仍然是简单处理，但在处理 DDL/DML 时通常足够
       const dashIndex = line.indexOf('--');
       const hashIndex = line.indexOf('#');
       const doubleSlashIndex = line.indexOf('//');
@@ -1097,6 +1099,7 @@ const App: React.FC = () => {
       return line;
     }).join('\n');
     
+    // 3. 规范化空格，但不移除所有换行，确保多语句 SQL 依然清晰
     return cleaned.trim();
   };
 

@@ -348,7 +348,8 @@ export class MySQLDriver implements IDatabaseDriver {
       port: this.config.port,
       user: this.config.user,
       password: this.config.password,
-      database: this.config.database // 可以为空
+      database: this.config.database, // 可以为空
+      multipleStatements: true // 允许执行多条 SQL 语句
     });
   }
 
@@ -550,26 +551,76 @@ export class MySQLDriver implements IDatabaseDriver {
     await this.connection.query(`DROP DATABASE ${dbName}`);
   }
 
+  private processResults(results: any, fields: any): { data: any[], columns: string[] } {
+    // 1. 处理多语句执行的情况
+    // 在多语句模式下，如果执行的是多条非查询语句，fields 可能是 undefined 或者一个包含多个 undefined 的数组
+    if (Array.isArray(results) && (fields === undefined || Array.isArray(fields))) {
+      // 检查是否真的有多个结果
+      // 注意：有时单条语句也可能被驱动包装成数组，这里通过 results 的结构来判断
+      const isMulti = results.length > 0 && 
+                     (results[0]?.constructor?.name === 'ResultSetHeader' || 
+                      results[0]?.constructor?.name === 'OkPacket' || 
+                      Array.isArray(results[0]));
+
+      if (isMulti) {
+        const allData: any[] = [];
+        const multiResults = results as any[];
+        // fields 可能为 undefined (如果全是 DML)，或者为数组
+        const multiFields = Array.isArray(fields) ? fields : [];
+
+        multiResults.forEach((res, index) => {
+          const f = multiFields[index];
+          if (!f || !Array.isArray(f)) {
+            // DDL/DML 语句 (没有 fields)
+            allData.push({
+              查询编号: index + 1,
+              结果: '执行成功',
+              影响行数: res.affectedRows !== undefined ? res.affectedRows : (res.length || 0),
+              信息: res.info || res.message || ''
+            });
+          } else {
+            // SELECT 语句 (有 fields)
+            allData.push({
+              查询编号: index + 1,
+              结果: `返回了 ${res.length} 条数据`,
+              提示: '多语句模式下暂不支持直接展示 SELECT 数据'
+            });
+          }
+        });
+
+        return {
+          data: allData,
+          columns: allData.length > 0 ? Object.keys(allData[0]) : ['结果']
+        };
+      }
+    }
+
+    // 2. 单条语句执行的情况
+    // 如果没有 fields，说明是非查询语句 (INSERT, UPDATE, DELETE, CREATE, DROP 等)
+    if (!fields || (Array.isArray(fields) && fields.length === 0)) {
+      const header = results as any;
+      return { 
+        data: [{ 
+          结果: '执行成功', 
+          影响行数: header.affectedRows || 0,
+          插入ID: header.insertId || 0,
+          信息: header.info || header.message || ''
+        }], 
+        columns: ['结果', '影响行数', '插入ID', '信息'] 
+      };
+    }
+    
+    // 查询语句
+    const fieldArray = Array.isArray(fields) ? fields : [];
+    const columns = fieldArray.map(f => (f && typeof f === 'object' ? f.name : '未知列')) || [];
+    return { data: Array.isArray(results) ? results : [], columns };
+  }
+
   async executeQuery(sql: string): Promise<{ data: any[], columns: string[] }> {
     if (!this.connection) throw new Error('Not connected');
     try {
-      const [rows, fields] = await this.connection.query(sql);
-      
-      if (!fields) {
-         const header = rows as any;
-         return { 
-           data: [{ 
-             结果: '执行成功', 
-             影响行数: header.affectedRows || 0,
-             插入ID: header.insertId || 0,
-             信息: header.info || ''
-           }], 
-           columns: ['结果', '影响行数', '插入ID', '信息'] 
-         };
-       }
-      
-      const columns = (fields as any[])?.map(f => f.name) || [];
-      return { data: rows as any[], columns };
+      const [results, fields] = await this.connection.query(sql);
+      return this.processResults(results, fields);
     } catch (error: any) {
       // 增强自动重连逻辑
       const isConnectionError = 
@@ -582,16 +633,8 @@ export class MySQLDriver implements IDatabaseDriver {
       if (isConnectionError) {
         try {
           await this.connect();
-          const [rows, fields] = await this.connection!.query(sql);
-          if (!fields) {
-            const header = rows as any;
-            return { 
-              data: [{ 结果: '执行成功', 影响行数: header.affectedRows || 0, 插入ID: header.insertId || 0, 信息: header.info || '' }], 
-              columns: ['结果', '影响行数', '插入ID', '信息'] 
-            };
-          }
-          const columns = (fields as any[])?.map(f => f.name) || [];
-          return { data: rows as any[], columns };
+          const [results, fields] = await this.connection!.query(sql);
+          return this.processResults(results, fields);
         } catch (reconnectError: any) {
           throw new Error(`连接已断开且重连失败: ${reconnectError.message}`);
         }
