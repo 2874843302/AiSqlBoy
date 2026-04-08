@@ -7,300 +7,23 @@ import Editor from 'react-simple-code-editor';
 import Prism from 'prismjs';
 import 'prismjs/components/prism-sql';
 import 'prismjs/themes/prism.css';
-
-declare global {
-  interface Window {
-    electronAPI: {
-      getSavedConnections: () => Promise<ConnectionConfig[]>
-      saveConnection: (config: ConnectionConfig) => Promise<any>
-      deleteConnection: (id: number) => Promise<any>
-      
-      // Console Management
-      getConsoles: (connectionId?: number) => Promise<any[]>
-      saveConsole: (console: any) => Promise<any>
-      deleteConsole: (id: string) => Promise<any>
-      
-      connectDB: (config: ConnectionConfig) => Promise<{ success: boolean; error?: string }>
-      getDatabases: () => Promise<string[]>
-      useDatabase: (dbName: string) => Promise<{ success: boolean; error?: string }>
-      getTables: () => Promise<{ name: string }[]>
-      getTableData: (tableName: string, limit?: number, offset?: number, orderBy?: string, orderDir?: 'ASC' | 'DESC') => Promise<{ data: any[], total: number }>
-      getTableColumns: (tableName: string) => Promise<any[]>
-      renameTable: (oldName: string, newName: string) => Promise<{ success: boolean; error?: string }>
-      deleteTable: (tableName: string) => Promise<{ success: boolean; error?: string }>
-      createTable: (tableName: string, columns: any[], indexes?: any[]) => Promise<{ success: boolean; error?: string }>
-      getTableIndexes: (tableName: string) => Promise<any[]>
-      updateTableSchema: (tableName: string, changes: any) => Promise<{ success: boolean; error?: string }>
-        exportDatabase: (includeData: boolean) => Promise<{ success: boolean; error?: string }>
-        deleteDatabase: (dbName: string) => Promise<{ success: boolean; error?: string }>
-        executeQuery: (sql: string) => Promise<{ 
-          success: boolean; 
-          data: any[]; 
-          columns: string[]; 
-          error?: string;
-          hasMore?: boolean;
-          isAutoLimited?: boolean;
-          totalCount?: number;
-          executionTime?: number;
-        }>
-        aiChat: (messages: any[]) => Promise<{ success: boolean; response?: string; error?: string }>
-        saveSetting: (key: string, value: string) => Promise<void>
-        getSetting: (key: string) => Promise<string | null>
-        // Auto Update
-        getAppVersion: () => Promise<string>
-        checkForUpdates: () => Promise<any>
-        downloadUpdate: () => Promise<any>
-        quitAndInstall: () => Promise<void>
-        onUpdateMessage: (callback: (message: string) => void) => void
-        onUpdateAvailable: (callback: (info: any) => void) => void
-        onUpdateNotAvailable: (callback: (info: any) => void) => void
-        onUpdateError: (callback: (error: string) => void) => void
-        onDownloadProgress: (callback: (progress: any) => void) => void
-        onUpdateDownloaded: (callback: (info: any) => void) => void
-    }
-  }
-}
-
-const DB_TYPES = {
-  mysql: [
-    'INT', 'BIGINT', 'VARCHAR(255)', 'TEXT', 'DATETIME', 'TIMESTAMP', 
-    'DECIMAL(10,2)', 'TINYINT', 'JSON', 'BLOB'
-  ],
-  postgresql: [
-    'INTEGER', 'BIGINT', 'VARCHAR(255)', 'TEXT', 'TIMESTAMP', 'BOOLEAN',
-    'NUMERIC', 'JSONB', 'UUID', 'BYTEA'
-  ],
-  sqlite: [
-    'INTEGER', 'TEXT', 'REAL', 'BLOB', 'NUMERIC'
-  ]
-};
-
-// Prism SQL 样式覆盖
-const editorStyles = `
-  .sql-editor-container pre {
-    background: transparent !important;
-    margin: 0 !important;
-    padding: 0 !important;
-  }
-  .sql-editor-container textarea {
-    caret-color: #000 !important;
-    outline: none !important;
-    color: transparent !important;
-    background: transparent !important;
-    -webkit-text-fill-color: transparent !important;
-  }
-  .ai-selection-input textarea {
-    color: #000 !important;
-    -webkit-text-fill-color: #000 !important;
-  }
-  .sql-editor-container pre {
-    pointer-events: none !important;
-  }
-  .token.keyword { color: #2563eb; font-weight: bold; }
-  .token.string { color: #059669; }
-  .token.comment { color: #94a3b8; font-style: italic; }
-  .token.number { color: #d97706; }
-  .token.punctuation { color: #64748b; }
-  .token.function { color: #7c3aed; }
-  .token.operator { color: #475569; }
-  /* Redis 高亮 */
-  .token.redis-command { color: #dc2626; font-weight: bold; text-transform: uppercase; }
-  .token.redis-key { color: #7c3aed; }
-`;
-
-// Context Menu Component
-const ContextMenu: React.FC<{
-  x: number;
-  y: number;
-  options: { label: string; icon: React.ReactNode; onClick: () => void; danger?: boolean }[];
-  onClose: () => void;
-}> = ({ x, y, options, onClose }) => {
-  useEffect(() => {
-    const handleClick = () => onClose();
-    window.addEventListener('click', handleClick);
-    return () => window.removeEventListener('click', handleClick);
-  }, [onClose]);
-
-  return (
-    <motion.div
-      initial={{ opacity: 0, scale: 0.95 }}
-      animate={{ opacity: 1, scale: 1 }}
-      exit={{ opacity: 0, scale: 0.95 }}
-      style={{ top: y, left: x }}
-      className="fixed z-[100] bg-white border border-slate-200 rounded-xl shadow-2xl py-1.5 min-w-[160px] overflow-hidden"
-    >
-      {options.map((opt, i) => (
-        <button
-          key={i}
-          onClick={(e) => {
-            e.stopPropagation();
-            opt.onClick();
-            onClose();
-          }}
-          className={`w-full px-4 py-2 text-sm text-left flex items-center gap-3 transition-colors ${
-            opt.danger 
-              ? 'text-red-500 hover:bg-red-50' 
-              : 'text-slate-600 hover:bg-blue-50 hover:text-blue-600'
-          }`}
-        >
-          {opt.icon}
-          <span className="font-medium">{opt.label}</span>
-        </button>
-      ))}
-    </motion.div>
-  );
-};
-
-// Global Toast Component
-const Toast: React.FC<{
-  message: string;
-  type?: 'error' | 'success' | 'info';
-  onClose: () => void;
-}> = ({ message, type = 'error', onClose }) => {
-  useEffect(() => {
-    const timer = setTimeout(onClose, 5000);
-    return () => clearTimeout(timer);
-  }, [onClose]);
-
-  const colors = {
-    error: 'bg-red-50 border-red-200 text-red-800',
-    success: 'bg-emerald-50 border-emerald-200 text-emerald-800',
-    info: 'bg-blue-50 border-blue-200 text-blue-800'
-  };
-
-  const icons = {
-    error: <X className="w-5 h-5 text-red-500" />,
-    success: <RefreshCw className="w-5 h-5 text-emerald-500" />,
-    info: <Activity className="w-5 h-5 text-blue-500" />
-  };
-
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: -20, x: '-50%' }}
-      animate={{ opacity: 1, y: 20, x: '-50%' }}
-      exit={{ opacity: 0, y: -20, x: '-50%' }}
-      className={`fixed top-0 left-1/2 z-[200] px-4 py-3 rounded-xl border shadow-xl flex items-center gap-3 min-w-[320px] max-w-[90vw] ${colors[type]}`}
-    >
-      <div className="flex-shrink-0">
-        {icons[type]}
-      </div>
-      <div className="flex-grow text-sm font-medium leading-relaxed">
-        {message}
-      </div>
-      <button 
-        onClick={onClose}
-        className="flex-shrink-0 p-1 hover:bg-black/5 rounded-lg transition-colors"
-      >
-        <X className="w-4 h-4" />
-      </button>
-    </motion.div>
-  );
-};
-
-// Custom Confirm Modal Component
-const ConfirmModal: React.FC<{
-  show: boolean;
-  title: string;
-  message: string;
-  type?: 'warning' | 'danger' | 'info';
-  buttons?: { label: string; onClick: () => void; variant?: 'primary' | 'secondary' | 'danger' }[];
-  onConfirm?: () => void;
-  onCancel: () => void;
-}> = ({ show, title, message, type = 'warning', buttons, onConfirm, onCancel }) => {
-  return (
-    <AnimatePresence>
-      {show && (
-        <div className="fixed inset-0 z-[210] flex items-center justify-center p-6">
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            onClick={onCancel}
-            className="absolute inset-0 bg-slate-900/20 backdrop-blur-sm"
-          />
-          <motion.div 
-            initial={{ scale: 0.9, opacity: 0, y: 20 }}
-            animate={{ scale: 1, opacity: 1, y: 0 }}
-            exit={{ scale: 0.9, opacity: 0, y: 20 }}
-            className="bg-white border border-slate-200 rounded-[32px] shadow-2xl w-[400px] overflow-hidden z-10"
-          >
-            {/* Header */}
-            <div className="px-8 py-6 border-b border-slate-100 flex justify-between items-center bg-gradient-to-b from-slate-50 to-transparent">
-              <div className="flex items-center gap-2">
-                <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
-                  type === 'danger' ? 'bg-red-50 text-red-500' : 
-                  type === 'warning' ? 'bg-amber-50 text-amber-500' : 'bg-blue-50 text-blue-500'
-                }`}>
-                  <Settings size={16} />
-                </div>
-                <h3 className="font-bold text-lg text-slate-900 tracking-tight">{title}</h3>
-              </div>
-              <motion.button 
-                whileHover={{ rotate: 90, scale: 1.1 }}
-                onClick={onCancel} 
-                className="w-8 h-8 flex items-center justify-center bg-slate-100 hover:bg-slate-200 rounded-full text-slate-400 transition-colors"
-              >
-                <X size={16} />
-              </motion.button>
-            </div>
-            
-            {/* Content */}
-            <div className="p-8">
-              <p className="text-slate-600 text-sm leading-relaxed font-medium">{message}</p>
-            </div>
-
-            {/* Actions */}
-            <div className="px-8 py-6 border-t border-slate-100 bg-slate-50 flex gap-3">
-              {buttons ? (
-                buttons.map((btn, i) => (
-                  <motion.button
-                    key={i}
-                    whileHover={{ scale: 1.02 }}
-                    whileTap={{ scale: 0.98 }}
-                    onClick={() => {
-                      btn.onClick();
-                      onCancel();
-                    }}
-                    className={`flex-1 py-3 rounded-2xl text-sm font-bold transition-all ${
-                      btn.variant === 'primary' ? 'bg-blue-500 hover:bg-blue-600 text-white shadow-lg shadow-blue-200' :
-                      btn.variant === 'danger' ? 'bg-red-500 hover:bg-red-600 text-white shadow-lg shadow-red-200' :
-                      'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50'
-                    }`}
-                  >
-                    {btn.label}
-                  </motion.button>
-                ))
-              ) : (
-                <>
-                  <button 
-                    onClick={onCancel}
-                    className="flex-1 py-3 rounded-2xl text-sm font-bold text-slate-500 hover:text-slate-700 hover:bg-slate-200/50 transition-all"
-                  >
-                    取消
-                  </button>
-                  <motion.button 
-                    whileHover={{ scale: 1.02 }}
-                    whileTap={{ scale: 0.98 }}
-                    onClick={() => {
-                      onConfirm?.();
-                      onCancel();
-                    }}
-                    className={`flex-1 py-3 rounded-2xl text-sm font-bold text-white shadow-lg transition-all ${
-                      type === 'danger' ? 'bg-red-500 hover:bg-red-600 shadow-red-200' : 
-                      type === 'warning' ? 'bg-amber-500 hover:bg-amber-600 shadow-amber-200' : 'bg-blue-500 hover:bg-blue-600 shadow-blue-200'
-                    }`}
-                  >
-                    确定
-                  </motion.button>
-                </>
-              )}
-            </div>
-          </motion.div>
-        </div>
-      )}
-    </AnimatePresence>
-  );
-};
+import { DB_TYPES } from './constants/dbTypes';
+import { editorStyles } from './constants/editorStyles';
+import ConfirmModal from './components/common/ConfirmModal';
+import ContextMenu from './components/common/ContextMenu';
+import Toast from './components/common/Toast';
+import type { ConsoleTab } from './types/console';
+import { useAutoUpdate } from './hooks/useAutoUpdate';
+import { useAIAssistant } from './hooks/useAIAssistant';
+import { useConsoles } from './hooks/useConsoles';
+import { useSqlSelectionAI } from './hooks/useSqlSelectionAI';
+import AIAssistantModal from './components/ai/AIAssistantModal';
+import ERDiagramModal, { ERAttribute, ERLabelLanguage } from './components/er/ERDiagramModal';
+import ERSchemaDiagramModal, {
+  ERSchemaRelationship,
+  ERSchemaTable
+} from './components/er/ERSchemaDiagramModal';
+import { fetchForeignKeysFromDb, inferHeuristicFkEdges, mergeFkSources } from './utils/schemaErForeignKeys';
 
 // 辅助函数：判断是否为时间类型并返回 input 类型
 const getTimeInputType = (type: string): 'datetime-local' | 'date' | 'time' | null => {
@@ -395,10 +118,36 @@ const App: React.FC = () => {
   
   // Modals State
   const [showRenameModal, setShowRenameModal] = useState(false);
-  const [showConsoleRenameModal, setShowConsoleRenameModal] = useState(false);
   const [renameData, setRenameData] = useState({ oldName: '', newName: '' });
-  const [consoleRenameData, setConsoleRenameData] = useState({ id: '', name: '' });
   const [showSchemaModal, setShowSchemaModal] = useState(false);
+  const [erDiagram, setERDiagram] = useState<{
+    show: boolean;
+    loading: boolean;
+    tableName: string;
+    attributes: ERAttribute[];
+    sourceSql: string;
+    labelLanguage: ERLabelLanguage;
+    entityDisplayName?: string;
+  }>({ show: false, loading: false, tableName: '', attributes: [], sourceSql: '', labelLanguage: 'zh' });
+  const [erSchemaDiagram, setErSchemaDiagram] = useState<{
+    show: boolean;
+    loading: boolean;
+    databaseName: string;
+    tables: ERSchemaTable[];
+    relationships: ERSchemaRelationship[];
+    summary: string;
+    labelLanguage: ERLabelLanguage;
+  }>({
+    show: false,
+    loading: false,
+    databaseName: '',
+    tables: [],
+    relationships: [],
+    summary: '',
+    labelLanguage: 'zh'
+  });
+  const [erLanguagePickTable, setErLanguagePickTable] = useState<string | null>(null);
+  const [erSchemaLanguagePickDb, setErSchemaLanguagePickDb] = useState<string | null>(null);
   const [schemaData, setSchemaData] = useState<{ tableName: string; columns: any[]; indexes: any[] }>({ tableName: '', columns: [], indexes: [] });
   const [activeSchemaTab, setActiveSchemaTab] = useState<'columns' | 'indexes'>('columns');
   const [textDetail, setTextDetail] = useState<{ content: any; fieldName: string } | null>(null)
@@ -442,153 +191,100 @@ const App: React.FC = () => {
   // Sorting State
   const [sortConfig, setSortConfig] = useState<{ column: string; direction: 'ASC' | 'DESC' | null }>({ column: '', direction: null });
 
-  // Query Console State
-  interface ConsoleTab {
-    id: string;
-    connectionId?: number;
-    name: string;
-    sql: string;
-    results?: any[];
-    columns?: string[];
-    executing: boolean;
-    error?: string;
-    dbName?: string;
-    tableName?: string; // 新增：表名上下文
-    isDirty?: boolean;
-    savedSql?: string;
-    currentPage?: number;
-    pageSize?: number;
-    executionTime?: number; // 新增：执行耗时 (ms)
-    hasMore?: boolean;      // 是否还有更多数据
-    isAutoLimited?: boolean; // 是否被自动限制了行数
-    totalCount?: number;     // 当前获取的数据条数
-  }
-  const [consoles, setConsoles] = useState<ConsoleTab[]>([]);
-  const [activeConsoleId, setActiveConsoleId] = useState<string | null>(null);
-
   // Layout State
   const [sidebarWidth, setSidebarWidth] = useState(320);
   const [resultsHeight, setResultsHeight] = useState(300);
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
   const [isResizingResults, setIsResizingResults] = useState(false);
 
-  // Persistence logic for consoles
-  const loadConsoles = async (connectionId?: number) => {
-    try {
-      const savedConsoles = await window.electronAPI.getConsoles(connectionId);
-      const mappedConsoles: ConsoleTab[] = savedConsoles.map((c: any) => ({
-        ...c,
-        executing: false,
-        isDirty: false,
-        savedSql: c.sql
-      }));
-      setConsoles(mappedConsoles);
-      if (mappedConsoles.length > 0 && !activeConsoleId) {
-        setActiveConsoleId(mappedConsoles[0].id);
-      }
-    } catch (err) {
-      console.error('Failed to load consoles:', err);
-    }
-  };
-
-  const handleSaveConsole = async (id: string, customName?: string) => {
-    const consoleTab = consoles.find(c => c.id === id);
-    if (!consoleTab) return;
-
-    const nameToSave = customName || consoleTab.name;
-
-    try {
-      await window.electronAPI.saveConsole({
-        id: consoleTab.id,
-        connectionId: activeConnection?.id,
-        name: nameToSave,
-        sql: consoleTab.sql,
-        dbName: consoleTab.dbName
-      });
-      
-      setConsoles(prev => prev.map(c => 
-        c.id === id ? { ...c, name: nameToSave, isDirty: false, savedSql: c.sql } : c
-      ));
-      setToast({ message: '保存成功', type: 'success' });
-    } catch (err: any) {
-      setToast({ message: `保存失败: ${err.message}`, type: 'error' });
-    }
-  };
-
-  const handleCloseConsole = async (id: string, e?: React.MouseEvent) => {
-    if (e) e.stopPropagation();
-    const tab = consoles.find(c => c.id === id);
-    if (!tab) return;
-
-    if (tab.isDirty) {
-      confirm({
-        title: '保存修改',
-        message: `控制台 "${tab.name}" 有未保存的修改，是否保存？`,
-        type: 'info',
-        buttons: [
-          { 
-            label: '保存', 
-            variant: 'primary',
-            onClick: async () => {
-              await handleSaveConsole(id);
-              performClose(id);
-            } 
-          },
-          { 
-            label: '不保存', 
-            variant: 'danger',
-            onClick: () => performClose(id)
-          },
-          { 
-            label: '取消', 
-            variant: 'secondary',
-            onClick: () => {} 
-          }
-        ]
-      });
-      return;
-    }
-
-    performClose(id);
-  };
-
-  const performClose = (id: string) => {
-    const newConsoles = consoles.filter(c => c.id !== id);
-    setConsoles(newConsoles);
-    if (activeConsoleId === id) {
-      setActiveConsoleId(newConsoles.length > 0 ? newConsoles[0].id : null);
-    }
-  };
-
-  // AI State
-  const [showAIModal, setShowAIModal] = useState(false);
-  const [aiLoading, setAILoading] = useState(false);
-  const [aiPrompt, setAIPrompt] = useState('');
-  const [aiMessages, setAIMessages] = useState<{ role: 'user' | 'assistant', content: string }[]>([]);
-  const [aiContext, setAIContext] = useState<{ type: 'database' | 'table', name: string } | null>(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [appVersion, setAppVersion] = useState('1.0.0');
   const [apiKey, setApiKey] = useState('');
 
-  // Auto Update State
-  const [updateStatus, setUpdateStatus] = useState<{
-    type: 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'error' | 'not-available';
-    message?: string;
-    progress?: number;
-    info?: any;
-  }>({ type: 'idle' });
-  const [showUpdateModal, setShowUpdateModal] = useState(false);
-
-  // AI SQL Selection feature states
-  const [selectedSql, setSelectedSql] = useState<string>('');
-  const [selectionRange, setSelectionRange] = useState<{ start: number, end: number } | null>(null);
   const [showAISelectionInput, setShowAISelectionInput] = useState(false);
-  const [aiSelectionPrompt, setAISelectionPrompt] = useState('');
-  const [aiSelectionLoading, setAISelectionLoading] = useState(false);
-  const [selectionPosition, setSelectionPosition] = useState<{ x: number, y: number } | null>(null);
   const aiPopupRef = React.useRef<HTMLDivElement>(null);
   const suggestionRef = React.useRef<HTMLDivElement>(null);
   const suggestionListRef = React.useRef<HTMLDivElement>(null);
+
+  const {
+    consoles,
+    setConsoles,
+    activeConsoleId,
+    setActiveConsoleId,
+    showConsoleRenameModal,
+    setShowConsoleRenameModal,
+    consoleRenameData,
+    setConsoleRenameData,
+    showLoadConsoleModal,
+    setShowLoadConsoleModal,
+    savedConsoles,
+    loadConsoles,
+    handleSaveConsole,
+    handleCloseConsole,
+    handleNewConsole,
+    handleDeleteConsole,
+    handleRenameConsole,
+    handleOpenLoadConsoleModal,
+    handleRestoreConsole
+  } = useConsoles({
+    activeConnection,
+    setSelectedTable,
+    setContextMenu,
+    setToast,
+    confirm
+  });
+
+  const {
+    showAIModal,
+    setShowAIModal,
+    aiLoading,
+    aiPrompt,
+    setAIPrompt,
+    aiMessages,
+    aiContext,
+    handleOpenAIModal,
+    handleAIChat,
+    handleApplyAISQL
+  } = useAIAssistant({
+    activeConnection,
+    selectedDatabase,
+    activeConsoleId,
+    consoles,
+    setConsoles,
+    setActiveConsoleId,
+    setContextMenu,
+    setToast
+  });
+
+  const {
+    selectedSql,
+    aiSelectionPrompt,
+    setAISelectionPrompt,
+    aiSelectionLoading,
+    selectionPosition,
+    handleSelection,
+    handleAISelectionSubmit,
+    closeSelectionInput,
+    resetSelectionState
+  } = useSqlSelectionAI({
+    activeConnectionType: activeConnection?.type,
+    activeConsoleId,
+    consoles,
+    setConsoles,
+    showAISelectionInput,
+    setShowAISelectionInput,
+    setToast,
+    aiPopupRef
+  });
+
+  const {
+    appVersion,
+    updateStatus,
+    showUpdateModal,
+    setShowUpdateModal,
+    handleCheckUpdates,
+    handleDownloadUpdate,
+    handleInstallUpdate
+  } = useAutoUpdate();
 
   // Autocomplete State
   const [suggestionInfo, setSuggestionInfo] = useState<{
@@ -636,10 +332,6 @@ const App: React.FC = () => {
   const [scrollTop, setScrollTop] = useState(0); // 记录滚动位置
   const [showScrollButtons, setShowScrollButtons] = useState(false);
   const [showResultsScrollButtons, setShowResultsScrollButtons] = useState(false);
-
-  // Load Saved Consoles Modal State
-  const [showLoadConsoleModal, setShowLoadConsoleModal] = useState(false);
-  const [savedConsoles, setSavedConsoles] = useState<any[]>([]);
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -698,7 +390,7 @@ const App: React.FC = () => {
     const handleClickOutside = (event: MouseEvent) => {
       // AI 智能修改弹窗
       if (showAISelectionInput && aiPopupRef.current && !aiPopupRef.current.contains(event.target as Node)) {
-        setShowAISelectionInput(false);
+        closeSelectionInput();
       }
       // 自动补全建议列表
       if (suggestionInfo.show && suggestionRef.current && !suggestionRef.current.contains(event.target as Node)) {
@@ -715,55 +407,7 @@ const App: React.FC = () => {
   useEffect(() => {
     loadSavedConnections()
     loadSettings()
-    
-    // 获取应用版本
-    window.electronAPI.getAppVersion().then(setAppVersion);
-
-    // 注册更新监听器
-    window.electronAPI.onUpdateMessage((message) => {
-      setUpdateStatus(prev => ({ ...prev, message }));
-    });
-
-    window.electronAPI.onUpdateAvailable((info) => {
-      setUpdateStatus({ type: 'available', info, message: `新版本 v${info.version} 已就绪` });
-      setShowUpdateModal(true);
-    });
-
-    window.electronAPI.onUpdateNotAvailable((info) => {
-      setUpdateStatus({ type: 'not-available', message: '当前已是最新版本' });
-    });
-
-    window.electronAPI.onDownloadProgress((progress) => {
-      setUpdateStatus(prev => ({ 
-        ...prev, 
-        type: 'downloading', 
-        progress: progress.percent,
-        message: `正在下载: ${Math.round(progress.percent)}%`
-      }));
-    });
-
-    window.electronAPI.onUpdateDownloaded((info) => {
-      setUpdateStatus({ type: 'downloaded', info, message: '更新下载完成，准备重启安装' });
-    });
-
-    window.electronAPI.onUpdateError((error) => {
-      setUpdateStatus({ type: 'error', message: `更新出错: ${error}` });
-    });
   }, [])
-
-  const handleCheckUpdates = async () => {
-    setUpdateStatus({ type: 'checking', message: '正在检查更新...' });
-    await window.electronAPI.checkForUpdates();
-  };
-
-  const handleDownloadUpdate = async () => {
-    setUpdateStatus(prev => ({ ...prev, type: 'downloading', message: '开始下载更新...' }));
-    await window.electronAPI.downloadUpdate();
-  };
-
-  const handleInstallUpdate = async () => {
-    await window.electronAPI.quitAndInstall();
-  };
 
   // 搜索逻辑
   useEffect(() => {
@@ -880,10 +524,7 @@ const App: React.FC = () => {
   };
 
   useEffect(() => {
-     setSelectedSql('');
-     setSelectionRange(null);
-     setSelectionPosition(null);
-     setShowAISelectionInput(false);
+     resetSelectionState();
    }, [activeConsoleId]);
 
   const loadSettings = async () => {
@@ -1189,95 +830,6 @@ const App: React.FC = () => {
       setToast({ message: err.message, type: 'error' });
     }
   }
-
-  const handleNewConsole = (dbName: string, tableName?: string) => {
-    const isRedis = activeConnection?.type === 'redis';
-    let baseName = '';
-    
-    if (tableName) {
-      baseName = isRedis ? `命令 - ${tableName}` : `查询 - ${tableName}`;
-    } else {
-      baseName = isRedis ? `命令 - DB ${dbName}` : `查询 - ${dbName}`;
-    }
-    
-    // 生成唯一名称
-    let uniqueName = baseName;
-    let counter = 1;
-    while (consoles.some(c => c.name === uniqueName)) {
-      uniqueName = `${baseName} ${counter}`;
-      counter++;
-    }
-
-    const id = Math.random().toString(36).substr(2, 9);
-    const newConsole: ConsoleTab = {
-      id,
-      connectionId: activeConnection?.id,
-      name: uniqueName,
-      sql: isRedis ? 'KEYS *' : (tableName ? `SELECT * FROM \`${tableName}\` LIMIT 100;` : ''),
-      executing: false,
-      dbName: dbName,
-      tableName: tableName,
-      isDirty: true,
-      savedSql: '',
-      currentPage: 1,
-      pageSize: 50
-    };
-    setConsoles([...consoles, newConsole]);
-    setActiveConsoleId(id);
-    setSelectedTable(null);
-    setContextMenu(null);
-  }
-
-  const handleDeleteConsole = async (id: string) => {
-    const tab = consoles.find(c => c.id === id);
-    if (!tab) return;
-
-    confirm({
-      title: '从本地删除',
-      message: `确定要从本地数据库中永久删除控制台 "${tab.name}" 吗？`,
-      type: 'danger',
-      onConfirm: async () => {
-        try {
-          await window.electronAPI.deleteConsole(id);
-          performClose(id);
-          setToast({ message: '已从本地删除', type: 'success' });
-        } catch (err: any) {
-          setToast({ message: `删除失败: ${err.message}`, type: 'error' });
-        }
-      }
-    });
-  }
-
-  const handleRenameConsole = async () => {
-    if (!consoleRenameData.name.trim()) return;
-    
-    setConsoles(prev => prev.map(c => 
-      c.id === consoleRenameData.id ? { ...c, name: consoleRenameData.name, isDirty: true } : c
-    ));
-    
-    setShowConsoleRenameModal(false);
-  }
-
-  const handleOpenLoadConsoleModal = async () => {
-    try {
-      const allSaved = await window.electronAPI.getConsoles(activeConnection?.id);
-      setSavedConsoles(allSaved);
-      setShowLoadConsoleModal(true);
-    } catch (err: any) {
-      setToast({ message: `加载失败: ${err.message}`, type: 'error' });
-    }
-  };
-
-  const handleRestoreConsole = (savedTab: any) => {
-    // 检查是否已在当前标签页中
-    if (consoles.some(c => c.id === savedTab.id)) {
-      setActiveConsoleId(savedTab.id);
-    } else {
-      setConsoles(prev => [...prev, { ...savedTab, isDirty: false, savedSql: savedTab.sql }]);
-      setActiveConsoleId(savedTab.id);
-    }
-    setShowLoadConsoleModal(false);
-  };
 
   const handleExportDB = async (includeData: boolean) => {
     if (activeConnection?.type === 'redis') {
@@ -1587,96 +1139,6 @@ const App: React.FC = () => {
     }
   };
 
-  const handleOpenAIModal = async (type: 'database' | 'table', name: string) => {
-    setAIContext({ type, name });
-    setAIMessages([]);
-    setAIPrompt('');
-    setShowAIModal(true);
-    setContextMenu(null);
-  }
-
-  const handleAIChat = async () => {
-    if (!aiPrompt.trim() || aiLoading) return;
-
-    const userMsg = aiPrompt;
-    setAIPrompt('');
-    setAIMessages(prev => [...prev, { role: 'user', content: userMsg }]);
-    setAILoading(true);
-
-    try {
-      // 准备上下文信息
-      let schemaInfo = '';
-      if (aiContext?.type === 'table') {
-        const cols = await window.electronAPI.getTableColumns(aiContext.name);
-        schemaInfo = `当前表: ${aiContext.name}\n结构:\n${cols.map(c => `${c.name} (${c.type})`).join(', ')}`;
-      } else if (aiContext?.type === 'database') {
-        const tables = await window.electronAPI.getTables();
-        const schemaPromises = tables.map(async (t) => {
-          const cols = await window.electronAPI.getTableColumns(t.name);
-          return `${t.name} (${cols.map(c => `${c.name} ${c.type}`).join(', ')})`;
-        });
-        const schemas = await Promise.all(schemaPromises);
-        schemaInfo = `当前数据库: ${aiContext.name}\n完整结构:\n${schemas.join('\n')}`;
-      }
-
-      const messages = [
-        { 
-          role: 'system', 
-          content: `你是一个专业的 SQL 专家。
-当前数据库类型: ${activeConnection?.type}
-${schemaInfo}
-
-**重要准则：**
-1. **严禁假设**：你必须严格基于上方提供的“完整结构”进行 SQL 编写。严禁捏造不存在的表名或字段名。
-2. **准确性**：如果用户的需求涉及到的表或字段在结构中找不到，请直接指出缺失信息，不要尝试猜测。
-3. **多表关联**：如果需要关联查询，请根据结构中的字段名进行逻辑关联。
-4. **输出规范**：请直接给出 SQL 代码块，并附带简要说明。如果是查询请求，请尽量生成完整的 SELECT 语句。`
-        },
-        ...aiMessages.map(m => ({ role: m.role, content: m.content })),
-        { role: 'user', content: userMsg }
-      ];
-
-      const res = await window.electronAPI.aiChat(messages);
-      if (res.success && res.response) {
-        setAIMessages(prev => [...prev, { role: 'assistant', content: res.response! }]);
-      } else {
-        setToast({ message: res.error || 'AI 响应失败', type: 'error' });
-      }
-    } catch (err: any) {
-      setToast({ message: err.message, type: 'error' });
-    } finally {
-      setAILoading(false);
-    }
-  }
-
-  const handleApplyAISQL = (content: string) => {
-    // 提取 SQL 代码块
-    const sqlMatch = content.match(/```sql\n([\s\S]*?)\n```/) || content.match(/```([\s\S]*?)\n```/);
-    const sql = sqlMatch ? sqlMatch[1] : content;
-
-    if (activeConsoleId) {
-      setConsoles(prev => prev.map(c => c.id === activeConsoleId ? { ...c, sql: sql } : c));
-      setShowAIModal(false);
-    } else {
-      // 如果没有活跃的控制台，新建一个
-      const id = Math.random().toString(36).substr(2, 9);
-      const newConsole: ConsoleTab = {
-        id,
-        connectionId: activeConnection?.id,
-        name: `AI 生成 - ${aiContext?.name || '查询'}`,
-        sql: sql,
-        executing: false,
-        dbName: selectedDatabase || undefined,
-        tableName: aiContext?.type === 'table' ? aiContext.name : undefined,
-        isDirty: true,
-        savedSql: ''
-      };
-      setConsoles([...consoles, newConsole]);
-      setActiveConsoleId(id);
-      setShowAIModal(false);
-    }
-  }
-
   const handleEditorKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (suggestionInfo.show) {
       if (e.key === 'ArrowDown') {
@@ -1831,170 +1293,6 @@ ${schemaInfo}
     }, 0);
   };
 
-  const handleSelection = (e?: React.MouseEvent | React.KeyboardEvent) => {
-    // 延迟执行以确保 selection 已经更新
-    setTimeout(() => {
-      const textarea = document.querySelector('.sql-editor-container textarea') as HTMLTextAreaElement;
-      if (textarea && textarea.selectionStart !== textarea.selectionEnd) {
-        const selected = textarea.value.substring(textarea.selectionStart, textarea.selectionEnd);
-        setSelectedSql(selected);
-        setSelectionRange({ start: textarea.selectionStart, end: textarea.selectionEnd });
-        
-        // 计算选中内容第一个字符的位置
-        const container = document.querySelector('.sql-editor-container');
-        if (container) {
-          const rect = container.getBoundingClientRect();
-          
-          // 创建一个隐藏的 div 来模拟 textarea 内容并计算坐标
-          const div = document.createElement('div');
-          const style = window.getComputedStyle(textarea);
-          
-          // 复制 textarea 的样式
-          const properties = [
-            'direction', 'boxSizing', 'width', 'height', 'overflowX', 'overflowY',
-            'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth',
-            'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
-            'fontStyle', 'fontVariant', 'fontWeight', 'fontStretch', 'fontSize',
-            'lineHeight', 'fontFamily', 'textAlign', 'textTransform', 'textIndent',
-            'textDecoration', 'letterSpacing', 'wordSpacing', 'whiteSpace', 'wordBreak',
-            'wordWrap'
-          ];
-          
-          properties.forEach(prop => {
-            // @ts-ignore
-            div.style[prop] = style[prop];
-          });
-          
-          div.style.position = 'absolute';
-          div.style.visibility = 'hidden';
-          div.style.whiteSpace = 'pre-wrap';
-          div.style.wordWrap = 'break-word';
-          div.style.top = '0';
-          div.style.left = '0';
-          
-          // 获取 selectionStart 之前的文本
-          const textBefore = textarea.value.substring(0, textarea.selectionStart);
-          const span = document.createElement('span');
-          span.textContent = textBefore;
-          div.appendChild(span);
-          
-          // 插入一个标记元素来获取坐标
-          const marker = document.createElement('span');
-          marker.textContent = '|';
-          div.appendChild(marker);
-          
-          document.body.appendChild(div);
-          
-          const markerRect = marker.getBoundingClientRect();
-          const divRect = div.getBoundingClientRect();
-          
-          // 计算相对容器的位置，并加上滚动偏移
-          setSelectionPosition({
-            x: markerRect.left - divRect.left + textarea.offsetLeft - textarea.scrollLeft,
-            y: markerRect.top - divRect.top + textarea.offsetTop - textarea.scrollTop
-          });
-          
-          document.body.removeChild(div);
-        }
-      } else {
-        // 如果没有选中，或者点击了其他地方，只有在 AI 输入框没打开的时候才清除
-        if (!showAISelectionInput) {
-          setSelectedSql('');
-          setSelectionRange(null);
-          setSelectionPosition(null);
-        }
-      }
-    }, 0);
-  };
-
-  const handleAISelectionSubmit = async () => {
-    if (!aiSelectionPrompt.trim() || aiSelectionLoading || !selectedSql) return;
-
-    setAISelectionLoading(true);
-    try {
-      const activeConsole = consoles.find(c => c.id === activeConsoleId);
-      
-      // 获取当前数据库的所有表和结构
-      let schemaContext = '';
-      try {
-        if (activeConsole?.tableName) {
-          // 如果控制台绑定了表，只获取该表的结构
-          const cols = await window.electronAPI.getTableColumns(activeConsole.tableName);
-          schemaContext = `当前表: ${activeConsole.tableName}\n结构:\n${cols.map(c => `${c.name} (${c.type})`).join(', ')}`;
-        } else {
-          // 否则获取当前数据库的所有表结构
-          const tableList = await window.electronAPI.getTables();
-          const schemaPromises = tableList.map(async (t) => {
-            const cols = await window.electronAPI.getTableColumns(t.name);
-            return `${t.name} (${cols.map(c => `${c.name} ${c.type}`).join(', ')})`;
-          });
-          const schemas = await Promise.all(schemaPromises);
-          schemaContext = schemas.length > 0 ? `当前数据库完整结构:\n${schemas.join('\n')}` : '（未获取到数据库结构）';
-        }
-      } catch (err) {
-        console.error('Failed to fetch schema for AI:', err);
-      }
-
-      const prompt = `
-你是一个 SQL 专家。
-当前数据库类型: ${activeConnection?.type || '未知'}
-${schemaContext}
-
-**严格指令：**
-1. **禁止幻想**：你必须严格使用上方提供的真实数据库结构。严禁使用任何不存在的表名或字段名。
-2. **准确修改**：如果用户的指令是修改 SQL，请结合提供的结构信息，确保修改后的 SQL 字段名和表名完全匹配真实数据库。
-3. **拒绝猜测**：如果指令涉及到的信息在提供的结构中不存在，请告知用户你无法根据当前结构完成该操作，而不是自行假设。
-
-当前选中的 SQL 代码如下：
-\`\`\`sql
-${selectedSql}
-\`\`\`
-
-用户的指令是：${aiSelectionPrompt}
-
-请只返回修改后的 SQL 代码块（包裹在 \`\`\`sql ... \`\`\` 中），或者针对结构给出专业的建议。
-`;
-
-      const result = await window.electronAPI.aiChat([
-        { role: 'user', content: prompt }
-      ]);
-
-      if (result.success && result.response) {
-        // 解析返回的内容
-        const sqlMatch = result.response.match(/```sql\n([\s\S]*?)\n```/) || result.response.match(/```([\s\S]*?)\n```/);
-        
-        if (sqlMatch) {
-          const newSql = sqlMatch[1];
-          // 替换选中的内容
-          if (selectionRange && activeConsoleId) {
-            setConsoles(prev => prev.map(c => {
-              if (c.id === activeConsoleId) {
-                const fullSql = c.sql;
-                const updatedSql = fullSql.substring(0, selectionRange.start) + newSql + fullSql.substring(selectionRange.end);
-                return { ...c, sql: updatedSql };
-              }
-              return c;
-            }));
-          }
-          setShowAISelectionInput(false);
-          setAISelectionPrompt('');
-          setSelectedSql('');
-          setSelectionRange(null);
-        } else {
-          // 如果不是 SQL 块，可能只是建议，显示在 Toast
-          setToast({ message: result.response, type: 'info' });
-          setShowAISelectionInput(false);
-        }
-      } else {
-        setToast({ message: result.error || 'AI 响应失败', type: 'error' });
-      }
-    } catch (err: any) {
-      setToast({ message: err.message, type: 'error' });
-    } finally {
-      setAISelectionLoading(false);
-    }
-  };
-
   const handleConsoleDBChange = async (id: string, dbName: string) => {
     setConsoles(prev => prev.map(c => c.id === id ? { ...c, dbName } : c));
     if (dbName !== selectedDatabase) {
@@ -2054,6 +1352,329 @@ ${selectedSql}
   const handleTableContextMenu = (e: React.MouseEvent, tableName: string) => {
     e.preventDefault();
     setContextMenu({ x: e.clientX, y: e.clientY, type: 'table', target: tableName });
+  };
+
+  const handleGenerateERDiagram = async (tableName: string, labelLanguage: ERLabelLanguage) => {
+    setERDiagram({
+      show: true,
+      loading: true,
+      tableName,
+      attributes: [],
+      sourceSql: '',
+      labelLanguage,
+      entityDisplayName: undefined
+    });
+    try {
+      const cols = await window.electronAPI.getTableColumns(tableName);
+      const colDefs = cols.map((c: any) => {
+        const parts = [`${c.name} ${c.type}`];
+        if (c.primaryKey) parts.push('PRIMARY KEY');
+        if (c.nullable === false) parts.push('NOT NULL');
+        if (c.defaultValue !== undefined && c.defaultValue !== null && `${c.defaultValue}` !== '') {
+          parts.push(`DEFAULT ${c.defaultValue}`);
+        }
+        return `  ${parts.join(' ')}`;
+      });
+      const tableSql = `CREATE TABLE ${tableName} (\n${colDefs.join(',\n')}\n);`;
+
+      const langInstruction =
+        labelLanguage === 'zh'
+          ? `展示语言为中文：JSON 中 entity 为简短中文表意名称；attributes 数组顺序必须与 CREATE TABLE 中列顺序完全一致；每项 name 为该列在 ER 图上的展示名（简短中文）。硬性规则：若某列在 SQL 中的原始列名为 id（不区分大小写），则该项 name 必须为英文小写 id，禁止译为「标识」等中文。`
+          : `Display language English: entity and attribute display names in concise English. attributes array order must exactly match column order in CREATE TABLE. Hard rule: if a column's original SQL name is id (case-insensitive), name must be exactly "id".`;
+
+      const prompt = `${langInstruction}\n请把下面 SQL 表结构解析为 ER 信息，仅返回 JSON，不要任何解释。\n\nSQL:\n${tableSql}\n\nJSON 格式:\n{"entity":"表展示名","attributes":[{"name":"字段展示名","type":"字段类型","key":"PK|FK|UK|NONE"}]}`;
+      const aiRes = await window.electronAPI.aiChat([
+        { role: 'system', content: '你是数据库建模助手。必须只返回合法 JSON。' },
+        { role: 'user', content: prompt }
+      ]);
+
+      let attrs: ERAttribute[] = cols.map((c: any) => ({
+        name: c.name,
+        type: c.type,
+        key: c.primaryKey ? 'PK' : 'NONE'
+      }));
+
+      let entityDisplayName: string | undefined;
+
+      if (aiRes.success && aiRes.response) {
+        const raw = aiRes.response.trim();
+        const jsonBlock = raw.match(/```json\s*([\s\S]*?)```/i)?.[1] || raw.match(/\{[\s\S]*\}/)?.[0];
+        if (jsonBlock) {
+          try {
+            const parsed = JSON.parse(jsonBlock);
+            if (parsed?.entity != null && String(parsed.entity).trim() !== '') {
+              entityDisplayName = String(parsed.entity).trim();
+            }
+            if (Array.isArray(parsed?.attributes) && parsed.attributes.length > 0) {
+              attrs = parsed.attributes
+                .filter((a: any) => a && a.name)
+                .map((a: any, idx: number) => {
+                  const col = cols[idx];
+                  const sqlName = col?.name != null ? String(col.name) : '';
+                  const isIdCol = sqlName.toLowerCase() === 'id';
+                  return {
+                    name: isIdCol ? 'id' : String(a.name),
+                    type: a.type ? String(a.type) : undefined,
+                    key: a.key ? String(a.key).toUpperCase() : 'NONE'
+                  };
+                });
+            }
+          } catch {
+            /* keep attrs from columns */
+          }
+        }
+      } else {
+        attrs = cols.map((c: any) => ({
+          name: String(c.name).toLowerCase() === 'id' ? 'id' : c.name,
+          type: c.type,
+          key: c.primaryKey ? 'PK' : 'NONE'
+        }));
+      }
+
+      attrs = attrs.map((a, idx) => {
+        const sqlName = cols[idx]?.name != null ? String(cols[idx].name) : '';
+        if (sqlName.toLowerCase() === 'id') return { ...a, name: 'id' };
+        return a;
+      });
+
+      setERDiagram({
+        show: true,
+        loading: false,
+        tableName,
+        attributes: attrs,
+        sourceSql: tableSql,
+        labelLanguage,
+        entityDisplayName
+      });
+    } catch (err: any) {
+      setERDiagram((prev) => ({ ...prev, loading: false }));
+      setToast({ message: `生成 ER 图失败: ${err.message}`, type: 'error' });
+    }
+  };
+
+  const SCHEMA_ER_MAX_TABLES = 80;
+
+  const handleGenerateSchemaERDiagram = async (dbName: string, labelLanguage: ERLabelLanguage) => {
+    if (!activeConnection || activeConnection.type === 'redis') return;
+
+    setErSchemaDiagram({
+      show: true,
+      loading: true,
+      databaseName: dbName,
+      tables: [],
+      relationships: [],
+      summary: '',
+      labelLanguage
+    });
+
+    try {
+      if (selectedDatabase !== dbName) {
+        const result = await window.electronAPI.useDatabase(dbName);
+        if (!result.success) throw new Error(result.error || '切换数据库失败');
+        setSelectedDatabase(dbName);
+      }
+
+      const tableList = await window.electronAPI.getTables();
+      const slice = tableList.slice(0, SCHEMA_ER_MAX_TABLES);
+      if (tableList.length > SCHEMA_ER_MAX_TABLES) {
+        setToast({
+          message: `表数量超过 ${SCHEMA_ER_MAX_TABLES}，仅展示前 ${SCHEMA_ER_MAX_TABLES} 张`,
+          type: 'info'
+        });
+      }
+
+      if (slice.length === 0) {
+        setErSchemaDiagram({
+          show: true,
+          loading: false,
+          databaseName: dbName,
+          tables: [],
+          relationships: [],
+          summary: '当前库中暂无数据表',
+          labelLanguage
+        });
+        return;
+      }
+
+      const columnsAll = await Promise.all(slice.map((t) => window.electronAPI.getTableColumns(t.name)));
+      const colsByTable: Record<string, string[]> = {};
+      slice.forEach((t, i) => {
+        colsByTable[t.name] = columnsAll[i].map((c: { name: string }) => String(c.name));
+      });
+
+      const nameSet = new Set(slice.map((t) => t.name));
+      const meta = await fetchForeignKeysFromDb(
+        activeConnection.type,
+        slice.map((t) => t.name),
+        (sql) => window.electronAPI.executeQuery(sql)
+      );
+      const heuristic = inferHeuristicFkEdges(
+        slice.map((t) => t.name),
+        colsByTable
+      );
+      const merged = mergeFkSources(meta, heuristic).filter(
+        (e) =>
+          nameSet.has(e.childTable) &&
+          nameSet.has(e.parentTable) &&
+          e.childTable !== e.parentTable
+      );
+
+      const pairMap = new Map<string, (typeof merged)[number]>();
+      for (const e of merged) {
+        const k = `${e.childTable}\0${e.parentTable}`;
+        if (!pairMap.has(k)) pairMap.set(k, e);
+      }
+      let relationEdges = [...pairMap.values()];
+      let relationSource: 'fk' | 'ai-infer' = 'fk';
+
+      if (relationEdges.length === 0) {
+        const inferPrompt =
+          labelLanguage === 'zh'
+            ? `根据下面数据库结构，推断最可能的表关系（子表->父表）。只返回 JSON：{"rels":[{"from":"子表","to":"父表"}]}。\n规则：1) 仅使用已给表名；2) 不要自关联；3) 优先 *_id、*Id、外键命名约定。`
+            : `Infer likely table relationships (child->parent) from the schema below. JSON only: {"rels":[{"from":"child","to":"parent"}]}. Rules: use existing tables only, no self-links, prioritize *_id/*Id naming conventions.`;
+        const inferInput = JSON.stringify(
+          slice.map((t) => ({ table: t.name, columns: colsByTable[t.name] || [] }))
+        );
+        const inferRes = await window.electronAPI.aiChat([
+          { role: 'system', content: '你是数据库建模助手。必须只返回合法 JSON。' },
+          { role: 'user', content: `${inferPrompt}\n\n${inferInput}` }
+        ]);
+        if (inferRes.success && inferRes.response) {
+          const raw = inferRes.response.trim();
+          const jsonBlock = raw.match(/```json\s*([\s\S]*?)```/i)?.[1] || raw.match(/\{[\s\S]*\}/)?.[0];
+          if (jsonBlock) {
+            try {
+              const parsed = JSON.parse(jsonBlock);
+              if (Array.isArray(parsed?.rels)) {
+                const uniq = new Map<string, { childTable: string; parentTable: string }>();
+                for (const r of parsed.rels) {
+                  const from = r?.from != null ? String(r.from) : '';
+                  const to = r?.to != null ? String(r.to) : '';
+                  if (!nameSet.has(from) || !nameSet.has(to) || from === to) continue;
+                  const k = `${from}\0${to}`;
+                  if (!uniq.has(k)) uniq.set(k, { childTable: from, parentTable: to });
+                }
+                relationEdges = [...uniq.values()].map((e) => ({
+                  childTable: e.childTable,
+                  parentTable: e.parentTable,
+                  childCol: '',
+                  parentCol: 'id'
+                }));
+                if (relationEdges.length > 0) relationSource = 'ai-infer';
+              }
+            } catch {
+              /* ignore ai infer parse failure */
+            }
+          }
+        }
+      }
+
+      const normalizeCard = (raw?: string, fallback: '1' | 'N' | 'M' = 'N') => {
+        const s = (raw || '').trim();
+        if (!s) return fallback;
+        const up = s.toUpperCase();
+        if (up === '1' || s === '一') return '1';
+        if (up === 'N' || up === 'M' || s === '多') return up === 'M' ? 'M' : 'N';
+        if (/^[1NM]$/i.test(s)) return s.toUpperCase() as '1' | 'N' | 'M';
+        return fallback;
+      };
+
+      const defaultRel = labelLanguage === 'zh' ? '关联' : 'rel';
+      let rels: ERSchemaRelationship[] = relationEdges.map((e, i) => ({
+        id: `rel-${i}`,
+        from: e.childTable,
+        to: e.parentTable,
+        label: defaultRel,
+        fromCard: 'N',
+        toCard: '1'
+      }));
+
+      if (relationEdges.length > 0) {
+        const payload = {
+          tables: slice.map((t) => ({ name: t.name, columns: colsByTable[t.name] || [] })),
+          rels: relationEdges.map((e) => ({ from: e.childTable, to: e.parentTable }))
+        };
+        const langInstruction =
+          labelLanguage === 'zh'
+            ? `请为每条「子表(from) -> 父表(to)」关系推断：\n- label: 菱形中的关系名（2-6字）\n- fromCard/toCard: 连线两端基数，必须使用 1/N/M（禁止输出“一/多”）\n只返回 JSON，不要解释。\n`
+            : `For each relationship child(from) -> parent(to), infer:\n- label: short relationship name (1-3 words)\n- fromCard/toCard: cardinality labels near child/parent ends (e.g. 1/N, 0..1/N)\nJSON only.\n`;
+        const prompt = `${langInstruction}JSON 格式: {\"rels\":[{\"from\":\"...\",\"to\":\"...\",\"label\":\"...\",\"fromCard\":\"...\",\"toCard\":\"...\"}]}\n\n${JSON.stringify(
+          payload
+        )}`;
+        const aiRes = await window.electronAPI.aiChat([
+          { role: 'system', content: '你是数据库建模助手。必须只返回合法 JSON。' },
+          { role: 'user', content: prompt }
+        ]);
+        if (aiRes.success && aiRes.response) {
+          const raw = aiRes.response.trim();
+          const jsonBlock = raw.match(/```json\s*([\s\S]*?)```/i)?.[1] || raw.match(/\{[\s\S]*\}/)?.[0];
+          if (jsonBlock) {
+            try {
+              const parsed = JSON.parse(jsonBlock);
+              if (Array.isArray(parsed?.rels)) {
+                const map = new Map<
+                  string,
+                  { label?: string; fromCard?: string; toCard?: string }
+                >();
+                for (const r of parsed.rels) {
+                  if (r?.from != null && r?.to != null) {
+                    map.set(`${String(r.from)}\0${String(r.to)}`, {
+                      label: r.label != null ? String(r.label).trim() : undefined,
+                      fromCard: r.fromCard != null ? String(r.fromCard).trim() : undefined,
+                      toCard: r.toCard != null ? String(r.toCard).trim() : undefined
+                    });
+                  }
+                }
+                rels = rels.map((r) => ({
+                  ...r,
+                  label: map.get(`${r.from}\0${r.to}`)?.label || r.label,
+                  fromCard: normalizeCard(map.get(`${r.from}\0${r.to}`)?.fromCard, 'N'),
+                  toCard: normalizeCard(map.get(`${r.from}\0${r.to}`)?.toCard, '1')
+                }));
+              }
+            } catch {
+              /* keep defaults */
+            }
+          }
+        }
+      }
+
+      rels = rels.map((r) => ({
+        ...r,
+        fromCard: normalizeCard(r.fromCard, 'N'),
+        toCard: normalizeCard(r.toCard, '1')
+      }));
+
+      const SCHEMA_ER_ATTR_CAP = 36;
+      const schemaTables: ERSchemaTable[] = slice.map((t) => ({
+        name: t.name,
+        displayName: t.name,
+        columns: (colsByTable[t.name] || []).slice(0, SCHEMA_ER_ATTR_CAP)
+      }));
+
+      const sourceHint =
+        relationSource === 'fk'
+          ? labelLanguage === 'zh'
+            ? '基于外键/命名规则'
+            : 'from FK/naming rules'
+          : labelLanguage === 'zh'
+            ? 'AI 推断'
+            : 'AI inferred';
+      const summary = `共 ${slice.length} 张表（每表：矩形实体 + 椭圆属性）；${rels.length} 条表间关系（菱形，${sourceHint}）；连线上为子表侧/父表侧基数，箭头指向父表`;
+
+      setErSchemaDiagram({
+        show: true,
+        loading: false,
+        databaseName: dbName,
+        tables: schemaTables,
+        relationships: rels,
+        summary,
+        labelLanguage
+      });
+    } catch (err: any) {
+      setErSchemaDiagram((prev) => ({ ...prev, loading: false }));
+      setToast({ message: `生成库 ER 图失败: ${err.message}`, type: 'error' });
+    }
   };
 
   const handleOpenSchemaModal = async (tableName: string) => {
@@ -2950,8 +2571,8 @@ ${selectedSql}
                     </div>
                     <div 
                       className="flex-1 overflow-auto custom-scrollbar p-6 sql-editor-container relative"
-                      onMouseUp={(e) => handleSelection(e)}
-                      onKeyUp={(e) => handleSelection(e)}
+                      onMouseUp={handleSelection}
+                      onKeyUp={handleSelection}
                     >
                       <Editor
                         value={consoles.find(c => c.id === activeConsoleId)?.sql || ''}
@@ -3851,16 +3472,23 @@ ${selectedSql}
                   icon: <Sparkles size={14} className="text-indigo-500" />, 
                   onClick: () => handleOpenAIModal('database', contextMenu.target) 
                 },
-                ...(activeConnection?.type !== 'redis' ? [
-                  { 
-                    label: '添加表', 
-                    icon: <Plus size={14} />, 
-                    onClick: () => {
-                      setSchemaData({ tableName: 'new_table', columns: [], indexes: [] });
-                      setShowSchemaModal(true);
-                    } 
-                  }
-                ] : []),
+                ...(activeConnection?.type !== 'redis'
+                  ? [
+                      {
+                        label: '生成库 ER 图',
+                        icon: <Layout size={14} className="text-blue-600" />,
+                        onClick: () => setErSchemaLanguagePickDb(contextMenu.target)
+                      },
+                      {
+                        label: '添加表',
+                        icon: <Plus size={14} />,
+                        onClick: () => {
+                          setSchemaData({ tableName: 'new_table', columns: [], indexes: [] });
+                          setShowSchemaModal(true);
+                        }
+                      }
+                    ]
+                  : []),
                 { 
                   label: '刷新', 
                   icon: <RefreshCw size={14} />, 
@@ -3899,6 +3527,11 @@ ${selectedSql}
                   label: 'AI 助手', 
                   icon: <Sparkles size={14} className="text-indigo-500" />, 
                   onClick: () => handleOpenAIModal('table', contextMenu.target) 
+                },
+                {
+                  label: '生成 ER 图',
+                  icon: <Layout size={14} className="text-blue-600" />,
+                  onClick: () => setErLanguagePickTable(contextMenu.target)
                 },
                 { 
                   label: '刷新列表', 
@@ -4247,120 +3880,150 @@ ${selectedSql}
         )}
       </AnimatePresence>
 
-      {/* AI Chat Modal */}
+      <AIAssistantModal
+        show={showAIModal}
+        aiContext={aiContext}
+        aiMessages={aiMessages}
+        aiLoading={aiLoading}
+        aiPrompt={aiPrompt}
+        setAIPrompt={setAIPrompt}
+        onClose={() => setShowAIModal(false)}
+        onSubmit={handleAIChat}
+        onApplySQL={handleApplyAISQL}
+      />
+
+      <ERDiagramModal
+        show={erDiagram.show}
+        loading={erDiagram.loading}
+        tableName={erDiagram.tableName}
+        entityDisplayName={erDiagram.entityDisplayName}
+        attributes={erDiagram.attributes}
+        sourceSql={erDiagram.sourceSql}
+        labelLanguage={erDiagram.labelLanguage}
+        onClose={() => setERDiagram((prev) => ({ ...prev, show: false }))}
+      />
+
+      <ERSchemaDiagramModal
+        show={erSchemaDiagram.show}
+        loading={erSchemaDiagram.loading}
+        databaseName={erSchemaDiagram.databaseName}
+        tables={erSchemaDiagram.tables}
+        relationships={erSchemaDiagram.relationships}
+        summary={erSchemaDiagram.summary}
+        labelLanguage={erSchemaDiagram.labelLanguage}
+        onClose={() => setErSchemaDiagram((prev) => ({ ...prev, show: false }))}
+      />
+
       <AnimatePresence>
-        {showAIModal && (
-          <div className="fixed inset-0 z-[110] flex items-center justify-center p-6">
-            <motion.div 
+        {erLanguagePickTable && (
+          <div className="fixed inset-0 z-[240] flex items-center justify-center p-6">
+            <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              onClick={() => setShowAIModal(false)}
-              className="absolute inset-0 bg-slate-900/20 backdrop-blur-md"
+              className="absolute inset-0 bg-slate-900/30 backdrop-blur-sm"
+              onClick={() => setErLanguagePickTable(null)}
             />
-            <motion.div 
-              initial={{ scale: 0.9, opacity: 0, y: 20 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.9, opacity: 0, y: 20 }}
-              className="bg-white border border-slate-200 rounded-[32px] shadow-2xl w-[600px] h-[500px] overflow-hidden z-10 flex flex-col"
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="relative z-10 bg-white border border-slate-200 rounded-2xl shadow-xl p-6 w-full max-w-sm"
+              onClick={(e) => e.stopPropagation()}
             >
-              <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-gradient-to-b from-indigo-50/50 to-transparent">
-                <div className="flex items-center gap-2">
-                  <Sparkles size={18} className="text-indigo-600" />
-                  <div>
-                    <h3 className="font-bold text-base text-slate-900">AI 助手</h3>
-                    <p className="text-xs text-slate-500">
-                      当前上下文: {aiContext?.type === 'database' ? '数据库' : '表'} {aiContext?.name}
-                    </p>
-                  </div>
-                </div>
-                <motion.button 
-                  whileHover={{ rotate: 90, scale: 1.1 }}
-                  onClick={() => setShowAIModal(false)} 
-                  className="w-8 h-8 flex items-center justify-center bg-slate-100 hover:bg-slate-200 rounded-full text-slate-400 transition-colors"
+              <h4 className="text-base font-bold text-slate-900 mb-1">生成 ER 图</h4>
+              <p className="text-xs text-slate-500 mb-4">选择图上文字语言；字段名为 id 的始终显示为 id</p>
+              <div className="flex flex-col gap-2">
+                <motion.button
+                  type="button"
+                  whileTap={{ scale: 0.98 }}
+                  className="w-full py-3 rounded-xl bg-slate-900 text-white text-sm font-semibold"
+                  onClick={() => {
+                    const t = erLanguagePickTable;
+                    setErLanguagePickTable(null);
+                    void handleGenerateERDiagram(t, 'zh');
+                  }}
                 >
-                  <X size={16} />
+                  中文
                 </motion.button>
+                <motion.button
+                  type="button"
+                  whileTap={{ scale: 0.98 }}
+                  className="w-full py-3 rounded-xl border border-slate-200 text-slate-800 text-sm font-semibold hover:bg-slate-50"
+                  onClick={() => {
+                    const t = erLanguagePickTable;
+                    setErLanguagePickTable(null);
+                    void handleGenerateERDiagram(t, 'en');
+                  }}
+                >
+                  English
+                </motion.button>
+                <button
+                  type="button"
+                  className="w-full py-2 text-xs text-slate-500"
+                  onClick={() => setErLanguagePickTable(null)}
+                >
+                  取消
+                </button>
               </div>
-              
-              <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-slate-50/50">
-                {aiMessages.length === 0 && (
-                  <div className="flex flex-col items-center justify-center h-full text-slate-400 gap-3">
-                    <Bot size={40} className="text-slate-300" />
-                    <p className="text-sm">告诉我你想查什么，或者需要生成什么 SQL</p>
-                  </div>
-                )}
-                {aiMessages.map((msg, i) => (
-                  <motion.div 
-                    key={i}
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}
-                  >
-                    <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
-                      msg.role === 'user' ? 'bg-slate-200' : 'bg-indigo-100 text-indigo-600'
-                    }`}>
-                      {msg.role === 'user' ? <AlignLeft size={16} /> : <Bot size={16} />}
-                    </div>
-                    <div className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
-                      msg.role === 'user' 
-                        ? 'bg-white border border-slate-200 shadow-sm text-slate-700' 
-                        : 'bg-indigo-600 text-white shadow-md shadow-indigo-600/10'
-                    }`}>
-                      {msg.role === 'assistant' ? (
-                        <div className="space-y-2">
-                          <div className="whitespace-pre-wrap">{msg.content.split('```')[0]}</div>
-                          {(msg.content.match(/```sql\n([\s\S]*?)\n```/) || msg.content.match(/```([\s\S]*?)\n```/)) && (
-                            <div className="mt-2">
-                              <div className="bg-black/20 rounded-lg p-3 font-mono text-xs overflow-x-auto">
-                                {(msg.content.match(/```sql\n([\s\S]*?)\n```/) || msg.content.match(/```([\s\S]*?)\n```/))![1]}
-                              </div>
-                              <button 
-                                onClick={() => handleApplyAISQL(msg.content)}
-                                className="mt-2 w-full py-1.5 bg-white/20 hover:bg-white/30 rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-2"
-                              >
-                                <Play size={12} /> 应用到控制台
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        msg.content
-                      )}
-                    </div>
-                  </motion.div>
-                ))}
-                {aiLoading && (
-                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex gap-3">
-                    <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center shrink-0">
-                      <Bot size={16} />
-                    </div>
-                    <div className="bg-white border border-slate-200 rounded-2xl px-4 py-3 shadow-sm flex items-center gap-2">
-                      <Loader2 size={16} className="animate-spin text-indigo-600" />
-                      <span className="text-xs text-slate-500">AI 思考中...</span>
-                    </div>
-                  </motion.div>
-                )}
-              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
-              <div className="p-4 bg-white border-t border-slate-100 flex gap-2">
-                <input
-                  type="text"
-                  placeholder="输入你的需求..."
-                  className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-sm focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600 outline-none transition-all"
-                  value={aiPrompt}
-                  onChange={(e) => setAIPrompt(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleAIChat()}
-                />
-                <motion.button 
-                  whileHover={{ scale: 1.05 }}
-                  whileTap={{ scale: 0.95 }}
-                  onClick={handleAIChat}
-                  disabled={aiLoading || !aiPrompt.trim()}
-                  className="w-10 h-10 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl flex items-center justify-center shadow-lg shadow-indigo-600/20 transition-all"
+      <AnimatePresence>
+        {erSchemaLanguagePickDb && (
+          <div className="fixed inset-0 z-[240] flex items-center justify-center p-6">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-slate-900/30 backdrop-blur-sm"
+              onClick={() => setErSchemaLanguagePickDb(null)}
+            />
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="relative z-10 bg-white border border-slate-200 rounded-2xl shadow-xl p-6 w-full max-w-sm"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h4 className="text-base font-bold text-slate-900 mb-1">生成库 ER 图</h4>
+              <p className="text-xs text-slate-500 mb-4">
+                每表单独成图：矩形为实体、椭圆为属性；表间以菱形表示关系，连线上标注基数（如多/一），箭头指向父表
+              </p>
+              <div className="flex flex-col gap-2">
+                <motion.button
+                  type="button"
+                  whileTap={{ scale: 0.98 }}
+                  className="w-full py-3 rounded-xl bg-slate-900 text-white text-sm font-semibold"
+                  onClick={() => {
+                    const db = erSchemaLanguagePickDb;
+                    setErSchemaLanguagePickDb(null);
+                    if (db) void handleGenerateSchemaERDiagram(db, 'zh');
+                  }}
                 >
-                  <Send size={18} />
+                  中文
                 </motion.button>
+                <motion.button
+                  type="button"
+                  whileTap={{ scale: 0.98 }}
+                  className="w-full py-3 rounded-xl border border-slate-200 text-slate-800 text-sm font-semibold hover:bg-slate-50"
+                  onClick={() => {
+                    const db = erSchemaLanguagePickDb;
+                    setErSchemaLanguagePickDb(null);
+                    if (db) void handleGenerateSchemaERDiagram(db, 'en');
+                  }}
+                >
+                  English
+                </motion.button>
+                <button
+                  type="button"
+                  className="w-full py-2 text-xs text-slate-500"
+                  onClick={() => setErSchemaLanguagePickDb(null)}
+                >
+                  取消
+                </button>
               </div>
             </motion.div>
           </div>
