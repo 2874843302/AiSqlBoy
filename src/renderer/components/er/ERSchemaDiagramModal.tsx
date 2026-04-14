@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Loader2, Maximize2, Minimize2, Pencil, Trash2, Undo2, X } from 'lucide-react';
+import { Loader2, Maximize2, Minimize2, Pencil, Send, Sparkles, Trash2, Undo2, X } from 'lucide-react';
 import ConfirmModal from '../common/ConfirmModal';
 import type { ERLabelLanguage } from './ERDiagramModal';
 
@@ -34,6 +34,7 @@ type ERSchemaDiagramModalProps = {
 };
 
 type Point = { x: number; y: number };
+type AiAdjustMessage = { role: 'user' | 'assistant'; content: string };
 
 const ATTR_RY = 24;
 /** 库级图略紧凑，仍保持实体—属性间距 */
@@ -213,6 +214,7 @@ const ERSchemaDiagramModal: React.FC<ERSchemaDiagramModalProps> = ({
 }) => {
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
   const [tablesState, setTablesState] = useState<EditableTable[]>([]);
+  const [relationshipsState, setRelationshipsState] = useState<ERSchemaRelationship[]>([]);
   const [entityPos, setEntityPos] = useState<Record<string, Point>>({});
   const [attrPos, setAttrPos] = useState<Record<string, Point[]>>({});
   const [relPos, setRelPos] = useState<Record<string, Point>>({});
@@ -229,6 +231,12 @@ const ERSchemaDiagramModal: React.FC<ERSchemaDiagramModalProps> = ({
   const [zoom, setZoom] = useState(1);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const canvasScrollRef = useRef<HTMLDivElement>(null);
+  const [aiAdjustOpen, setAiAdjustOpen] = useState(false);
+  const [aiAdjustPrompt, setAiAdjustPrompt] = useState('');
+  const [aiAdjustLoading, setAiAdjustLoading] = useState(false);
+  const [aiAdjustError, setAiAdjustError] = useState<string | null>(null);
+  const [aiAdjustMessages, setAiAdjustMessages] = useState<AiAdjustMessage[]>([]);
+  const aiAdjustScrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!show) setCloseConfirmOpen(false);
@@ -238,8 +246,21 @@ const ERSchemaDiagramModal: React.FC<ERSchemaDiagramModalProps> = ({
     if (!show) {
       setZoom(1);
       setIsFullscreen(false);
+      setAiAdjustOpen(false);
+      setAiAdjustPrompt('');
+      setAiAdjustError(null);
+      setAiAdjustLoading(false);
+      setAiAdjustMessages([]);
     }
   }, [show]);
+
+  useEffect(() => {
+    if (!aiAdjustOpen) return;
+    const t = requestAnimationFrame(() => {
+      aiAdjustScrollRef.current?.scrollTo({ top: aiAdjustScrollRef.current.scrollHeight });
+    });
+    return () => cancelAnimationFrame(t);
+  }, [aiAdjustOpen, aiAdjustMessages, aiAdjustLoading]);
 
   const initLayout = useCallback(() => {
     const rawTables = tables;
@@ -282,7 +303,8 @@ const ERSchemaDiagramModal: React.FC<ERSchemaDiagramModalProps> = ({
 
     // relationship diamond initial position: mid of two entity centers, with small perpendicular offset per pair
     const pairCount = new Map<string, number>();
-    for (const rel of relationships) {
+    const relList = relationships;
+    for (const rel of relList) {
       const fromId = idByName.get(rel.from);
       const toId = idByName.get(rel.to);
       if (!fromId || !toId) continue;
@@ -321,6 +343,7 @@ const ERSchemaDiagramModal: React.FC<ERSchemaDiagramModalProps> = ({
     }
 
     setTablesState(editable);
+    setRelationshipsState(relList);
     setEntityPos(ep);
     setAttrPos(ap);
     setRelPos(rp);
@@ -388,6 +411,183 @@ const ERSchemaDiagramModal: React.FC<ERSchemaDiagramModalProps> = ({
     });
   }, []);
 
+  const handleAiAdjust = useCallback(async () => {
+    const instruction = aiAdjustPrompt.trim();
+    if (!instruction || aiAdjustLoading) return;
+    setAiAdjustLoading(true);
+    setAiAdjustError(null);
+    setAiAdjustMessages((prev) => [...prev, { role: 'user', content: instruction }]);
+    try {
+      const current = {
+        tables: tablesState.map((t) => ({
+          name: t.name,
+          displayName: t.displayName,
+          columns: t.columns.map((c) => c.name)
+        })),
+        relationships: relationshipsState.map((r) => ({
+          from: r.from,
+          to: r.to,
+          label: relText[r.id]?.label || r.label,
+          fromCard: relText[r.id]?.fromCard || r.fromCard,
+          toCard: relText[r.id]?.toCard || r.toCard
+        }))
+      };
+
+      const recent = aiAdjustMessages.slice(-8);
+      const conversation = recent
+        .map((m) => `${m.role === 'user' ? '用户' : '助手'}: ${m.content}`)
+        .join('\n');
+
+      const prompt =
+        `你是 ER 画布修正助手，需要根据用户指令对“库级 ER 图”进行修正。只返回 JSON，不要解释。` +
+        `\n历史对话(可能为空):\n${conversation || '(无)'}` +
+        `\n用户指令: ${instruction}` +
+        `\n当前图数据: ${JSON.stringify(current)}` +
+        `\n规则:` +
+        `\n- table.name 作为唯一标识，不要改动 name；如果要改表显示名，用 displayName` +
+        `\n- 关系基数只能用 1/N/M（禁止中文一/多）` +
+        `\n返回 JSON 格式(可只给需要修改的表；relationships 给出最终完整关系集合):` +
+        `\n{` +
+        `\n  \"tables\": [{\"name\":\"...\",\"displayName\":\"...\",\"columns\":[\"...\"]}],` +
+        `\n  \"relationships\": [{\"from\":\"子表\",\"to\":\"父表\",\"label\":\"关系名\",\"fromCard\":\"N\",\"toCard\":\"1\"}]` +
+        `\n}`;
+
+      const aiRes = await window.electronAPI.aiChat([
+        { role: 'system', content: '你是数据库建模助手。必须只返回合法 JSON。' },
+        { role: 'user', content: prompt }
+      ]);
+      if (!aiRes.success || !aiRes.response) throw new Error(aiRes.error || 'AI 返回为空');
+      const raw = aiRes.response.trim();
+      const jsonBlock = raw.match(/```json\s*([\s\S]*?)```/i)?.[1] || raw.match(/\{[\s\S]*\}/)?.[0];
+      if (!jsonBlock) throw new Error('未解析到 JSON');
+      const parsed = JSON.parse(jsonBlock);
+
+      pushHistory();
+
+      if (Array.isArray(parsed?.tables) && parsed.tables.length > 0) {
+        setTablesState((prev) => {
+          const map = new Map<string, any>();
+          parsed.tables.forEach((t: any) => {
+            if (t?.name) map.set(String(t.name), t);
+          });
+          return prev.map((t) => {
+            const patch = map.get(t.name);
+            if (!patch) return t;
+            const nextDisplay = patch.displayName != null ? String(patch.displayName) : t.displayName;
+            const nextCols = Array.isArray(patch.columns)
+              ? patch.columns.filter(Boolean).map((c: any, i: number) => ({ id: `${t.id}-col-${i}-${Date.now()}`, name: String(c) }))
+              : t.columns;
+            return { ...t, displayName: nextDisplay, columns: nextCols.slice(0, SCHEMA_ATTR_CAP) };
+          });
+        });
+
+        // Re-layout attribute positions for changed tables (best-effort)
+        setAttrPos((prev) => {
+          const out: Record<string, Point[]> = { ...prev };
+          for (const t of tablesState) {
+            const patch = Array.isArray(parsed?.tables) ? parsed.tables.find((x: any) => String(x?.name) === t.name) : null;
+            if (!patch) continue;
+            const p = entityPos[t.id];
+            if (!p) continue;
+            const label = (patch.displayName != null ? String(patch.displayName) : t.displayName) || t.name;
+            const { w: ew, h: eh } = measureEntityBox(label);
+            const cols = Array.isArray(patch.columns) ? patch.columns.length : t.columns.length;
+            out[t.id] = layoutAttributes(Math.min(cols, SCHEMA_ATTR_CAP), p.x, p.y, ew, eh);
+          }
+          return out;
+        });
+      }
+
+      if (Array.isArray(parsed?.relationships)) {
+        const normalizeCard = (v: any, fallback: '1' | 'N' | 'M') => {
+          const s = (v == null ? '' : String(v)).trim().toUpperCase();
+          if (s === '1') return '1';
+          if (s === 'N') return 'N';
+          if (s === 'M') return 'M';
+          return fallback;
+        };
+        const next: ERSchemaRelationship[] = [];
+        const nextText: Record<string, { label: string; fromCard: string; toCard: string }> = {};
+        const existingByPair = new Map<string, ERSchemaRelationship>();
+        relationshipsState.forEach((r) => existingByPair.set(`${r.from}\0${r.to}`, r));
+        parsed.relationships.forEach((r: any, i: number) => {
+          const from = r?.from != null ? String(r.from) : '';
+          const to = r?.to != null ? String(r.to) : '';
+          if (!from || !to || from === to) return;
+          const base = existingByPair.get(`${from}\0${to}`);
+          const id = base?.id || `rel-ai-${Date.now()}-${i}`;
+          const label = r?.label != null ? String(r.label) : base?.label || '';
+          const fromCard = normalizeCard(r?.fromCard, 'N');
+          const toCard = normalizeCard(r?.toCard, '1');
+          next.push({ id, from, to, label, fromCard, toCard });
+          nextText[id] = { label, fromCard, toCard };
+        });
+        setRelationshipsState(next);
+        setRelText((prev) => ({ ...prev, ...nextText }));
+
+        // Ensure diamond positions exist for new relationships
+        setRelPos((prev) => {
+          const out: Record<string, Point> = { ...prev };
+          const idByName = new Map<string, string>();
+          tablesState.forEach((t) => idByName.set(t.name, t.id));
+          const pairCount = new Map<string, number>();
+          next.forEach((rel) => {
+            if (out[rel.id]) return;
+            const fromId = idByName.get(rel.from);
+            const toId = idByName.get(rel.to);
+            if (!fromId || !toId) return;
+            const fromT = tablesState.find((t) => t.id === fromId);
+            const toT = tablesState.find((t) => t.id === toId);
+            if (!fromT || !toT) return;
+            const fp = entityPos[fromId];
+            const tp = entityPos[toId];
+            if (!fp || !tp) return;
+            const fl = fromT.displayName || fromT.name;
+            const tl = toT.displayName || toT.name;
+            const { w: fw, h: fh } = measureEntityBox(fl);
+            const { w: tw, h: th } = measureEntityBox(tl);
+            const fcx = fp.x + fw / 2;
+            const fcy = fp.y + fh / 2;
+            const tcx = tp.x + tw / 2;
+            const tcy = tp.y + th / 2;
+            const key = [fromId, toId].sort().join('|');
+            const idx = pairCount.get(key) ?? 0;
+            pairCount.set(key, idx + 1);
+            const mx = (fcx + tcx) / 2;
+            const my = (fcy + tcy) / 2;
+            const vx = tcx - fcx;
+            const vy = tcy - fcy;
+            const len = Math.hypot(vx, vy) || 1;
+            const px = -vy / len;
+            const py = vx / len;
+            const off = idx * 30;
+            out[rel.id] = { x: mx + px * off, y: my + py * off };
+          });
+          return out;
+        });
+      }
+
+      setAiAdjustPrompt('');
+      setSelected(null);
+      setAiAdjustMessages((prev) => [...prev, { role: 'assistant', content: '已应用本轮修正。' }]);
+    } catch (err: any) {
+      const msg = err?.message || 'AI 修正失败';
+      setAiAdjustError(msg);
+      setAiAdjustMessages((prev) => [...prev, { role: 'assistant', content: `修正失败：${msg}` }]);
+    } finally {
+      setAiAdjustLoading(false);
+    }
+  }, [
+    aiAdjustPrompt,
+    aiAdjustLoading,
+    aiAdjustMessages,
+    tablesState,
+    relationshipsState,
+    relText,
+    pushHistory,
+    entityPos
+  ]);
+
   const handleDeleteSelected = useCallback(() => {
     if (!selected) return;
     pushHistory();
@@ -432,9 +632,10 @@ const ERSchemaDiagramModal: React.FC<ERSchemaDiagramModalProps> = ({
       // remove relationships involving this table name
       if (tbl) {
         const name = tbl.name;
-        const idsToRemove = relationships
+        const idsToRemove = relationshipsState
           .filter((r) => r.from === name || r.to === name)
           .map((r) => r.id);
+        setRelationshipsState((prev) => prev.filter((r) => !idsToRemove.includes(r.id)));
         setRelPos((prev) => {
           const out = { ...prev };
           idsToRemove.forEach((id) => delete out[id]);
@@ -448,7 +649,7 @@ const ERSchemaDiagramModal: React.FC<ERSchemaDiagramModalProps> = ({
       }
       setSelected(null);
     }
-  }, [selected, pushHistory, tablesState, relationships]);
+  }, [selected, pushHistory, tablesState, relationshipsState]);
 
   const openTextEdit = useCallback(
     (target: TextEditTarget) => {
@@ -822,6 +1023,16 @@ const ERSchemaDiagramModal: React.FC<ERSchemaDiagramModalProps> = ({
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
+                    onClick={() => setAiAdjustOpen((v) => !v)}
+                    className={`h-8 px-3 rounded-lg text-xs font-semibold flex items-center gap-1.5 ${
+                      aiAdjustOpen ? 'bg-indigo-600 text-white' : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700'
+                    }`}
+                    title="AI 多轮对话修正库级 ER 图"
+                  >
+                    <Sparkles size={14} /> AI 修正
+                  </button>
+                  <button
+                    type="button"
                     onClick={handleEditSelected}
                     disabled={!selected}
                     className="h-8 px-3 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold flex items-center gap-1.5 disabled:opacity-40"
@@ -865,6 +1076,58 @@ const ERSchemaDiagramModal: React.FC<ERSchemaDiagramModalProps> = ({
                   </button>
                 </div>
               </div>
+
+              {aiAdjustOpen && !loading && (
+                <div className="px-6 py-3 border-b border-slate-100 bg-indigo-50/40">
+                  <div
+                    ref={aiAdjustScrollRef}
+                    className="mb-2 max-h-36 overflow-auto rounded-xl border border-indigo-100 bg-white p-2 space-y-1"
+                  >
+                    {aiAdjustMessages.length === 0 ? (
+                      <p className="text-[11px] text-slate-400">
+                        连续输入指令可多轮修图，AI 会结合上下文继续调整（实体/属性/关系/基数）。
+                      </p>
+                    ) : (
+                      aiAdjustMessages.map((m, i) => (
+                        <div
+                          key={`${m.role}-${i}`}
+                          className={`text-[11px] leading-5 px-2 py-1 rounded-lg ${
+                            m.role === 'user' ? 'bg-indigo-50 text-indigo-700' : 'bg-slate-50 text-slate-600'
+                          }`}
+                        >
+                          <span className="font-semibold mr-1">{m.role === 'user' ? '你:' : 'AI:'}</span>
+                          {m.content}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={aiAdjustPrompt}
+                      onChange={(e) => setAiAdjustPrompt(e.target.value)}
+                      placeholder={labelLanguage === 'zh' ? '例如：把 user 表重命名为 用户；新增关系 N对M；删除某条关系' : 'e.g. rename user display, add N:M rel, delete a rel'}
+                      className="flex-1 rounded-xl border border-indigo-200 px-3 py-2 text-sm text-slate-900 outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          void handleAiAdjust();
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void handleAiAdjust()}
+                      disabled={!aiAdjustPrompt.trim() || aiAdjustLoading}
+                      className="h-9 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold flex items-center gap-1.5 disabled:opacity-40"
+                    >
+                      {aiAdjustLoading ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+                      应用
+                    </button>
+                  </div>
+                  {aiAdjustError && <p className="mt-2 text-xs text-red-600">{aiAdjustError}</p>}
+                </div>
+              )}
 
               <div
                 ref={canvasScrollRef}
@@ -914,7 +1177,6 @@ const ERSchemaDiagramModal: React.FC<ERSchemaDiagramModalProps> = ({
                             y={p.y}
                             width={ew}
                             height={eh}
-                            rx={10}
                             fill="none"
                             stroke={selectedEntity ? '#2563eb' : '#334155'}
                             strokeWidth={2}
@@ -975,7 +1237,7 @@ const ERSchemaDiagramModal: React.FC<ERSchemaDiagramModalProps> = ({
 
                     {/* 表间：菱形 + 连线 + 基数（最后绘制以免被实体遮挡） */}
                     <g className="er-schema-inter-table">
-                      {relationships
+                      {relationshipsState
                         .filter((r) => relPos[r.id] && relText[r.id])
                         .map((r) => {
                           const diamond = relPos[r.id];

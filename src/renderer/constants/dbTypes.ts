@@ -23,5 +23,17 @@ export const DB_TYPES = {
     'UUID',
     'BYTEA'
   ],
+  oracle: [
+    'NUMBER',
+    'NUMBER(19)',
+    'VARCHAR2(255)',
+    'NVARCHAR2(255)',
+    'CLOB',
+    'DATE',
+    'TIMESTAMP',
+    'FLOAT',
+    'BLOB',
+    'RAW(16)'
+  ],
   sqlite: ['INTEGER', 'TEXT', 'REAL', 'BLOB', 'NUMERIC']
 } as const;

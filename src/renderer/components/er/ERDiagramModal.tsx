@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Loader2, Pencil, Trash2, Undo2, X } from 'lucide-react';
+import { Loader2, Pencil, Send, Sparkles, Trash2, Undo2, X } from 'lucide-react';
 import ConfirmModal from '../common/ConfirmModal';
 
 export type ERAttribute = {
@@ -27,6 +27,7 @@ type Point = { x: number; y: number };
 type DragTarget = { type: 'entity' } | { type: 'attr'; index: number } | null;
 type SelectedTarget = { type: 'entity' } | { type: 'attr'; index: number } | null;
 type EditableAttribute = ERAttribute & { id: string };
+type AiAdjustMessage = { role: 'user' | 'assistant'; content: string };
 type Snapshot = {
   entityLabel: string;
   attributes: EditableAttribute[];
@@ -129,6 +130,12 @@ const ERDiagramModal: React.FC<ERDiagramModalProps> = ({
   const [textDraft, setTextDraft] = useState('');
   const textInputRef = useRef<HTMLInputElement>(null);
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
+  const [aiAdjustOpen, setAiAdjustOpen] = useState(false);
+  const [aiAdjustPrompt, setAiAdjustPrompt] = useState('');
+  const [aiAdjustLoading, setAiAdjustLoading] = useState(false);
+  const [aiAdjustError, setAiAdjustError] = useState<string | null>(null);
+  const [aiAdjustMessages, setAiAdjustMessages] = useState<AiAdjustMessage[]>([]);
+  const aiAdjustScrollRef = useRef<HTMLDivElement>(null);
 
   const entityBox = useMemo(() => measureEntityBox(entityLabel), [entityLabel]);
 
@@ -249,6 +256,82 @@ const ERDiagramModal: React.FC<ERDiagramModalProps> = ({
     });
   }, []);
 
+  const handleAiAdjust = useCallback(async () => {
+    const instruction = aiAdjustPrompt.trim();
+    if (!instruction || aiAdjustLoading) return;
+    setAiAdjustLoading(true);
+    setAiAdjustError(null);
+    setAiAdjustMessages((prev) => [...prev, { role: 'user', content: instruction }]);
+    try {
+      const current = {
+        entity: entityLabel,
+        attributes: editableAttributes.map((a) => ({ name: a.name, type: a.type, key: a.key || 'NONE' }))
+      };
+      const recent = aiAdjustMessages.slice(-8);
+      const conversation = recent
+        .map((m) => `${m.role === 'user' ? '用户' : '助手'}: ${m.content}`)
+        .join('\n');
+      const prompt =
+        `你需要根据用户指令修正 ER 图，仅返回 JSON，不要解释。` +
+        `\n历史对话(可能为空):\n${conversation || '(无)'}` +
+        `\n用户指令: ${instruction}` +
+        `\n当前图: ${JSON.stringify(current)}` +
+        `\n参考 SQL:\n${sourceSql}` +
+        `\n返回格式: {"entity":"实体名","attributes":[{"name":"字段展示名","type":"字段类型","key":"PK|FK|UK|NONE"}]}`;
+
+      const aiRes = await window.electronAPI.aiChat([
+        { role: 'system', content: '你是数据库建模助手。必须只返回合法 JSON。' },
+        { role: 'user', content: prompt }
+      ]);
+      if (!aiRes.success || !aiRes.response) {
+        throw new Error(aiRes.error || 'AI 返回为空');
+      }
+
+      const raw = aiRes.response.trim();
+      const jsonBlock = raw.match(/```json\s*([\s\S]*?)```/i)?.[1] || raw.match(/\{[\s\S]*\}/)?.[0];
+      if (!jsonBlock) throw new Error('未解析到 JSON');
+      const parsed = JSON.parse(jsonBlock);
+      const nextEntity = parsed?.entity != null ? String(parsed.entity).trim() : entityLabel;
+      const nextAttrsRaw = Array.isArray(parsed?.attributes) ? parsed.attributes : [];
+      const nextAttrs = nextAttrsRaw
+        .filter((a: any) => a && a.name != null && String(a.name).trim() !== '')
+        .map((a: any, i: number) => ({
+          id: editableAttributes[i]?.id || `attr-${Date.now()}-${i}`,
+          name: String(a.name).trim(),
+          type: a.type != null ? String(a.type) : undefined,
+          key: a.key != null ? String(a.key).toUpperCase() : 'NONE'
+        }));
+      if (nextAttrs.length === 0) throw new Error('AI 返回的属性为空');
+
+      pushHistory();
+      setEntityLabel(nextEntity || entityLabel);
+      setEditableAttributes(nextAttrs);
+      setAttributePositions((prev) => {
+        if (prev.length === nextAttrs.length) return prev;
+        const base = layoutAttributes(
+          nextAttrs.length,
+          entityPos.x,
+          entityPos.y,
+          measureEntityBox(nextEntity || entityLabel).w,
+          measureEntityBox(nextEntity || entityLabel).h
+        );
+        return nextAttrs.map((_, i) => prev[i] || base[i]);
+      });
+      const assistantReply = `已应用：实体「${nextEntity || entityLabel}」，属性 ${nextAttrs.length} 个。`;
+      setAiAdjustMessages((prev) => [...prev, { role: 'assistant', content: assistantReply }]);
+      setAiAdjustPrompt('');
+      setSelected(null);
+    } catch (err: any) {
+      setAiAdjustError(err?.message || 'AI 修正失败');
+      setAiAdjustMessages((prev) => [
+        ...prev,
+        { role: 'assistant', content: `修正失败：${err?.message || 'AI 修正失败'}` }
+      ]);
+    } finally {
+      setAiAdjustLoading(false);
+    }
+  }, [aiAdjustPrompt, aiAdjustLoading, aiAdjustMessages, entityLabel, editableAttributes, sourceSql, pushHistory, entityPos.x, entityPos.y]);
+
   useEffect(() => {
     if (!show) return;
     const labelForBox = (entityDisplayName?.trim() ? entityDisplayName : tableName) || tableName;
@@ -267,6 +350,24 @@ const ERDiagramModal: React.FC<ERDiagramModalProps> = ({
   useEffect(() => {
     if (!show) setCloseConfirmOpen(false);
   }, [show]);
+
+  useEffect(() => {
+    if (!show) {
+      setAiAdjustOpen(false);
+      setAiAdjustPrompt('');
+      setAiAdjustError(null);
+      setAiAdjustLoading(false);
+      setAiAdjustMessages([]);
+    }
+  }, [show]);
+
+  useEffect(() => {
+    if (!aiAdjustOpen) return;
+    const t = requestAnimationFrame(() => {
+      aiAdjustScrollRef.current?.scrollTo({ top: aiAdjustScrollRef.current.scrollHeight });
+    });
+    return () => cancelAnimationFrame(t);
+  }, [aiAdjustOpen, aiAdjustMessages, aiAdjustLoading]);
 
   useEffect(() => {
     if (!show) return;
@@ -488,6 +589,18 @@ const ERDiagramModal: React.FC<ERDiagramModalProps> = ({
               <div className="flex items-center gap-2">
                 <button
                   type="button"
+                  onClick={() => setAiAdjustOpen((v) => !v)}
+                  className={`h-8 px-3 rounded-lg text-xs font-semibold flex items-center gap-1.5 ${
+                    aiAdjustOpen
+                      ? 'bg-indigo-600 text-white'
+                      : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700'
+                  }`}
+                  title="AI 根据指令修正图形"
+                >
+                  <Sparkles size={14} /> AI 修正
+                </button>
+                <button
+                  type="button"
                   onClick={handleEditSelected}
                   disabled={!selected}
                   className="h-8 px-3 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold flex items-center gap-1.5 disabled:opacity-40"
@@ -522,6 +635,57 @@ const ERDiagramModal: React.FC<ERDiagramModalProps> = ({
                 </button>
               </div>
             </div>
+            {aiAdjustOpen && !loading && (
+              <div className="px-6 py-3 border-b border-slate-100 bg-indigo-50/40">
+                <div
+                  ref={aiAdjustScrollRef}
+                  className="mb-2 max-h-36 overflow-auto rounded-xl border border-indigo-100 bg-white p-2 space-y-1"
+                >
+                  {aiAdjustMessages.length === 0 ? (
+                    <p className="text-[11px] text-slate-400">
+                      连续输入指令可多轮修图，AI 会结合上下文继续调整。
+                    </p>
+                  ) : (
+                    aiAdjustMessages.map((m, i) => (
+                      <div
+                        key={`${m.role}-${i}`}
+                        className={`text-[11px] leading-5 px-2 py-1 rounded-lg ${
+                          m.role === 'user' ? 'bg-indigo-50 text-indigo-700' : 'bg-slate-50 text-slate-600'
+                        }`}
+                      >
+                        <span className="font-semibold mr-1">{m.role === 'user' ? '你:' : 'AI:'}</span>
+                        {m.content}
+                      </div>
+                    ))
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={aiAdjustPrompt}
+                    onChange={(e) => setAiAdjustPrompt(e.target.value)}
+                    placeholder={labelLanguage === 'zh' ? '例如：把手机号改为 phone，删除年龄字段，新增邮箱字段' : 'e.g. rename mobile to phone, remove age, add email'}
+                    className="flex-1 rounded-xl border border-indigo-200 px-3 py-2 text-sm text-slate-900 outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        void handleAiAdjust();
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handleAiAdjust()}
+                    disabled={!aiAdjustPrompt.trim() || aiAdjustLoading}
+                    className="h-9 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold flex items-center gap-1.5 disabled:opacity-40"
+                  >
+                    {aiAdjustLoading ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+                    应用
+                  </button>
+                </div>
+                {aiAdjustError && <p className="mt-2 text-xs text-red-600">{aiAdjustError}</p>}
+              </div>
+            )}
 
             <div className="flex-1 bg-slate-50 overflow-auto">
               {loading ? (
@@ -544,7 +708,6 @@ const ERDiagramModal: React.FC<ERDiagramModalProps> = ({
                     y={entityPos.y}
                     width={ew}
                     height={eh}
-                    rx={10}
                     fill="none"
                     stroke={selected?.type === 'entity' ? '#2563eb' : '#334155'}
                     strokeWidth={2}

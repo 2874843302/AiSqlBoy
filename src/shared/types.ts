@@ -1,7 +1,7 @@
 export interface ConnectionConfig {
   id?: number;
   name: string;
-  type: 'sqlite' | 'mysql' | 'postgresql' | 'redis';
+  type: 'sqlite' | 'mysql' | 'postgresql' | 'oracle' | 'redis';
   host?: string;
   port?: number;
   user?: string;

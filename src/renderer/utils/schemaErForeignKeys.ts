@@ -85,7 +85,7 @@ export function inferHeuristicFkEdges(
 type ExecuteQuery = (sql: string) => Promise<{ data: any[]; columns: string[] }>;
 
 export async function fetchForeignKeysFromDb(
-  driverType: 'sqlite' | 'mysql' | 'postgresql' | 'redis',
+  driverType: 'sqlite' | 'mysql' | 'postgresql' | 'oracle' | 'redis',
   tableNames: string[],
   executeQuery: ExecuteQuery
 ): Promise<RawFkEdge[]> {
@@ -156,6 +156,40 @@ export async function fetchForeignKeysFromDb(
         childCol: String(row.child_col),
         parentTable: String(row.parent_table),
         parentCol: String(row.parent_col || 'id')
+      });
+    }
+    return dedupeEdges(edges);
+  }
+
+  if (driverType === 'oracle') {
+    const { data } = await executeQuery(`
+      SELECT
+        a.table_name AS child_table,
+        a.column_name AS child_col,
+        c_pk.table_name AS parent_table,
+        b.column_name AS parent_col
+      FROM all_cons_columns a
+      JOIN all_constraints c
+        ON a.owner = c.owner AND a.constraint_name = c.constraint_name
+      JOIN all_constraints c_pk
+        ON c.r_owner = c_pk.owner AND c.r_constraint_name = c_pk.constraint_name
+      JOIN all_cons_columns b
+        ON c_pk.owner = b.owner
+        AND c_pk.constraint_name = b.constraint_name
+        AND a.position = b.position
+      WHERE c.constraint_type = 'R'
+        AND a.owner = SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA')
+    `);
+    const edges: RawFkEdge[] = [];
+    const tset = new Set(tableNames.map((t) => t.toUpperCase()));
+    for (const row of data) {
+      const child = String(row.child_table ?? row.CHILD_TABLE ?? '');
+      if (!tset.has(child.toUpperCase())) continue;
+      edges.push({
+        childTable: child,
+        childCol: String(row.child_col ?? row.CHILD_COL ?? ''),
+        parentTable: String(row.parent_table ?? row.PARENT_TABLE ?? ''),
+        parentCol: String(row.parent_col ?? row.PARENT_COL ?? 'id'),
       });
     }
     return dedupeEdges(edges);

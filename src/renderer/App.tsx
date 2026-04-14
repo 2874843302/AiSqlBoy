@@ -2,6 +2,17 @@ import React, { useState, useEffect } from 'react'
 import { Database, Table, Play, Plus, Trash2, X, Server, HardDrive, RefreshCw, ChevronRight, Layout, Settings, Activity, AlignLeft, Bot, Sparkles, Send, Loader2, Key, Search, ArrowUp, ArrowDown, FileJson, Save, Terminal, Download, CheckCircle2 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ConnectionConfig } from '../shared/types'
+import { AI_SETTING_KEYS } from '../shared/aiSettings'
+import { UI_SETTING_KEYS } from '../shared/uiSettings'
+import {
+  AI_VENDOR_LIST,
+  AI_VENDOR_MODELS,
+  AI_VERSION_OPTIONS,
+  type AiVendorId,
+  defaultModelForVendor,
+  getVendorBaseUrl,
+  inferVendorFromStoredBase,
+} from '../shared/aiProviderPresets'
 import { format } from 'sql-formatter'
 import Editor from 'react-simple-code-editor';
 import Prism from 'prismjs';
@@ -198,7 +209,27 @@ const App: React.FC = () => {
   const [isResizingResults, setIsResizingResults] = useState(false);
 
   const [showSettings, setShowSettings] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<'ai' | 'ui' | 'update'>('ai');
   const [apiKey, setApiKey] = useState('');
+  const [providerVendor, setProviderVendor] = useState<AiVendorId>('deepseek');
+  const [providerEndpoint, setProviderEndpoint] = useState('');
+  const [providerModel, setProviderModel] = useState('');
+  const [providerApiVersion, setProviderApiVersion] = useState('');
+
+  const DEFAULT_UI_FONT_STACK = "'Inter', 'PingFang SC', 'Microsoft YaHei', sans-serif";
+  type ThemeMode = 'light' | 'dark' | 'system';
+  const UI_FONT_PRESETS: { label: string; value: string }[] = [
+    { label: '默认（Inter / 中英混排）', value: DEFAULT_UI_FONT_STACK },
+    { label: 'Microsoft YaHei', value: "'Microsoft YaHei', 'PingFang SC', sans-serif" },
+    { label: 'PingFang SC', value: "'PingFang SC', 'Microsoft YaHei', sans-serif" },
+    { label: 'Noto Sans SC', value: "'Noto Sans SC', 'Microsoft YaHei', sans-serif" },
+    { label: 'Segoe UI', value: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif" },
+    { label: 'Roboto', value: "'Roboto', 'Segoe UI', sans-serif" },
+    { label: 'Consolas（等宽）', value: "'Consolas', 'Courier New', monospace" },
+    { label: 'Courier New（等宽）', value: "'Courier New', monospace" },
+  ];
+  const [uiFontFamily, setUiFontFamily] = useState<string>(DEFAULT_UI_FONT_STACK);
+  const [uiThemeMode, setUiThemeMode] = useState<ThemeMode>('system');
 
   const [showAISelectionInput, setShowAISelectionInput] = useState(false);
   const aiPopupRef = React.useRef<HTMLDivElement>(null);
@@ -406,7 +437,8 @@ const App: React.FC = () => {
 
   useEffect(() => {
     loadSavedConnections()
-    loadSettings()
+    loadAiSettings()
+    loadUiSettings()
   }, [])
 
   // 搜索逻辑
@@ -527,15 +559,112 @@ const App: React.FC = () => {
      resetSelectionState();
    }, [activeConsoleId]);
 
-  const loadSettings = async () => {
-    const savedKey = await window.electronAPI.getSetting('deepseek_api_key');
+  const loadAiSettings = async () => {
+    const savedKey = await window.electronAPI.getSetting(AI_SETTING_KEYS.apiKey);
     if (savedKey) setApiKey(savedKey);
+    else setApiKey('');
+    const base = (await window.electronAPI.getSetting(AI_SETTING_KEYS.openaiBaseUrl)) ?? '';
+    const model = (await window.electronAPI.getSetting(AI_SETTING_KEYS.openaiModel)) ?? '';
+    const ver = (await window.electronAPI.getSetting(AI_SETTING_KEYS.openaiApiVersion)) ?? '';
+    let vendor = (await window.electronAPI.getSetting(AI_SETTING_KEYS.providerVendor)) as AiVendorId | null;
+    if (!vendor || !AI_VENDOR_LIST.some((v) => v.id === vendor)) {
+      vendor = inferVendorFromStoredBase(base);
+    }
+    setProviderVendor(vendor);
+    if (vendor === 'azure' || vendor === 'custom') {
+      setProviderEndpoint(base);
+    } else {
+      setProviderEndpoint('');
+    }
+    const models = AI_VENDOR_MODELS[vendor];
+    const modelInList = models.some((m) => m.value === model);
+    if (vendor === 'custom' || !models.length) {
+      setProviderModel(model);
+    } else if (model && modelInList) {
+      setProviderModel(model);
+    } else {
+      setProviderModel(defaultModelForVendor(vendor));
+    }
+    const verOpts = AI_VERSION_OPTIONS[vendor];
+    if (ver && verOpts.some((o) => o.value === ver)) {
+      setProviderApiVersion(ver);
+    } else if (ver) {
+      setProviderApiVersion(ver);
+    } else {
+      setProviderApiVersion(verOpts[0]?.value ?? '');
+    }
   }
 
+  const applyUiFontFamily = (fontFamily: string) => {
+    const stack = (fontFamily && fontFamily.trim()) ? fontFamily : DEFAULT_UI_FONT_STACK;
+    // Tailwind v4 通过 --font-sans 控制 font-family；同时设置 html/body 兜底。
+    document.documentElement.style.setProperty('--font-sans', stack);
+    document.documentElement.style.fontFamily = stack;
+    document.body.style.fontFamily = stack;
+  }
+
+  const applyUiThemeMode = (mode: ThemeMode) => {
+    const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const resolved: 'light' | 'dark' =
+      mode === 'system' ? (prefersDark ? 'dark' : 'light') : mode;
+    document.documentElement.setAttribute('data-theme', resolved);
+    document.body.setAttribute('data-theme', resolved);
+  }
+
+  const loadUiSettings = async () => {
+    const savedFont = await window.electronAPI.getSetting(UI_SETTING_KEYS.fontFamily);
+    const next = savedFont && savedFont.trim() ? savedFont : DEFAULT_UI_FONT_STACK;
+    setUiFontFamily(next);
+    applyUiFontFamily(next);
+
+    const savedTheme = await window.electronAPI.getSetting(UI_SETTING_KEYS.themeMode);
+    const nextTheme: ThemeMode =
+      savedTheme === 'light' || savedTheme === 'dark' || savedTheme === 'system'
+        ? savedTheme
+        : 'system';
+    setUiThemeMode(nextTheme);
+    applyUiThemeMode(nextTheme);
+  }
+
+  useEffect(() => {
+    applyUiFontFamily(uiFontFamily);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uiFontFamily]);
+
+  useEffect(() => {
+    applyUiThemeMode(uiThemeMode);
+  }, [uiThemeMode]);
+
   const handleSaveSettings = async () => {
-    await window.electronAPI.saveSetting('deepseek_api_key', apiKey);
+    let baseToSave = '';
+    if (providerVendor === 'deepseek') {
+      baseToSave = getVendorBaseUrl('deepseek');
+    } else if (providerVendor === 'openai') {
+      baseToSave = getVendorBaseUrl('openai');
+    } else {
+      baseToSave = providerEndpoint.trim();
+    }
+    await window.electronAPI.saveSetting(AI_SETTING_KEYS.apiKey, apiKey);
+    await window.electronAPI.saveSetting(AI_SETTING_KEYS.providerVendor, providerVendor);
+    await window.electronAPI.saveSetting(AI_SETTING_KEYS.openaiBaseUrl, baseToSave);
+    await window.electronAPI.saveSetting(AI_SETTING_KEYS.openaiModel, providerModel.trim());
+    await window.electronAPI.saveSetting(AI_SETTING_KEYS.openaiApiVersion, providerApiVersion.trim());
+    await window.electronAPI.saveSetting(UI_SETTING_KEYS.fontFamily, uiFontFamily);
+    await window.electronAPI.saveSetting(UI_SETTING_KEYS.themeMode, uiThemeMode);
+    applyUiFontFamily(uiFontFamily);
     setShowSettings(false);
   }
+
+  const aiSelectClass =
+    'w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-sm text-slate-900 focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600 outline-none transition-all cursor-pointer appearance-none';
+
+  const versionSelectOptions = React.useMemo(() => {
+    const opts = [...AI_VERSION_OPTIONS[providerVendor]];
+    if (providerApiVersion && !opts.some((o) => o.value === providerApiVersion)) {
+      opts.push({ value: providerApiVersion, label: `${providerApiVersion}（当前）` });
+    }
+    return opts;
+  }, [providerVendor, providerApiVersion]);
 
   const loadSavedConnections = async () => {
     const connections = await window.electronAPI.getSavedConnections()
@@ -619,6 +748,10 @@ const App: React.FC = () => {
         // 如果配置中已经指定了数据库，则自动选择
         if (config.type === 'sqlite') {
           handleSelectDatabase('main')
+        } else if (config.type === 'oracle') {
+          // Oracle：database 字段为服务名，schema 从侧栏选择，勿当作 schema 自动切换
+          setSelectedDatabase(null)
+          setTables([])
         } else if (config.database) {
           handleSelectDatabase(config.database)
         } else {
@@ -1102,6 +1235,7 @@ const App: React.FC = () => {
         language: 
           activeConnection?.type === 'mysql' ? 'mysql' : 
           activeConnection?.type === 'postgresql' ? 'postgresql' : 
+          activeConnection?.type === 'oracle' ? 'plsql' :
           'sql',
         tabWidth: 2,
         keywordCase: 'upper',
@@ -1867,12 +2001,22 @@ const App: React.FC = () => {
                         }`}
                       >
                         <div className="flex items-center gap-3 overflow-hidden z-10">
-                          <div className={`w-2 h-2 rounded-full ${
-                            conn.type === 'mysql' ? 'bg-orange-500' : 
-                            conn.type === 'postgresql' ? 'bg-blue-500' : 
-                            conn.type === 'redis' ? 'bg-red-500' : 
-                            'bg-green-500'
-                          }`} />
+                          <div
+                            className={`w-2 h-2 rounded-full ${
+                              activeConnection?.id === conn.id
+                                ? 'bg-emerald-500'
+                                : conn.type === 'mysql'
+                                  ? 'bg-orange-500'
+                                  : conn.type === 'postgresql'
+                                    ? 'bg-blue-500'
+                                    : conn.type === 'oracle'
+                                      ? 'bg-red-600'
+                                      : conn.type === 'redis'
+                                        ? 'bg-red-500'
+                                        : 'bg-slate-400'
+                            }`}
+                            title={activeConnection?.id === conn.id ? '已连接' : '未连接'}
+                          />
                           <span className="truncate font-semibold">{conn.name}</span>
                         </div>
                         <div className="flex items-center gap-1 z-10">
@@ -2005,7 +2149,12 @@ const App: React.FC = () => {
         <div className="p-4 border-t border-slate-100 bg-slate-50/50">
           <motion.div 
             whileHover={{ backgroundColor: '#f1f5f9' }}
-            onClick={() => setShowSettings(true)}
+            onClick={() => {
+              void loadAiSettings();
+              void loadUiSettings();
+              setSettingsTab('ai');
+              setShowSettings(true);
+            }}
             className="flex items-center gap-3 px-4 py-3 text-slate-600 transition-all cursor-pointer rounded-2xl hover:shadow-sm group"
           >
             <Settings size={16} className="group-hover:rotate-45 transition-transform duration-500" />
@@ -3211,10 +3360,10 @@ const App: React.FC = () => {
               </div>
               
               <div className="p-8 space-y-6">
-                <div className="grid grid-cols-4 gap-2 p-1.5 bg-slate-100 rounded-2xl border border-slate-200">
+                <div className="flex flex-wrap gap-2 p-1.5 bg-slate-100 rounded-2xl border border-slate-200">
                   <button
                     onClick={() => setNewConfig({ ...newConfig, type: 'mysql', port: 3306 })}
-                    className={`py-2 rounded-xl text-xs font-bold transition-all duration-300 ${
+                    className={`flex-1 min-w-[4.5rem] py-2 rounded-xl text-xs font-bold transition-all duration-300 ${
                       newConfig.type === 'mysql' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
                     }`}
                   >
@@ -3222,15 +3371,23 @@ const App: React.FC = () => {
                   </button>
                   <button
                     onClick={() => setNewConfig({ ...newConfig, type: 'postgresql', port: 5432 })}
-                    className={`py-2 rounded-xl text-xs font-bold transition-all duration-300 ${
+                    className={`flex-1 min-w-[4.5rem] py-2 rounded-xl text-xs font-bold transition-all duration-300 ${
                       newConfig.type === 'postgresql' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
                     }`}
                   >
                     PostgreSQL
                   </button>
                   <button
+                    onClick={() => setNewConfig({ ...newConfig, type: 'oracle', port: 1521 })}
+                    className={`flex-1 min-w-[4.5rem] py-2 rounded-xl text-xs font-bold transition-all duration-300 ${
+                      newConfig.type === 'oracle' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                    }`}
+                  >
+                    Oracle
+                  </button>
+                  <button
                     onClick={() => setNewConfig({ ...newConfig, type: 'sqlite' })}
-                    className={`py-2 rounded-xl text-xs font-bold transition-all duration-300 ${
+                    className={`flex-1 min-w-[4.5rem] py-2 rounded-xl text-xs font-bold transition-all duration-300 ${
                       newConfig.type === 'sqlite' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
                     }`}
                   >
@@ -3238,7 +3395,7 @@ const App: React.FC = () => {
                   </button>
                   <button
                     onClick={() => setNewConfig({ ...newConfig, type: 'redis', port: 6379 })}
-                    className={`py-2 rounded-xl text-xs font-bold transition-all duration-300 ${
+                    className={`flex-1 min-w-[4.5rem] py-2 rounded-xl text-xs font-bold transition-all duration-300 ${
                       newConfig.type === 'redis' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
                     }`}
                   >
@@ -3302,14 +3459,25 @@ const App: React.FC = () => {
                       </div>
                       {newConfig.type !== 'redis' && (
                         <div className="space-y-2">
-                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">数据库 (可选)</label>
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">
+                            {newConfig.type === 'oracle' ? '服务名 Service Name（必填）' : '数据库 (可选)'}
+                          </label>
                           <input
                             type="text"
                             className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-slate-900 focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600 outline-none transition-all"
-                            placeholder="例如: user_db"
+                            placeholder={
+                              newConfig.type === 'oracle'
+                                ? '如 XEPDB1、ORCLPDB1（用于 host:port/服务名）'
+                                : '例如: user_db'
+                            }
                             value={newConfig.database}
                             onChange={(e) => setNewConfig({ ...newConfig, database: e.target.value })}
                           />
+                          {newConfig.type === 'oracle' && (
+                            <p className="text-xs text-slate-400 px-1">
+                              连接成功后，侧栏「数据库」下列出的是可访问的 schema；展开后选择 schema 再浏览表。
+                            </p>
+                          )}
                         </div>
                       )}
                     </>
@@ -3592,7 +3760,7 @@ const App: React.FC = () => {
               initial={{ scale: 0.9, opacity: 0, y: 20 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.9, opacity: 0, y: 20 }}
-              className="bg-white border border-slate-200 rounded-[32px] shadow-2xl w-[400px] overflow-hidden z-10"
+              className="bg-white border border-slate-200 rounded-[32px] shadow-2xl w-full max-w-[520px] min-w-[320px] overflow-hidden z-10"
             >
               <div className="px-8 py-6 border-b border-slate-100 flex justify-between items-center bg-gradient-to-b from-slate-50 to-transparent">
                 <div className="flex items-center gap-2">
@@ -3608,15 +3776,135 @@ const App: React.FC = () => {
                 </motion.button>
               </div>
               
-              <div className="p-8 space-y-8 max-h-[400px] overflow-y-auto custom-scrollbar">
+              <div className="p-8 space-y-6 max-h-[min(70vh,640px)] overflow-y-auto custom-scrollbar">
+                <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-2xl p-1">
+                  <button
+                    onClick={() => setSettingsTab('ai')}
+                    className={`flex-1 text-xs font-bold rounded-xl px-3 py-2 transition-all ${
+                      settingsTab === 'ai'
+                        ? 'bg-white text-slate-900 shadow-sm border border-slate-200'
+                        : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100 border border-transparent'
+                    }`}
+                  >
+                    AI 功能配置
+                  </button>
+                  <button
+                    onClick={() => setSettingsTab('ui')}
+                    className={`flex-1 text-xs font-bold rounded-xl px-3 py-2 transition-all ${
+                      settingsTab === 'ui'
+                        ? 'bg-white text-slate-900 shadow-sm border border-slate-200'
+                        : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100 border border-transparent'
+                    }`}
+                  >
+                    个性化配置
+                  </button>
+                  <button
+                    onClick={() => setSettingsTab('update')}
+                    className={`flex-1 text-xs font-bold rounded-xl px-3 py-2 transition-all ${
+                      settingsTab === 'update'
+                        ? 'bg-white text-slate-900 shadow-sm border border-slate-200'
+                        : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100 border border-transparent'
+                    }`}
+                  >
+                    软件更新
+                  </button>
+                </div>
+
                 {/* AI Section */}
-                <div className="space-y-4">
+                <div className={`space-y-4 ${settingsTab === 'ai' ? '' : 'hidden'}`}>
                   <div className="flex items-center gap-2 mb-2">
                     <Sparkles size={14} className="text-indigo-500" />
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em]">AI 功能配置</span>
                   </div>
                   <div className="space-y-2">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">DeepSeek API Key</label>
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">厂商</label>
+                    <select
+                      className={aiSelectClass}
+                      value={providerVendor}
+                      onChange={(e) => {
+                        const v = e.target.value as AiVendorId;
+                        setProviderVendor(v);
+                        setProviderModel(defaultModelForVendor(v));
+                        setProviderApiVersion(AI_VERSION_OPTIONS[v][0]?.value ?? '');
+                        if (v === 'azure' || v === 'custom') {
+                          setProviderEndpoint((prev) => prev || '');
+                        } else {
+                          setProviderEndpoint('');
+                        }
+                      }}
+                    >
+                      {AI_VENDOR_LIST.map((v) => (
+                        <option key={v.id} value={v.id}>
+                          {v.label}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-slate-400 px-1">
+                      DeepSeek / OpenAI 使用预设地址；请求会发往 <code className="text-[11px]">…/chat/completions</code>。
+                    </p>
+                  </div>
+                  {(providerVendor === 'azure' || providerVendor === 'custom') && (
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">
+                        {providerVendor === 'azure' ? 'Azure 部署 URL' : '自定义 Base URL'}
+                      </label>
+                      <input
+                        type="url"
+                        placeholder={
+                          providerVendor === 'azure'
+                            ? 'https://资源名.openai.azure.com/openai/deployments/部署名'
+                            : 'https://网关地址/v1 或完整 …/chat/completions'
+                        }
+                        className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-sm text-slate-900 focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600 outline-none transition-all"
+                        value={providerEndpoint}
+                        onChange={(e) => setProviderEndpoint(e.target.value)}
+                      />
+                    </div>
+                  )}
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">模型</label>
+                    {providerVendor === 'custom' ? (
+                      <input
+                        type="text"
+                        placeholder="自定义模型 ID"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-sm text-slate-900 focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600 outline-none transition-all"
+                        value={providerModel}
+                        onChange={(e) => setProviderModel(e.target.value)}
+                      />
+                    ) : (
+                      <select
+                        className={aiSelectClass}
+                        value={providerModel}
+                        onChange={(e) => setProviderModel(e.target.value)}
+                      >
+                        {AI_VENDOR_MODELS[providerVendor].map((m) => (
+                          <option key={m.value} value={m.value}>
+                            {m.label}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">API Version</label>
+                    <select
+                      className={aiSelectClass}
+                      value={
+                        versionSelectOptions.some((o) => o.value === providerApiVersion)
+                          ? providerApiVersion
+                          : versionSelectOptions[0]?.value ?? ''
+                      }
+                      onChange={(e) => setProviderApiVersion(e.target.value)}
+                    >
+                      {versionSelectOptions.map((o) => (
+                        <option key={o.value || '_empty'} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">API Key（Bearer）</label>
                     <input
                       type="password"
                       autoFocus
@@ -3625,12 +3913,50 @@ const App: React.FC = () => {
                       value={apiKey}
                       onChange={(e) => setApiKey(e.target.value)}
                     />
-                    <p className="text-xs text-slate-400 px-1">请从 DeepSeek 官网获取 API Key 以启用 AI 功能</p>
+                    <p className="text-xs text-slate-400 px-1">兼容 OpenAI 格式的网关均使用 Bearer 鉴权；沿用原 DeepSeek Key 存储项，升级后无需重新填 Key。</p>
                   </div>
                 </div>
 
+              {/* UI Font Section */}
+              <div className={`pt-6 border-t border-slate-100 space-y-4 ${settingsTab === 'ui' ? '' : 'hidden'}`}>
+                <div className="flex items-center gap-2 mb-2">
+                  <AlignLeft size={14} className="text-indigo-500" />
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em]">界面字体</span>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">字体族</label>
+                  <select
+                    className={aiSelectClass}
+                    value={uiFontFamily}
+                    onChange={(e) => setUiFontFamily(e.target.value)}
+                  >
+                    {UI_FONT_PRESETS.map((f) => (
+                      <option key={f.value} value={f.value}>
+                        {f.label}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-slate-400 px-1">点击「保存配置」后立即应用到全局界面。</p>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">主题模式</label>
+                  <select
+                    className={aiSelectClass}
+                    value={uiThemeMode}
+                    onChange={(e) => setUiThemeMode(e.target.value as ThemeMode)}
+                  >
+                    <option value="system">跟随系统</option>
+                    <option value="light">浅色模式</option>
+                    <option value="dark">深色模式</option>
+                  </select>
+                  <p className="text-xs text-slate-400 px-1">当前为预览版深色模式，主要调整背景与基础文字颜色。</p>
+                </div>
+              </div>
+
                 {/* Update Section */}
-                <div className="pt-6 border-t border-slate-100 space-y-4">
+                <div className={`pt-6 border-t border-slate-100 space-y-4 ${settingsTab === 'update' ? '' : 'hidden'}`}>
                   <div className="flex items-center gap-2 mb-2">
                     <RefreshCw size={14} className="text-indigo-500" />
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em]">软件更新</span>
@@ -4253,6 +4579,7 @@ const App: React.FC = () => {
                                   {(
                                     activeConnection?.type === 'sqlite' ? DB_TYPES.sqlite : 
                                     activeConnection?.type === 'postgresql' ? DB_TYPES.postgresql : 
+                                    activeConnection?.type === 'oracle' ? DB_TYPES.oracle :
                                     DB_TYPES.mysql
                                   ).map(type => (
                                     <option key={type} value={type}>{type}</option>

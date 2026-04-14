@@ -27,7 +27,7 @@ export default defineConfig({
           build: {
             outDir: 'dist-electron/main',
             rollupOptions: {
-              external: ['sqlite3', 'mysql2', 'pg', 'redis'],
+              external: ['sqlite3', 'mysql2', 'pg', 'redis', 'oracledb'],
             },
           },
         },

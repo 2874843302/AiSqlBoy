@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, dialog } from 'electron'
 import { join } from 'path'
 import { autoUpdater } from 'electron-updater'
 import { internalDB } from './services/internalDB'
-import { SQLiteDriver, MySQLDriver, PostgreSQLDriver, RedisDriver, IDatabaseDriver } from './services/dbDrivers'
+import { SQLiteDriver, MySQLDriver, PostgreSQLDriver, OracleDriver, RedisDriver, IDatabaseDriver } from './services/dbDrivers'
 import { aiService } from './services/aiService'
 import fs from 'fs'
 import { ConnectionConfig } from '../shared/types'
@@ -158,6 +158,8 @@ ipcMain.handle('connect-db', async (_, config: ConnectionConfig) => {
       currentDriver = new MySQLDriver(config)
     } else if (config.type === 'postgresql') {
       currentDriver = new PostgreSQLDriver(config)
+    } else if (config.type === 'oracle') {
+      currentDriver = new OracleDriver(config)
     } else if (config.type === 'redis') {
       currentDriver = new RedisDriver(config)
     } else {

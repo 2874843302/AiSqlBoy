@@ -34020,6 +34020,21 @@ var promiseExports = requirePromise();
 const mysql = /* @__PURE__ */ getDefaultExportFromCjs(promiseExports);
 const require$1 = module$1.createRequire(typeof document === "undefined" ? require("url").pathToFileURL(__filename).href : _documentCurrentScript && _documentCurrentScript.tagName.toUpperCase() === "SCRIPT" && _documentCurrentScript.src || new URL("index.js", document.baseURI).href);
 const sqlite3 = require$1("sqlite3");
+let oracledbSingleton = null;
+function getOracleDb() {
+  if (!oracledbSingleton) {
+    try {
+      oracledbSingleton = require$1("oracledb");
+    } catch {
+      throw new Error("无法加载 oracledb，请执行 npm install oracledb 后重新打包");
+    }
+    oracledbSingleton.outFormat = oracledbSingleton.OUT_FORMAT_OBJECT;
+    if (oracledbSingleton.CLOB != null) {
+      oracledbSingleton.fetchAsString = [oracledbSingleton.CLOB];
+    }
+  }
+  return oracledbSingleton;
+}
 const { Client } = pg;
 class SQLiteDriver {
   constructor(config) {
@@ -34787,6 +34802,306 @@ class PostgreSQLDriver {
     }
   }
 }
+class OracleDriver {
+  constructor(config) {
+    this.config = config;
+  }
+  connection = null;
+  currentSchema = "";
+  fqTable(tableName) {
+    const o = this.currentSchema.replace(/"/g, "");
+    const t = tableName.replace(/"/g, "");
+    return `"${o}"."${t}"`;
+  }
+  async connect() {
+    const oracledb = getOracleDb();
+    const svc = (this.config.database || "").trim();
+    if (!svc) throw new Error("请填写 Oracle 服务名（Service Name，如 XEPDB1、ORCLPDB1）");
+    const host = this.config.host || "localhost";
+    const port = this.config.port ?? 1521;
+    const connectString = `${host}:${port}/${svc}`;
+    this.connection = await oracledb.getConnection({
+      user: this.config.user,
+      password: this.config.password ?? "",
+      connectString
+    });
+    const ur = await this.connection.execute(`SELECT USER FROM DUAL`, [], { autoCommit: true });
+    const urow = (ur.rows || [])[0];
+    this.currentSchema = String(urow?.USER ?? urow?.user ?? this.config.user ?? "");
+  }
+  async disconnect() {
+    try {
+      await this.connection?.close();
+    } catch {
+    }
+    this.connection = null;
+  }
+  async getDatabases() {
+    if (!this.connection) throw new Error("Not connected");
+    const sql = `
+      SELECT owner FROM (
+        SELECT DISTINCT owner FROM all_tables
+        WHERE owner NOT IN (
+          'SYS','SYSTEM','MDSYS','CTXSYS','XDB','ORDSYS','OLAPSYS','APPQOSSYS','ORDDATA',
+          'LBACSYS','OUTLN','GSMADMIN_INTERNAL','DVSYS','DVF','AUDSYS','OJVMSYS','DBSNMP','DIP',
+          'REMOTE_SCHEDULER_AGENT','SI_INFORMTN_SCHEMA','ORDPLUGINS','FLOWS_FILES','MDDATA',
+          'SPATIAL_CSW_ADMIN_USR','SPATIAL_WFS_ADMIN_USR','WMSYS','EXFSYS'
+        )
+        ORDER BY owner
+      ) WHERE ROWNUM <= 400`;
+    try {
+      const result = await this.connection.execute(sql, [], { autoCommit: true });
+      const rows = result.rows || [];
+      const names = rows.map((r) => String(r.OWNER ?? r.owner ?? "")).filter(Boolean);
+      if (names.length > 0) return names;
+    } catch {
+    }
+    const u = (this.config.user || "").toUpperCase().replace(/"/g, "");
+    return u ? [u] : [];
+  }
+  async useDatabase(dbName) {
+    if (!this.connection) throw new Error("Not connected");
+    await this.connection.execute(
+      `ALTER SESSION SET CURRENT_SCHEMA = :schema`,
+      { schema: dbName },
+      { autoCommit: true }
+    );
+    this.currentSchema = dbName.replace(/"/g, "");
+  }
+  async getTables() {
+    if (!this.connection) throw new Error("Not connected");
+    const res = await this.connection.execute(
+      `SELECT table_name AS name FROM all_tables WHERE owner = :owner ORDER BY table_name`,
+      { owner: this.currentSchema },
+      { autoCommit: true }
+    );
+    const rows = res.rows || [];
+    return rows.map((r) => ({ name: String(r.NAME ?? r.name) }));
+  }
+  async getTableColumns(tableName) {
+    if (!this.connection) throw new Error("Not connected");
+    const owner = this.currentSchema;
+    const tab = tableName.toUpperCase();
+    const res = await this.connection.execute(
+      `SELECT column_name, data_type, nullable, data_default
+       FROM all_tab_columns
+       WHERE owner = :owner AND table_name = :tab
+       ORDER BY column_id`,
+      { owner, tab },
+      { autoCommit: true }
+    );
+    const rows = res.rows || [];
+    const pkRes = await this.connection.execute(
+      `SELECT cols.column_name AS col
+       FROM all_constraints cons
+       JOIN all_cons_columns cols
+         ON cons.owner = cols.owner AND cons.constraint_name = cols.constraint_name
+       WHERE cons.constraint_type = 'P'
+         AND cons.owner = :owner
+         AND cons.table_name = :tab`,
+      { owner, tab },
+      { autoCommit: true }
+    );
+    const pkRows = pkRes.rows || [];
+    const pks = new Set(pkRows.map((r) => String(r.COL ?? r.col ?? "").toUpperCase()));
+    return rows.map((row) => {
+      const name = String(row.COLUMN_NAME ?? row.column_name ?? "");
+      const nullable = String(row.NULLABLE ?? row.nullable ?? "Y").toUpperCase() === "Y";
+      const defVal = row.DATA_DEFAULT ?? row.data_default;
+      return {
+        name,
+        type: String(row.DATA_TYPE ?? row.data_type ?? ""),
+        nullable,
+        primaryKey: pks.has(name.toUpperCase()),
+        defaultValue: defVal != null ? String(defVal) : void 0,
+        autoIncrement: false
+      };
+    });
+  }
+  async getTableIndexes(tableName) {
+    if (!this.connection) throw new Error("Not connected");
+    const owner = this.currentSchema;
+    const tab = tableName.toUpperCase();
+    const res = await this.connection.execute(
+      `SELECT i.index_name AS iname, i.uniqueness AS uniq, ic.column_name AS cname
+       FROM all_indexes i
+       JOIN all_ind_columns ic
+         ON i.owner = ic.index_owner AND i.index_name = ic.index_name
+       WHERE i.table_owner = :owner AND i.table_name = :tab
+       ORDER BY i.index_name, ic.column_position`,
+      { owner, tab },
+      { autoCommit: true }
+    );
+    const indexMap = /* @__PURE__ */ new Map();
+    for (const row of res.rows || []) {
+      const r = row;
+      const name = String(r.INAME ?? r.iname ?? "");
+      const col = String(r.CNAME ?? r.cname ?? "");
+      const uniq = String(r.UNIQ ?? r.uniq ?? "").toUpperCase() === "UNIQUE";
+      if (!indexMap.has(name)) {
+        indexMap.set(name, { name, unique: uniq, columns: [] });
+      }
+      indexMap.get(name).columns.push(col);
+    }
+    return Array.from(indexMap.values());
+  }
+  async getTableData(tableName, limit = 100, offset = 0, orderBy, orderDir = "ASC") {
+    if (!this.connection) throw new Error("Not connected");
+    const fq = this.fqTable(tableName);
+    const countRes = await this.connection.execute(`SELECT COUNT(*) AS cnt FROM ${fq}`, [], { autoCommit: true });
+    const countRow = (countRes.rows || [])[0];
+    const total = Number(countRow?.CNT ?? countRow?.cnt ?? 0);
+    let sql = `SELECT * FROM ${fq}`;
+    if (orderBy) {
+      sql += ` ORDER BY "${orderBy.replace(/"/g, "")}" ${orderDir === "DESC" ? "DESC" : "ASC"}`;
+    } else {
+      sql += " ORDER BY 1";
+    }
+    sql += ` OFFSET :off ROWS FETCH NEXT :lim ROWS ONLY`;
+    const dataRes = await this.connection.execute(sql, { off: offset, lim: limit }, { autoCommit: true });
+    return { data: dataRes.rows || [], total };
+  }
+  async renameTable(oldName, newName) {
+    if (!this.connection) throw new Error("Not connected");
+    const on = newName.replace(/"/g, "").toUpperCase();
+    await this.connection.execute(`ALTER TABLE ${this.fqTable(oldName)} RENAME TO ${on}`, [], { autoCommit: true });
+  }
+  async deleteTable(tableName) {
+    if (!this.connection) throw new Error("Not connected");
+    await this.connection.execute(`DROP TABLE ${this.fqTable(tableName)}`, [], { autoCommit: true });
+  }
+  async createTable(tableName, columns, indexes) {
+    if (!this.connection) throw new Error("Not connected");
+    const tn = tableName.replace(/"/g, "");
+    const colDefs = columns.map((c) => {
+      let def = `"${c.name.replace(/"/g, "")}" ${c.type}`;
+      if (!c.nullable) def += " NOT NULL";
+      if (c.primaryKey) def += " PRIMARY KEY";
+      if (c.defaultValue !== void 0 && c.defaultValue !== null && c.defaultValue !== "") {
+        def += ` DEFAULT ${typeof c.defaultValue === "string" ? `'${String(c.defaultValue).replace(/'/g, "''")}'` : c.defaultValue}`;
+      }
+      return def;
+    });
+    await this.connection.execute(`CREATE TABLE "${tn}" (${colDefs.join(", ")})`, [], { autoCommit: true });
+    if (indexes && indexes.length > 0) {
+      for (const idx of indexes) {
+        const unique = idx.unique ? "UNIQUE" : "";
+        const cols = idx.columns.map((c) => `"${c.replace(/"/g, "")}"`).join(", ");
+        await this.connection.execute(
+          `CREATE ${unique} INDEX "${idx.name.replace(/"/g, "")}" ON "${tn}" (${cols})`,
+          [],
+          { autoCommit: true }
+        );
+      }
+    }
+  }
+  async updateTableSchema(tableName, changes) {
+    if (!this.connection) throw new Error("Not connected");
+    const fq = this.fqTable(tableName);
+    for (const colName of changes.removed || []) {
+      await this.connection.execute(`ALTER TABLE ${fq} DROP COLUMN "${String(colName).replace(/"/g, "")}"`, [], { autoCommit: true });
+    }
+    for (const mod of changes.modified || []) {
+      const col = mod.column;
+      if (mod.oldName !== col.name) {
+        await this.connection.execute(
+          `ALTER TABLE ${fq} RENAME COLUMN "${String(mod.oldName).replace(/"/g, "")}" TO "${String(col.name).replace(/"/g, "")}"`,
+          [],
+          { autoCommit: true }
+        );
+      }
+    }
+    for (const col of changes.added || []) {
+      await this.connection.execute(
+        `ALTER TABLE ${fq} ADD ("${String(col.name).replace(/"/g, "")}" ${col.type}${col.nullable ? "" : " NOT NULL"})`,
+        [],
+        { autoCommit: true }
+      );
+    }
+  }
+  async exportDatabase(includeData) {
+    if (!this.connection) throw new Error("Not connected");
+    const tables = await this.getTables();
+    let sqlOutput = `-- AiSqlBoy Oracle Export
+-- Schema: ${this.currentSchema}
+-- Date: ${(/* @__PURE__ */ new Date()).toLocaleString()}
+
+`;
+    for (const table of tables) {
+      const cols = await this.getTableColumns(table.name);
+      const colDefs = cols.map((c) => `"${c.name}" ${c.type} ${c.nullable ? "" : "NOT NULL"}`).join(", ");
+      sqlOutput += `CREATE TABLE "${table.name}" (${colDefs});
+
+`;
+      if (includeData) {
+        const { data } = await this.getTableData(table.name, 1e4, 0);
+        for (const row of data) {
+          const keys = Object.keys(row);
+          const values = keys.map((k) => {
+            const v = row[k];
+            if (v === null || v === void 0) return "NULL";
+            if (typeof v === "string") return `'${v.replace(/'/g, "''")}'`;
+            if (v instanceof Date) return `'${v.toISOString().slice(0, 19).replace("T", " ")}'`;
+            return String(v);
+          });
+          sqlOutput += `INSERT INTO "${table.name}" (${keys.map((k) => `"${k}"`).join(", ")}) VALUES (${values.join(", ")});
+`;
+        }
+        sqlOutput += "\n";
+      }
+    }
+    return sqlOutput;
+  }
+  async deleteDatabase(_dbName) {
+    throw new Error("Oracle 不支持在此删除整个 schema，请在数据库中手动操作");
+  }
+  async executeQuery(sql) {
+    if (!this.connection) throw new Error("Not connected");
+    try {
+      const result = await this.connection.execute(sql, [], { autoCommit: true });
+      if (result.rows && result.metaData) {
+        const columns = result.metaData.map((m) => m.name);
+        return { data: result.rows, columns };
+      }
+      return {
+        data: [
+          {
+            结果: "执行成功",
+            影响行数: result.rowsAffected ?? 0
+          }
+        ],
+        columns: ["结果", "影响行数"]
+      };
+    } catch (error2) {
+      const isConn = error2.message?.includes("closed") || error2.message?.includes("ORA-03114") || error2.message?.includes("not connected");
+      if (isConn) {
+        try {
+          await this.connect();
+          const result = await this.connection.execute(sql, [], { autoCommit: true });
+          if (result.rows && result.metaData) {
+            const columns = result.metaData.map((m) => m.name);
+            return { data: result.rows, columns };
+          }
+          return {
+            data: [{ 结果: "执行成功", 影响行数: result.rowsAffected ?? 0 }],
+            columns: ["结果", "影响行数"]
+          };
+        } catch (reconnectError) {
+          throw new Error(`连接已断开且重连失败: ${reconnectError.message}`);
+        }
+      }
+      throw error2;
+    }
+  }
+  async ping() {
+    if (!this.connection) return;
+    try {
+      await this.connection.execute("SELECT 1 FROM DUAL", [], { autoCommit: true });
+    } catch {
+      await this.connect();
+    }
+  }
+}
 class RedisDriver {
   constructor(config) {
     this.config = config;
@@ -34959,36 +35274,79 @@ class RedisDriver {
     }
   }
 }
+const AI_SETTING_KEYS = {
+  apiKey: "deepseek_api_key",
+  openaiBaseUrl: "ai_openai_base_url",
+  openaiModel: "ai_openai_model",
+  openaiApiVersion: "ai_openai_api_version"
+};
+const LEGACY_CHAT_URL = "https://api.deepseek.com/chat/completions";
+const LEGACY_MODEL = "deepseek-chat";
+function resolveOpenAiCompatibleChatUrl(baseUrlRaw) {
+  const trimmed = baseUrlRaw.trim().replace(/\/+$/, "");
+  if (!trimmed) return LEGACY_CHAT_URL;
+  if (trimmed.toLowerCase().endsWith("/chat/completions")) return trimmed;
+  if (/\/v1$/i.test(trimmed)) return `${trimmed}/chat/completions`;
+  return `${trimmed}/chat/completions`;
+}
+function appendApiVersion(url, apiVersion) {
+  const v = apiVersion.trim();
+  if (!v) return url;
+  if (/[?&]api-version=/i.test(url)) return url;
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}api-version=${encodeURIComponent(v)}`;
+}
+function resolveModel(baseConfigured, modelRaw) {
+  const m = (modelRaw || "").trim();
+  if (m) return m;
+  return baseConfigured ? "gpt-3.5-turbo" : LEGACY_MODEL;
+}
 class AIService {
   async getApiKey() {
-    return await internalDB.getSetting("deepseek_api_key");
+    return await internalDB.getSetting(AI_SETTING_KEYS.apiKey);
   }
   async chat(messages) {
     const apiKey = await this.getApiKey();
     if (!apiKey) {
-      throw new Error("未配置 DeepSeek API Key，请在设置中配置。");
+      throw new Error("未配置 API Key，请在设置中填写。");
     }
+    const baseRaw = await internalDB.getSetting(AI_SETTING_KEYS.openaiBaseUrl);
+    const modelRaw = await internalDB.getSetting(AI_SETTING_KEYS.openaiModel);
+    const apiVersionRaw = await internalDB.getSetting(AI_SETTING_KEYS.openaiApiVersion);
+    const baseConfigured = !!(baseRaw && baseRaw.trim());
+    const url = appendApiVersion(
+      baseConfigured ? resolveOpenAiCompatibleChatUrl(baseRaw) : LEGACY_CHAT_URL,
+      apiVersionRaw || ""
+    );
+    const model = resolveModel(baseConfigured, modelRaw);
     try {
-      const response = await fetch("https://api.deepseek.com/chat/completions", {
+      const response = await fetch(url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`
+          Authorization: `Bearer ${apiKey}`
         },
         body: JSON.stringify({
-          model: "deepseek-chat",
+          model,
           messages,
           stream: false
         })
       });
       if (!response.ok) {
-        const error2 = await response.json();
-        throw new Error(error2.message || `请求失败: ${response.status}`);
+        const text = await response.text();
+        let message = `请求失败: ${response.status}`;
+        try {
+          const error2 = JSON.parse(text);
+          message = error2.error?.message || error2.message || message;
+        } catch {
+          if (text) message = text.slice(0, 500);
+        }
+        throw new Error(message);
       }
       const data = await response.json();
       return data.choices[0].message.content;
     } catch (error2) {
-      console.error("DeepSeek API Error:", error2);
+      console.error("OpenAI-compatible API error:", error2);
       throw error2;
     }
   }
@@ -35108,6 +35466,8 @@ require$$1$5.ipcMain.handle("connect-db", async (_, config) => {
       currentDriver = new MySQLDriver(config);
     } else if (config.type === "postgresql") {
       currentDriver = new PostgreSQLDriver(config);
+    } else if (config.type === "oracle") {
+      currentDriver = new OracleDriver(config);
     } else if (config.type === "redis") {
       currentDriver = new RedisDriver(config);
     } else {

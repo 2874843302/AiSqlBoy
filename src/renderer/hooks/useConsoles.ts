@@ -137,11 +137,22 @@ export const useConsoles = ({
     }
 
     const id = Math.random().toString(36).substr(2, 9);
+    const dbType = activeConnection?.type;
+    let initialSql = '';
+    if (!isRedis && tableName) {
+      if (dbType === 'oracle') {
+        initialSql = `SELECT * FROM "${tableName}" FETCH FIRST 100 ROWS ONLY`;
+      } else if (dbType === 'postgresql') {
+        initialSql = `SELECT * FROM "${tableName}" LIMIT 100`;
+      } else {
+        initialSql = `SELECT * FROM \`${tableName}\` LIMIT 100`;
+      }
+    }
     const newConsole: ConsoleTab = {
       id,
       connectionId: activeConnection?.id,
       name: uniqueName,
-      sql: isRedis ? 'KEYS *' : tableName ? `SELECT * FROM \`${tableName}\` LIMIT 100;` : '',
+      sql: isRedis ? 'KEYS *' : initialSql ? `${initialSql};` : '',
       executing: false,
       dbName,
       tableName,
