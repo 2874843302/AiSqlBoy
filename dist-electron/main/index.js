@@ -15347,9 +15347,15 @@ class InternalDBService {
           port INTEGER,
           user TEXT,
           password TEXT,
-          database TEXT
+          database TEXT,
+          schema_filter TEXT
         )
       `);
+      this.db.run("ALTER TABLE connections ADD COLUMN schema_filter TEXT", (err) => {
+        if (err && !String(err.message || "").includes("duplicate column name")) {
+          console.error("Failed to add schema_filter column:", err);
+        }
+      });
       this.db.run(`
         CREATE TABLE IF NOT EXISTS settings (
           key TEXT PRIMARY KEY,
@@ -15419,7 +15425,7 @@ class InternalDBService {
       if (config.id) {
         const stmt = this.db.prepare(`
           UPDATE connections 
-          SET name = ?, type = ?, host = ?, port = ?, user = ?, password = ?, database = ?
+          SET name = ?, type = ?, host = ?, port = ?, user = ?, password = ?, database = ?, schema_filter = ?
           WHERE id = ?
         `);
         stmt.run(
@@ -15430,6 +15436,7 @@ class InternalDBService {
           config.user || null,
           config.password || null,
           config.database || null,
+          config.selectedSchemas && config.selectedSchemas.length > 0 ? JSON.stringify(config.selectedSchemas) : null,
           config.id,
           (err) => {
             if (err) reject(err);
@@ -15439,8 +15446,8 @@ class InternalDBService {
         stmt.finalize();
       } else {
         const stmt = this.db.prepare(`
-          INSERT INTO connections (name, type, host, port, user, password, database)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO connections (name, type, host, port, user, password, database, schema_filter)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `);
         stmt.run(
           config.name,
@@ -15450,6 +15457,7 @@ class InternalDBService {
           config.user || null,
           config.password || null,
           config.database || null,
+          config.selectedSchemas && config.selectedSchemas.length > 0 ? JSON.stringify(config.selectedSchemas) : null,
           (err) => {
             if (err) reject(err);
             else resolve();
@@ -15463,7 +15471,26 @@ class InternalDBService {
     return new Promise((resolve, reject) => {
       this.db.all("SELECT * FROM connections", (err, rows) => {
         if (err) reject(err);
-        else resolve(rows);
+        else {
+          const parsed = rows.map((row) => {
+            let selectedSchemas;
+            if (row.schema_filter) {
+              try {
+                const list = JSON.parse(String(row.schema_filter));
+                if (Array.isArray(list)) {
+                  selectedSchemas = list.map((v) => String(v));
+                }
+              } catch {
+                selectedSchemas = void 0;
+              }
+            }
+            return {
+              ...row,
+              selectedSchemas
+            };
+          });
+          resolve(parsed);
+        }
       });
     });
   }
@@ -34309,6 +34336,25 @@ class MySQLDriver {
     this.config = config;
   }
   connection = null;
+  escapeSqlString(value) {
+    return value.replace(/'/g, "''");
+  }
+  buildMySqlDefaultClause(col) {
+    if (col.defaultValue === null || col.defaultValue === void 0) return "";
+    let raw = String(col.defaultValue).trim();
+    if (!raw) return ` DEFAULT ''`;
+    const typeUpper = (col.type || "").toUpperCase();
+    const isTimestampLike = typeUpper.includes("TIMESTAMP") || typeUpper.includes("DATETIME");
+    if (isTimestampLike && /^CURRENT_TIME(?:\(\))?$/i.test(raw)) {
+      raw = "CURRENT_TIMESTAMP";
+    }
+    if (/^NULL$/i.test(raw)) return " DEFAULT NULL";
+    if (/^-?\d+(\.\d+)?$/.test(raw)) return ` DEFAULT ${raw}`;
+    if (/^(CURRENT_TIMESTAMP(?:\(\d+\))?|NOW\(\)|CURRENT_DATE(?:\(\))?|CURRENT_TIME(?:\(\))?|LOCALTIME(?:\(\))?|LOCALTIMESTAMP(?:\(\))?)$/i.test(raw)) {
+      return ` DEFAULT ${raw.toUpperCase()}`;
+    }
+    return ` DEFAULT '${this.escapeSqlString(raw)}'`;
+  }
   async connect() {
     this.connection = await mysql.createConnection({
       host: this.config.host,
@@ -34395,12 +34441,10 @@ class MySQLDriver {
     const colDefs = columns.map((c) => {
       let def = `${c.name} ${c.type}`;
       if (!c.nullable) def += " NOT NULL";
-      if (c.defaultValue !== void 0 && c.defaultValue !== null) {
-        def += ` DEFAULT '${c.defaultValue}'`;
-      }
+      def += this.buildMySqlDefaultClause(c);
       if (c.autoIncrement) def += " AUTO_INCREMENT";
       if (c.primaryKey) def += " PRIMARY KEY";
-      if (c.comment) def += ` COMMENT '${c.comment}'`;
+      if (c.comment) def += ` COMMENT '${this.escapeSqlString(String(c.comment))}'`;
       return def;
     });
     if (indexes && indexes.length > 0) {
@@ -34421,7 +34465,7 @@ class MySQLDriver {
     }
     for (const mod of changes.modified) {
       const col = mod.column;
-      const definition = `${col.name} ${col.type} ${col.nullable ? "NULL" : "NOT NULL"} ${col.defaultValue !== null && col.defaultValue !== void 0 ? `DEFAULT '${col.defaultValue}'` : ""} ${col.autoIncrement ? "AUTO_INCREMENT" : ""} ${col.comment ? `COMMENT '${col.comment}'` : ""}`;
+      const definition = `${col.name} ${col.type} ${col.nullable ? "NULL" : "NOT NULL"}${this.buildMySqlDefaultClause(col)} ${col.autoIncrement ? "AUTO_INCREMENT" : ""} ${col.comment ? `COMMENT '${this.escapeSqlString(String(col.comment))}'` : ""}`;
       if (mod.oldName !== col.name) {
         sqlParts.push(`CHANGE COLUMN ${mod.oldName} ${definition}`);
       } else {
@@ -34429,7 +34473,7 @@ class MySQLDriver {
       }
     }
     for (const col of changes.added) {
-      const definition = `${col.name} ${col.type} ${col.nullable ? "NULL" : "NOT NULL"} ${col.defaultValue !== null && col.defaultValue !== void 0 ? `DEFAULT '${col.defaultValue}'` : ""} ${col.autoIncrement ? "AUTO_INCREMENT" : ""} ${col.comment ? `COMMENT '${col.comment}'` : ""}`;
+      const definition = `${col.name} ${col.type} ${col.nullable ? "NULL" : "NOT NULL"}${this.buildMySqlDefaultClause(col)} ${col.autoIncrement ? "AUTO_INCREMENT" : ""} ${col.comment ? `COMMENT '${this.escapeSqlString(String(col.comment))}'` : ""}`;
       sqlParts.push(`ADD COLUMN ${definition}`);
     }
     if (changes.indexes) {
@@ -34604,7 +34648,8 @@ class PostgreSQLDriver {
         column_name as name, 
         data_type as type, 
         is_nullable as nullable, 
-        column_default as "defaultValue"
+        column_default as "defaultValue",
+        col_description((quote_ident(table_schema) || '.' || quote_ident(table_name))::regclass::oid, ordinal_position) as comment
       FROM information_schema.columns 
       WHERE table_name = $1
     `, [tableName]);
@@ -34621,7 +34666,8 @@ class PostgreSQLDriver {
       nullable: row.nullable === "YES",
       primaryKey: pks.has(row.name),
       defaultValue: row.defaultValue,
-      autoIncrement: row.defaultValue?.includes("nextval")
+      autoIncrement: row.defaultValue?.includes("nextval"),
+      comment: row.comment || ""
     }));
   }
   async getTableIndexes(tableName) {
@@ -34690,6 +34736,11 @@ class PostgreSQLDriver {
     });
     const sql = `CREATE TABLE "${tableName}" (${colDefs.join(", ")})`;
     await this.client.query(sql);
+    for (const col of columns) {
+      if (!col.comment) continue;
+      const escapedComment = String(col.comment).replace(/'/g, "''");
+      await this.client.query(`COMMENT ON COLUMN "${tableName}"."${col.name}" IS '${escapedComment}'`);
+    }
     if (indexes && indexes.length > 0) {
       for (const idx of indexes) {
         const unique = idx.unique ? "UNIQUE" : "";
@@ -34704,8 +34755,17 @@ class PostgreSQLDriver {
       await this.client.query(`ALTER TABLE "${tableName}" DROP COLUMN "${col}"`);
     }
     for (const mod of changes.modified) {
+      const targetColumnName = mod.column.name;
       if (mod.oldName !== mod.column.name) {
         await this.client.query(`ALTER TABLE "${tableName}" RENAME COLUMN "${mod.oldName}" TO "${mod.column.name}"`);
+      }
+      if (Object.prototype.hasOwnProperty.call(mod.column, "comment")) {
+        const escapedComment = mod.column.comment ? String(mod.column.comment).replace(/'/g, "''") : null;
+        if (escapedComment === null) {
+          await this.client.query(`COMMENT ON COLUMN "${tableName}"."${targetColumnName}" IS NULL`);
+        } else {
+          await this.client.query(`COMMENT ON COLUMN "${tableName}"."${targetColumnName}" IS '${escapedComment}'`);
+        }
       }
     }
     for (const col of changes.added) {

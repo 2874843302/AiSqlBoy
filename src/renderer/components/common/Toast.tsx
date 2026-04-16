@@ -10,7 +10,7 @@ type ToastProps = {
 
 const Toast: React.FC<ToastProps> = ({ message, type = 'error', onClose }) => {
   useEffect(() => {
-    const timer = setTimeout(onClose, 5000);
+    const timer = setTimeout(onClose, 3000);
     return () => clearTimeout(timer);
   }, [onClose]);
 

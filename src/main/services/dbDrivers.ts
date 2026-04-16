@@ -357,6 +357,32 @@ export class MySQLDriver implements IDatabaseDriver {
   private connection: mysql.Connection | null = null;
   constructor(private config: ConnectionConfig) {}
 
+  private escapeSqlString(value: string): string {
+    return value.replace(/'/g, "''");
+  }
+
+  private buildMySqlDefaultClause(col: ColumnInfo): string {
+    if (col.defaultValue === null || col.defaultValue === undefined) return '';
+
+    let raw = String(col.defaultValue).trim();
+    if (!raw) return ` DEFAULT ''`;
+
+    const typeUpper = (col.type || '').toUpperCase();
+    const isTimestampLike = typeUpper.includes('TIMESTAMP') || typeUpper.includes('DATETIME');
+    if (isTimestampLike && /^CURRENT_TIME(?:\(\))?$/i.test(raw)) {
+      // MySQL TIMESTAMP/DATETIME 默认值应为 CURRENT_TIMESTAMP，而非 CURRENT_TIME
+      raw = 'CURRENT_TIMESTAMP';
+    }
+
+    if (/^NULL$/i.test(raw)) return ' DEFAULT NULL';
+    if (/^-?\d+(\.\d+)?$/.test(raw)) return ` DEFAULT ${raw}`;
+    if (/^(CURRENT_TIMESTAMP(?:\(\d+\))?|NOW\(\)|CURRENT_DATE(?:\(\))?|CURRENT_TIME(?:\(\))?|LOCALTIME(?:\(\))?|LOCALTIMESTAMP(?:\(\))?)$/i.test(raw)) {
+      return ` DEFAULT ${raw.toUpperCase()}`;
+    }
+
+    return ` DEFAULT '${this.escapeSqlString(raw)}'`;
+  }
+
   async connect() {
     this.connection = await mysql.createConnection({
       host: this.config.host,
@@ -454,12 +480,10 @@ export class MySQLDriver implements IDatabaseDriver {
     const colDefs = columns.map(c => {
       let def = `${c.name} ${c.type}`;
       if (!c.nullable) def += ' NOT NULL';
-      if (c.defaultValue !== undefined && c.defaultValue !== null) {
-        def += ` DEFAULT '${c.defaultValue}'`;
-      }
+      def += this.buildMySqlDefaultClause(c);
       if (c.autoIncrement) def += ' AUTO_INCREMENT';
       if (c.primaryKey) def += ' PRIMARY KEY';
-      if (c.comment) def += ` COMMENT '${c.comment}'`;
+      if (c.comment) def += ` COMMENT '${this.escapeSqlString(String(c.comment))}'`;
       return def;
     });
 
@@ -496,7 +520,7 @@ export class MySQLDriver implements IDatabaseDriver {
     // 2. 处理修改列
     for (const mod of changes.modified) {
       const col = mod.column;
-      const definition = `${col.name} ${col.type} ${col.nullable ? 'NULL' : 'NOT NULL'} ${col.defaultValue !== null && col.defaultValue !== undefined ? `DEFAULT '${col.defaultValue}'` : ''} ${col.autoIncrement ? 'AUTO_INCREMENT' : ''} ${col.comment ? `COMMENT '${col.comment}'` : ''}`;
+      const definition = `${col.name} ${col.type} ${col.nullable ? 'NULL' : 'NOT NULL'}${this.buildMySqlDefaultClause(col)} ${col.autoIncrement ? 'AUTO_INCREMENT' : ''} ${col.comment ? `COMMENT '${this.escapeSqlString(String(col.comment))}'` : ''}`;
       if (mod.oldName !== col.name) {
         sqlParts.push(`CHANGE COLUMN ${mod.oldName} ${definition}`);
       } else {
@@ -506,7 +530,7 @@ export class MySQLDriver implements IDatabaseDriver {
 
     // 3. 处理添加列
     for (const col of changes.added) {
-      const definition = `${col.name} ${col.type} ${col.nullable ? 'NULL' : 'NOT NULL'} ${col.defaultValue !== null && col.defaultValue !== undefined ? `DEFAULT '${col.defaultValue}'` : ''} ${col.autoIncrement ? 'AUTO_INCREMENT' : ''} ${col.comment ? `COMMENT '${col.comment}'` : ''}`;
+      const definition = `${col.name} ${col.type} ${col.nullable ? 'NULL' : 'NOT NULL'}${this.buildMySqlDefaultClause(col)} ${col.autoIncrement ? 'AUTO_INCREMENT' : ''} ${col.comment ? `COMMENT '${this.escapeSqlString(String(col.comment))}'` : ''}`;
       sqlParts.push(`ADD COLUMN ${definition}`);
     }
 
@@ -717,7 +741,8 @@ export class PostgreSQLDriver implements IDatabaseDriver {
         column_name as name, 
         data_type as type, 
         is_nullable as nullable, 
-        column_default as "defaultValue"
+        column_default as "defaultValue",
+        col_description((quote_ident(table_schema) || '.' || quote_ident(table_name))::regclass::oid, ordinal_position) as comment
       FROM information_schema.columns 
       WHERE table_name = $1
     `, [tableName]);
@@ -737,7 +762,8 @@ export class PostgreSQLDriver implements IDatabaseDriver {
       nullable: row.nullable === 'YES',
       primaryKey: pks.has(row.name),
       defaultValue: row.defaultValue,
-      autoIncrement: row.defaultValue?.includes('nextval')
+      autoIncrement: row.defaultValue?.includes('nextval'),
+      comment: row.comment || ''
     }));
   }
 
@@ -816,6 +842,12 @@ export class PostgreSQLDriver implements IDatabaseDriver {
     const sql = `CREATE TABLE "${tableName}" (${colDefs.join(', ')})`;
     await this.client.query(sql);
 
+    for (const col of columns) {
+      if (!col.comment) continue;
+      const escapedComment = String(col.comment).replace(/'/g, "''");
+      await this.client.query(`COMMENT ON COLUMN "${tableName}"."${col.name}" IS '${escapedComment}'`);
+    }
+
     if (indexes && indexes.length > 0) {
       for (const idx of indexes) {
         const unique = idx.unique ? 'UNIQUE' : '';
@@ -834,8 +866,17 @@ export class PostgreSQLDriver implements IDatabaseDriver {
     }
 
     for (const mod of changes.modified) {
+      const targetColumnName = mod.column.name;
       if (mod.oldName !== mod.column.name) {
         await this.client.query(`ALTER TABLE "${tableName}" RENAME COLUMN "${mod.oldName}" TO "${mod.column.name}"`);
+      }
+      if (Object.prototype.hasOwnProperty.call(mod.column, 'comment')) {
+        const escapedComment = mod.column.comment ? String(mod.column.comment).replace(/'/g, "''") : null;
+        if (escapedComment === null) {
+          await this.client.query(`COMMENT ON COLUMN "${tableName}"."${targetColumnName}" IS NULL`);
+        } else {
+          await this.client.query(`COMMENT ON COLUMN "${tableName}"."${targetColumnName}" IS '${escapedComment}'`);
+        }
       }
       // 这里可以扩展修改类型、可空性等
     }

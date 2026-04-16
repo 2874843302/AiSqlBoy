@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react'
-import { Database, Table, Play, Plus, Trash2, X, Server, HardDrive, RefreshCw, ChevronRight, Layout, Settings, Activity, AlignLeft, Bot, Sparkles, Send, Loader2, Key, Search, ArrowUp, ArrowDown, FileJson, Save, Terminal, Download, CheckCircle2 } from 'lucide-react'
+import React, { useState, useEffect, useMemo } from 'react'
+import { Database, Table, Play, Plus, Trash2, X, Server, HardDrive, RefreshCw, ChevronRight, Layout, Settings, Activity, AlignLeft, Bot, Sparkles, Send, Loader2, Key, Search, ArrowUp, ArrowDown, FileJson, Save, Terminal, Download, CheckCircle2, Filter } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ConnectionConfig } from '../shared/types'
 import { AI_SETTING_KEYS } from '../shared/aiSettings'
@@ -161,11 +161,32 @@ const App: React.FC = () => {
   const [erSchemaLanguagePickDb, setErSchemaLanguagePickDb] = useState<string | null>(null);
   const [schemaData, setSchemaData] = useState<{ tableName: string; columns: any[]; indexes: any[] }>({ tableName: '', columns: [], indexes: [] });
   const [activeSchemaTab, setActiveSchemaTab] = useState<'columns' | 'indexes'>('columns');
+  const [schemaCommentAILoading, setSchemaCommentAILoading] = useState(false);
+  const [showSchemaFilterModal, setShowSchemaFilterModal] = useState(false);
+  const [schemaFilterDraft, setSchemaFilterDraft] = useState<string[]>([]);
+  const [tableInspector, setTableInspector] = useState<{
+    open: boolean;
+    loading: boolean;
+    tableName: string;
+    ddl: string;
+    rowCount: number | null;
+    columnCount: number;
+    indexCount: number;
+    error: string;
+  }>({
+    open: false,
+    loading: false,
+    tableName: '',
+    ddl: '',
+    rowCount: null,
+    columnCount: 0,
+    indexCount: 0,
+    error: ''
+  });
   const [textDetail, setTextDetail] = useState<{ content: any; fieldName: string } | null>(null)
   const [isJsonFormatted, setIsJsonFormatted] = useState(false);
   const [rowLimit, setRowLimit] = useState(10000); // 新增：大数据量限制行数
-  const [useVirtualScroll, setUseVirtualScroll] = useState(true); // 是否开启虚拟滚动
-  const [viewportHeight, setViewportHeight] = useState(0); // 视口高度
+  const [useVirtualScroll] = useState(true); // 是否开启虚拟滚动
   const ROW_HEIGHT = 48; // 预估行高
 
   // JSON Helper Functions
@@ -192,6 +213,28 @@ const App: React.FC = () => {
       return String(val);
     }
   };
+
+  const sanitizeDisplayText = (val: any) => {
+    if (val === null) return 'NULL';
+    if (val === undefined) return '';
+    let text = '';
+    if (typeof val === 'string') {
+      text = val;
+    } else if (typeof val === 'object') {
+      try {
+        text = JSON.stringify(val);
+      } catch {
+        text = String(val);
+      }
+    } else {
+      text = String(val);
+    }
+    // 过滤不可见控制字符，避免出现类似 "� 0" 的异常显示
+    return text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
+  };
+
+  const escapeRegExp = (input: string) => input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const RESULT_PREVIEW_LENGTH = 120;
   
   // Pagination State
   const [pageSize, setPageSize] = useState(20);
@@ -320,13 +363,27 @@ const App: React.FC = () => {
   // Autocomplete State
   const [suggestionInfo, setSuggestionInfo] = useState<{
     show: boolean;
-    list: string[];
+    list: { name: string; kind: 'keyword' | 'table' }[];
     index: number;
     x: number;
     y: number;
     word: string;
     start: number;
   }>({ show: false, list: [], index: 0, x: 0, y: 0, word: '', start: 0 });
+
+  const SQL_KEYWORDS = useMemo(
+    () => [
+      'SELECT', 'FROM', 'WHERE', 'GROUP BY', 'ORDER BY', 'HAVING', 'LIMIT', 'OFFSET',
+      'JOIN', 'LEFT JOIN', 'RIGHT JOIN', 'INNER JOIN', 'FULL JOIN', 'ON',
+      'INSERT INTO', 'VALUES', 'UPDATE', 'SET', 'DELETE FROM',
+      'CREATE TABLE', 'ALTER TABLE', 'DROP TABLE', 'TRUNCATE TABLE',
+      'CREATE INDEX', 'DROP INDEX', 'PRIMARY KEY', 'FOREIGN KEY',
+      'DISTINCT', 'UNION', 'UNION ALL', 'CASE WHEN', 'EXISTS', 'IN', 'LIKE',
+      'AND', 'OR', 'NOT', 'IS NULL', 'IS NOT NULL',
+      'COUNT', 'SUM', 'AVG', 'MAX', 'MIN'
+    ],
+    []
+  );
 
   // 自动滚动补全列表，确保选中项可见
   useEffect(() => {
@@ -355,14 +412,24 @@ const App: React.FC = () => {
 
   // Search State
   const [searchTerm, setSearchTerm] = useState('');
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
   const [searchMatches, setSearchMatches] = useState<{rowIdx: number, colName: string}[]>([]);
   const [currentMatchIdx, setCurrentMatchIdx] = useState(-1);
   const searchInputRef = React.useRef<HTMLInputElement>(null);
   const tableContainerRef = React.useRef<HTMLDivElement>(null);
   const resultsContainerRef = React.useRef<HTMLDivElement>(null);
-  const [scrollTop, setScrollTop] = useState(0); // 记录滚动位置
+  const [tableScrollTop, setTableScrollTop] = useState(0);
+  const [resultsScrollTop, setResultsScrollTop] = useState(0);
+  const [tableViewportHeight, setTableViewportHeight] = useState(0);
+  const [resultsViewportHeight, setResultsViewportHeight] = useState(0);
   const [showScrollButtons, setShowScrollButtons] = useState(false);
   const [showResultsScrollButtons, setShowResultsScrollButtons] = useState(false);
+  const tableScrollRafRef = React.useRef<number | null>(null);
+  const resultsScrollRafRef = React.useRef<number | null>(null);
+  const pendingTableScrollTopRef = React.useRef(0);
+  const pendingTableViewportRef = React.useRef(0);
+  const pendingResultsScrollTopRef = React.useRef(0);
+  const pendingResultsViewportRef = React.useRef(0);
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -441,16 +508,30 @@ const App: React.FC = () => {
     loadUiSettings()
   }, [])
 
-  // 搜索逻辑
   useEffect(() => {
-    if (!searchTerm.trim()) {
+    const timer = window.setTimeout(() => {
+      setDebouncedSearchTerm(searchTerm);
+    }, 220);
+    return () => window.clearTimeout(timer);
+  }, [searchTerm]);
+
+  // 搜索逻辑
+  const activeSearchTerm = debouncedSearchTerm.trim();
+  const activeSearchTermLower = activeSearchTerm.toLowerCase();
+  const activeSearchRegex = useMemo(
+    () => (activeSearchTerm ? new RegExp(`(${escapeRegExp(activeSearchTerm)})`, 'gi') : null),
+    [activeSearchTerm]
+  );
+
+  useEffect(() => {
+    if (!activeSearchTerm) {
       setSearchMatches([]);
       setCurrentMatchIdx(-1);
       return;
     }
 
     const matches: {rowIdx: number, colName: string}[] = [];
-    const term = searchTerm.toLowerCase();
+    const term = activeSearchTermLower;
 
     // 根据当前视图选择搜索数据源
     let searchData: any[] = [];
@@ -478,7 +559,7 @@ const App: React.FC = () => {
 
     setSearchMatches(matches);
     setCurrentMatchIdx(matches.length > 0 ? 0 : -1);
-  }, [searchTerm, data, columns, activeConsoleId, consoles]);
+  }, [activeSearchTerm, activeSearchTermLower, data, columns, activeConsoleId, consoles]);
 
   // 定位到当前匹配项
   useEffect(() => {
@@ -545,15 +626,49 @@ const App: React.FC = () => {
     if (type === 'table') {
       // 表格视图滚动超过 300px 时显示按钮
       setShowScrollButtons(target.scrollTop > 300);
+      pendingTableScrollTopRef.current = target.scrollTop;
+      pendingTableViewportRef.current = target.clientHeight;
+      if (tableScrollRafRef.current === null) {
+        tableScrollRafRef.current = window.requestAnimationFrame(() => {
+          setTableScrollTop(pendingTableScrollTopRef.current);
+          setTableViewportHeight(pendingTableViewportRef.current);
+          tableScrollRafRef.current = null;
+        });
+      }
     } else {
       // 查询结果视图滚动超过 100px 时显示按钮
       setShowResultsScrollButtons(target.scrollTop > 100);
-      setScrollTop(target.scrollTop);
-      if (viewportHeight !== target.clientHeight) {
-        setViewportHeight(target.clientHeight);
+      pendingResultsScrollTopRef.current = target.scrollTop;
+      pendingResultsViewportRef.current = target.clientHeight;
+      if (resultsScrollRafRef.current === null) {
+        resultsScrollRafRef.current = window.requestAnimationFrame(() => {
+          setResultsScrollTop(pendingResultsScrollTopRef.current);
+          setResultsViewportHeight(pendingResultsViewportRef.current);
+          resultsScrollRafRef.current = null;
+        });
       }
     }
   };
+
+  useEffect(() => {
+    return () => {
+      if (tableScrollRafRef.current !== null) {
+        window.cancelAnimationFrame(tableScrollRafRef.current);
+      }
+      if (resultsScrollRafRef.current !== null) {
+        window.cancelAnimationFrame(resultsScrollRafRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (tableContainerRef.current && tableViewportHeight === 0) {
+      setTableViewportHeight(tableContainerRef.current.clientHeight);
+    }
+    if (resultsContainerRef.current && resultsViewportHeight === 0) {
+      setResultsViewportHeight(resultsContainerRef.current.clientHeight);
+    }
+  }, [selectedTable, activeConsoleId, resultsHeight, tableViewportHeight, resultsViewportHeight]);
 
   useEffect(() => {
      resetSelectionState();
@@ -671,6 +786,13 @@ const App: React.FC = () => {
     setSavedConnections(connections)
   }
 
+  const filteredDatabases = useMemo(() => {
+    const selected = activeConnection?.selectedSchemas || [];
+    if (!selected.length) return databases;
+    const allow = new Set(selected);
+    return databases.filter((db) => allow.has(db));
+  }, [databases, activeConnection]);
+
   const handleSaveConnection = async () => {
     if (!newConfig.name) return
     await window.electronAPI.saveConnection(newConfig)
@@ -772,6 +894,34 @@ const App: React.FC = () => {
     }
   }
 
+  const handleOpenSchemaFilterModal = () => {
+    if (!activeConnection) return;
+    setSchemaFilterDraft(activeConnection.selectedSchemas ? [...activeConnection.selectedSchemas] : []);
+    setShowSchemaFilterModal(true);
+  };
+
+  const handleSaveSchemaFilter = async () => {
+    if (!activeConnection?.id) return;
+    const nextSelected = schemaFilterDraft.filter((v, i, arr) => arr.indexOf(v) === i);
+    const nextConn: ConnectionConfig = { ...activeConnection, selectedSchemas: nextSelected };
+    await window.electronAPI.saveConnection(nextConn);
+    setActiveConnection(nextConn);
+    setSavedConnections((prev) => prev.map((c) => (c.id === nextConn.id ? { ...c, selectedSchemas: nextSelected } : c)));
+
+    const allowAll = nextSelected.length === 0;
+    const allowSet = new Set(nextSelected);
+    if (selectedDatabase && !allowAll && !allowSet.has(selectedDatabase)) {
+      setSelectedDatabase(null);
+      setSelectedTable(null);
+      setTables([]);
+      setExpandedDatabases(new Set());
+      setData([]);
+      setColumns([]);
+    }
+    setShowSchemaFilterModal(false);
+    setToast({ message: nextSelected.length > 0 ? `已选择 ${nextSelected.length} 个数据库架构` : '已切换为显示全部数据库架构', type: 'success' });
+  };
+
   const handleSelectDatabase = async (dbName: string) => {
     // 切换折叠状态
     const newExpanded = new Set(expandedDatabases)
@@ -792,6 +942,7 @@ const App: React.FC = () => {
         const tableList = await window.electronAPI.getTables()
         setTables(tableList)
         setSelectedTable(null)
+        setSortConfig({ column: '', direction: null })
         setData([])
         setColumns([])
         
@@ -817,10 +968,24 @@ const App: React.FC = () => {
     try {
       const offset = (page - 1) * size;
       const startTime = Date.now();
-      const [cols, dataRes] = await Promise.all([
-        window.electronAPI.getTableColumns(tableName),
-        window.electronAPI.getTableData(tableName, size, offset, sortCol || undefined, sortDir || undefined)
-      ])
+      const cols = await window.electronAPI.getTableColumns(tableName);
+      const colNames = new Set(cols.map((c: any) => String(c.name)));
+      const requestedSortColumn = sortCol ? String(sortCol) : '';
+      const isSortColumnValid = requestedSortColumn ? colNames.has(requestedSortColumn) : false;
+      const effectiveSortColumn = isSortColumnValid ? requestedSortColumn : '';
+      const effectiveSortDir = isSortColumnValid ? sortDir : null;
+
+      if (requestedSortColumn && !isSortColumnValid) {
+        setSortConfig({ column: '', direction: null });
+      }
+
+      const dataRes = await window.electronAPI.getTableData(
+        tableName,
+        size,
+        offset,
+        effectiveSortColumn || undefined,
+        effectiveSortDir || undefined
+      );
       const endTime = Date.now();
       setTableExecutionTime(endTime - startTime);
       setColumns(cols)
@@ -835,6 +1000,116 @@ const App: React.FC = () => {
       setLoading(false)
     }
   }
+
+  const quoteTableNameForQuery = (tableName: string) => {
+    if (activeConnection?.type === 'mysql') {
+      return `\`${tableName.replace(/`/g, '``')}\``;
+    }
+    if (activeConnection?.type === 'postgresql') {
+      return `"${tableName.replace(/"/g, '""')}"`;
+    }
+    return tableName;
+  };
+
+  const buildFallbackCreateTableSql = (tableName: string, cols: any[], idxs: any[]) => {
+    const colLines = cols.map((c: any) => {
+      const parts = [`${c.name} ${c.type}`];
+      if (!c.nullable) parts.push('NOT NULL');
+      if (c.defaultValue !== null && c.defaultValue !== undefined && String(c.defaultValue) !== '') {
+        parts.push(`DEFAULT ${c.defaultValue}`);
+      }
+      if (c.autoIncrement) parts.push('AUTO_INCREMENT');
+      if (c.primaryKey) parts.push('PRIMARY KEY');
+      if (c.comment) parts.push(`COMMENT '${String(c.comment).replace(/'/g, "''")}'`);
+      return `  ${parts.join(' ')}`;
+    });
+    const idxLines = (idxs || []).map((idx: any) => {
+      const unique = idx.unique ? 'UNIQUE ' : '';
+      return `  ${unique}INDEX ${idx.name} (${(idx.columns || []).join(', ')})`;
+    });
+    return `CREATE TABLE ${tableName} (\n${[...colLines, ...idxLines].join(',\n')}\n);`;
+  };
+
+  const loadTableInspector = async (tableName: string) => {
+    setTableInspector((prev) => ({
+      ...prev,
+      open: true,
+      loading: true,
+      tableName,
+      error: ''
+    }));
+
+    try {
+      const [cols, idxs] = await Promise.all([
+        window.electronAPI.getTableColumns(tableName),
+        window.electronAPI.getTableIndexes(tableName)
+      ]);
+
+      let rowCount: number | null = null;
+      try {
+        const countSql = `SELECT COUNT(*) AS total FROM ${quoteTableNameForQuery(tableName)}`;
+        const countRes = await window.electronAPI.executeQuery(countSql);
+        if (countRes.success && countRes.data && countRes.data[0]) {
+          const firstRow = countRes.data[0] as Record<string, any>;
+          const raw =
+            firstRow.total ??
+            firstRow.TOTAL ??
+            firstRow['COUNT(*)'] ??
+            firstRow.count ??
+            Object.values(firstRow)[0];
+          const n = Number(raw);
+          rowCount = Number.isFinite(n) ? n : null;
+        }
+      } catch {
+        rowCount = null;
+      }
+
+      let ddl = '';
+      if (activeConnection?.type === 'mysql') {
+        const ddlRes = await window.electronAPI.executeQuery(`SHOW CREATE TABLE ${quoteTableNameForQuery(tableName)}`);
+        if (ddlRes.success && ddlRes.data?.[0]) {
+          const row = ddlRes.data[0] as Record<string, any>;
+          ddl = String(row['Create Table'] ?? row['CREATE TABLE'] ?? '');
+        }
+      }
+
+      if (!ddl) {
+        ddl = buildFallbackCreateTableSql(tableName, cols, idxs);
+      }
+
+      setTableInspector({
+        open: true,
+        loading: false,
+        tableName,
+        ddl,
+        rowCount,
+        columnCount: cols.length,
+        indexCount: idxs.length,
+        error: ''
+      });
+    } catch (err: any) {
+      setTableInspector({
+        open: true,
+        loading: false,
+        tableName,
+        ddl: '',
+        rowCount: null,
+        columnCount: 0,
+        indexCount: 0,
+        error: err?.message || '读取表信息失败'
+      });
+    }
+  };
+
+  useEffect(() => {
+    if (!selectedTable) {
+      setTableInspector((prev) => ({ ...prev, open: false }));
+      return;
+    }
+    if (tableInspector.open && tableInspector.tableName !== selectedTable) {
+      void loadTableInspector(selectedTable);
+    }
+  }, [selectedTable]);
 
   const handleSort = (columnName: string) => {
     let nextDir: 'ASC' | 'DESC' | null = 'ASC';
@@ -1283,8 +1558,8 @@ const App: React.FC = () => {
         setSuggestionInfo(prev => ({ ...prev, index: (prev.index - 1 + prev.list.length) % prev.list.length }));
       } else if (e.key === 'Enter' || e.key === 'Tab') {
         e.preventDefault();
-        const selectedTable = suggestionInfo.list[suggestionInfo.index];
-        insertSuggestion(selectedTable);
+        const selectedItem = suggestionInfo.list[suggestionInfo.index];
+        if (selectedItem) insertSuggestion(selectedItem.name);
       } else if (e.key === 'Escape') {
         setSuggestionInfo(prev => ({ ...prev, show: false }));
       }
@@ -1350,11 +1625,19 @@ const App: React.FC = () => {
       const word = match[1].toLowerCase();
       const start = match.index!;
       
-      // 过滤表名
-      const filtered = tables
-        .map(t => t.name)
-        .filter(name => name.toLowerCase().includes(word) && name.toLowerCase() !== word)
-        .slice(0, 50); // 增加建议数量，更接近 IDEA 体验
+      const keywordSuggestions = SQL_KEYWORDS
+        .filter((k) => k.toLowerCase().startsWith(word) && k.toLowerCase() !== word)
+        .slice(0, 30)
+        .map((name) => ({ name, kind: 'keyword' as const }));
+
+      const tableSuggestions = tables
+        .map((t) => t.name)
+        .filter((name) => name.toLowerCase().includes(word) && name.toLowerCase() !== word)
+        .slice(0, 30)
+        .map((name) => ({ name, kind: 'table' as const }));
+
+      // 关键字优先，其次表名
+      const filtered = [...keywordSuggestions, ...tableSuggestions].slice(0, 50);
 
       if (filtered.length === 0) {
         setSuggestionInfo(prev => ({ ...prev, show: false }));
@@ -1873,7 +2156,8 @@ const App: React.FC = () => {
               oc.nullable !== m.column.nullable || 
               oc.primaryKey !== m.column.primaryKey ||
               oc.defaultValue !== m.column.defaultValue ||
-              oc.autoIncrement !== m.column.autoIncrement
+              oc.autoIncrement !== m.column.autoIncrement ||
+              (oc.comment || '') !== (m.column.comment || '')
             );
           }),
         removed: originalCols
@@ -1928,6 +2212,104 @@ const App: React.FC = () => {
       setToast({ message: err.message, type: 'error' });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleGenerateColumnCommentsByAI = async () => {
+    if (schemaCommentAILoading) return;
+    const tableName = (schemaData.tableName || '').trim();
+    const cols = (schemaData.columns || []).filter((c) => c?.name && String(c.name).trim() !== '');
+    if (!tableName || tableName === 'new_table') {
+      setToast({ message: '请先填写有效表名后再生成注释', type: 'error' });
+      return;
+    }
+    if (cols.length === 0) {
+      setToast({ message: '请先添加字段后再生成注释', type: 'error' });
+      return;
+    }
+
+    setSchemaCommentAILoading(true);
+    try {
+      const payload = cols.map((c) => ({
+        name: String(c.name),
+        type: c.type ? String(c.type) : '',
+        nullable: !!c.nullable,
+        primaryKey: !!c.primaryKey
+      }));
+      const prompt = `请为以下数据表字段生成简洁、专业的中文注释，只返回 JSON，不要解释。
+数据库类型: ${activeConnection?.type || 'unknown'}
+表名: ${tableName}
+字段:
+${JSON.stringify(payload)}
+
+返回格式:
+{"comments":[{"name":"字段名","comment":"字段注释"}]}
+
+规则:
+1) name 必须严格来自输入字段名，不能新增或修改字段名；
+2) comment 控制在 4-30 个中文字符；
+3) 若是 id 主键，可使用“主键ID”；
+4) 不确定时给通用且安全的业务描述，不要编造不存在的含义。`;
+
+      const aiRes = await window.electronAPI.aiChat([
+        { role: 'system', content: '你是数据库建模助手。必须只返回合法 JSON。' },
+        { role: 'user', content: prompt }
+      ]);
+
+      if (!aiRes.success || !aiRes.response) {
+        setToast({ message: aiRes.error || 'AI 生成字段注释失败', type: 'error' });
+        return;
+      }
+
+      const raw = aiRes.response.trim();
+      const jsonBlock = raw.match(/```json\s*([\s\S]*?)```/i)?.[1] || raw.match(/\{[\s\S]*\}/)?.[0];
+      if (!jsonBlock) {
+        setToast({ message: 'AI 返回格式无法解析，请重试', type: 'error' });
+        return;
+      }
+
+      let parsed: any = null;
+      try {
+        parsed = JSON.parse(jsonBlock);
+      } catch {
+        setToast({ message: 'AI 返回 JSON 解析失败，请重试', type: 'error' });
+        return;
+      }
+
+      const comments = Array.isArray(parsed?.comments) ? parsed.comments : [];
+      if (comments.length === 0) {
+        setToast({ message: 'AI 未返回可用注释', type: 'info' });
+        return;
+      }
+
+      const commentMap = new Map<string, string>();
+      comments.forEach((item: any) => {
+        const name = item?.name != null ? String(item.name).trim() : '';
+        const comment = item?.comment != null ? String(item.comment).trim() : '';
+        if (name && comment) {
+          commentMap.set(name, comment);
+        }
+      });
+
+      let updatedCount = 0;
+      const nextColumns = schemaData.columns.map((col) => {
+        const colName = col?.name != null ? String(col.name).trim() : '';
+        const aiComment = commentMap.get(colName);
+        if (!aiComment) return col;
+        if ((col.comment || '') === aiComment) return col;
+        updatedCount += 1;
+        return { ...col, comment: aiComment };
+      });
+
+      setSchemaData((prev) => ({ ...prev, columns: nextColumns }));
+      setToast({
+        message: updatedCount > 0 ? `AI 已生成 ${updatedCount} 个字段注释` : 'AI 注释已是最新，无需更新',
+        type: updatedCount > 0 ? 'success' : 'info'
+      });
+    } catch (err: any) {
+      setToast({ message: err.message || 'AI 生成字段注释失败', type: 'error' });
+    } finally {
+      setSchemaCommentAILoading(false);
     }
   };
 
@@ -2053,10 +2435,28 @@ const App: React.FC = () => {
                             {/* Database List */}
                             <div className="px-2">
                               <div className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] mb-3 flex items-center gap-2">
-                              <Layout size={16} /> 数据库
-                            </div>
+                                <Layout size={16} /> 数据库
+                                {activeConnection?.type !== 'sqlite' && activeConnection?.type !== 'redis' && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleOpenSchemaFilterModal();
+                                    }}
+                                    className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold normal-case tracking-normal bg-slate-100 text-slate-600 hover:bg-slate-200"
+                                    title="筛选要展示的数据库架构"
+                                  >
+                                    <Filter size={12} />
+                                    架构筛选
+                                  </button>
+                                )}
+                              </div>
+                              {databases.length > filteredDatabases.length && (
+                                <div className="text-[10px] text-slate-400 mb-2">
+                                  已隐藏 {databases.length - filteredDatabases.length} 个未选架构
+                                </div>
+                              )}
                               <div className="grid grid-cols-1 gap-1">
-                                {databases.map((db) => (
+                                {filteredDatabases.map((db) => (
                                   <div key={db} className="space-y-1">
                                     <motion.button
                                       whileHover={{ boxShadow: '0 4px 12px rgba(0, 0, 0, 0.05)' }}
@@ -2125,7 +2525,7 @@ const App: React.FC = () => {
                                     </AnimatePresence>
                                   </div>
                                 ))}
-                                {databases.length === 0 && (
+                                {filteredDatabases.length === 0 && (
                                   <div className="px-3 py-2 text-[10px] text-slate-400 italic">暂无数据库</div>
                                 )}
                               </div>
@@ -2320,8 +2720,24 @@ const App: React.FC = () => {
                 transition={{ duration: 0.4, ease: "easeOut" }}
                 className="flex-1 flex flex-col relative overflow-hidden"
               >
+                <div className="absolute top-6 right-8 z-20 flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      if (tableInspector.open) {
+                        setTableInspector((prev) => ({ ...prev, open: false }));
+                      } else if (selectedTable) {
+                        void loadTableInspector(selectedTable);
+                      }
+                    }}
+                    className="px-3 py-1.5 text-xs font-bold rounded-xl border border-slate-200 bg-white/90 hover:bg-white text-slate-600 shadow-sm transition-all flex items-center gap-2"
+                    title="查看表信息与建表语句"
+                  >
+                    <FileJson size={14} />
+                    {tableInspector.open ? '隐藏表信息' : '表信息'}
+                  </button>
+                </div>
                 <div 
-                  className="flex-1 overflow-auto p-8 custom-scrollbar relative"
+                  className={`flex-1 overflow-auto p-8 custom-scrollbar relative transition-all ${tableInspector.open ? 'pr-[430px]' : ''}`}
                   ref={tableContainerRef}
                   onScroll={(e) => handleContainerScroll(e, 'table')}
                 >
@@ -2335,6 +2751,7 @@ const App: React.FC = () => {
                               key={col.name}
                               className="px-6 py-5 text-left cursor-pointer hover:bg-slate-100/50 transition-colors group/th"
                               onClick={() => handleSort(col.name)}
+                              title={col.comment ? `${col.name}: ${col.comment}` : undefined}
                             >
                               <div className="flex flex-col gap-1">
                                 <div className="flex items-center justify-between">
@@ -2352,101 +2769,115 @@ const App: React.FC = () => {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-50">
-                        {data.map((row, i) => {
-                          const isDeleted = deletedRows.has(i);
-                          return (
-                            <motion.tr 
-                              initial={{ opacity: 0 }}
-                              animate={{ opacity: 1 }}
-                              transition={{ delay: i * 0.02 }}
-                              key={i} 
-                              className={`group hover:bg-blue-50/40 transition-colors cursor-pointer ${isDeleted ? 'bg-red-50 opacity-60 grayscale-[0.5]' : ''}`}
-                              onContextMenu={(e) => {
-                                e.preventDefault();
-                                setContextMenu({ 
-                                  x: e.clientX, 
-                                  y: e.clientY, 
-                                  type: 'row', 
-                                  target: i.toString() 
-                                });
-                              }}
-                            >
-                              {columns.map((col) => {
-                                const isEditing = editingCellCoord?.rowIdx === i && editingCellCoord?.colName === col.name;
-                                const isModified = editingCells[i]?.[col.name] !== undefined;
-                                const isCurrentMatch = currentMatchIdx >= 0 && searchMatches[currentMatchIdx]?.rowIdx === i && searchMatches[currentMatchIdx]?.colName === col.name;
-                                const displayValue = isModified ? editingCells[i][col.name] : row[col.name];
-                                
-                                const value = displayValue;
-                                const isLongText = value && value.toString().length > 50;
-                                const finalDisplayValue = isLongText 
-                                  ? value.toString().substring(0, 50) + '...' 
-                                  : (value === null ? 'NULL' : value.toString());
+                        {(() => {
+                          const shouldVirtualize = useVirtualScroll && data.length > 80;
+                          const visibleRowsCount = Math.max(1, Math.ceil((tableViewportHeight || ROW_HEIGHT * 10) / ROW_HEIGHT));
+                          const overscanRows = visibleRowsCount; // 默认上下各预渲染 1 屏
+                          const startIdx = shouldVirtualize ? Math.max(0, Math.floor(tableScrollTop / ROW_HEIGHT) - overscanRows) : 0;
+                          const endIdx = shouldVirtualize
+                            ? Math.min(data.length, Math.floor((tableScrollTop + (tableViewportHeight || 0)) / ROW_HEIGHT) + overscanRows)
+                            : data.length;
+                          const visibleRows = data.slice(startIdx, endIdx);
+                          const paddingTop = shouldVirtualize ? startIdx * ROW_HEIGHT : 0;
+                          const paddingBottom = shouldVirtualize ? Math.max(0, (data.length - endIdx) * ROW_HEIGHT) : 0;
 
+                          return (
+                            <>
+                              {paddingTop > 0 && <tr><td colSpan={columns.length} style={{ height: paddingTop }}></td></tr>}
+                              {visibleRows.map((row, i) => {
+                                const rowIdx = startIdx + i;
+                                const isDeleted = deletedRows.has(rowIdx);
                                 return (
-                                  <td 
-                                    key={col.name} 
-                                    data-row-idx={i}
-                                    data-col-name={col.name}
-                                    className={`px-6 py-4 text-sm text-slate-600 border-x border-transparent transition-all ${isModified ? 'bg-yellow-50/50 !text-yellow-700' : ''} ${isEditing ? 'ring-2 ring-blue-500 ring-inset z-10 !bg-white' : ''} ${isCurrentMatch ? 'ring-2 ring-orange-400 ring-inset z-10 bg-orange-50' : ''}`}
-                                    onDoubleClick={() => handleCellDoubleClick(i, col.name, row[col.name])}
+                                  <tr
+                                    key={rowIdx}
+                                    className={`group hover:bg-blue-50/40 transition-colors cursor-pointer ${isDeleted ? 'bg-red-50 opacity-60 grayscale-[0.5]' : ''}`}
+                                    onContextMenu={(e) => {
+                                      e.preventDefault();
+                                      setContextMenu({
+                                        x: e.clientX,
+                                        y: e.clientY,
+                                        type: 'row',
+                                        target: rowIdx.toString()
+                                      });
+                                    }}
                                   >
-                                    {isEditing ? (
-                                      <input
-                                        type={getTimeInputType(col.type) || 'text'}
-                                        autoFocus
-                                        className="w-full bg-transparent outline-none font-mono text-[13px] text-blue-600"
-                                        value={editValue}
-                                        onChange={(e) => setEditValue(e.target.value)}
-                                        onBlur={handleCellEditCommit}
-                                        onKeyDown={(e) => {
-                                          if (e.key === 'Enter') handleCellEditCommit();
-                                          if (e.key === 'Escape') setEditingCellCoord(null);
-                                        }}
-                                      />
-                                    ) : (
-                                      <>
-                                        {value === null ? (
-                                          <span className="text-slate-300 italic font-mono text-xs tracking-tighter">NULL</span>
-                                        ) : (
-                                          <div className="flex items-center gap-3">
-                                            <span className={`truncate max-w-[400px] group-hover:text-slate-900 transition-colors font-mono text-[13px] ${isModified ? 'font-bold' : ''}`}>
-                                              {searchTerm ? (
-                                                (() => {
-                                                  const text = finalDisplayValue;
-                                                  const parts = text.split(new RegExp(`(${searchTerm})`, 'gi'));
-                                                  return parts.map((part, index) => 
-                                                    part.toLowerCase() === searchTerm.toLowerCase() ? (
-                                                      <mark key={index} className="bg-yellow-200 text-slate-900 rounded-sm px-0.5">{part}</mark>
-                                                    ) : part
-                                                  );
-                                                })()
-                                              ) : finalDisplayValue}
-                                            </span>
-                                            {isLongText && (
-                                              <motion.button
-                                                whileHover={{ scale: 1.1 }}
-                                                whileTap={{ scale: 0.9 }}
-                                                onClick={(e) => {
-                                                  e.stopPropagation();
-                                                  setTextDetail({ content: value, fieldName: col.name });
-                                                  setIsJsonFormatted(false);
-                                                }}
-                                                className="text-blue-500 hover:text-blue-600 p-1.5 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors border border-blue-100"
-                                              >
-                                                <Plus size={10} />
-                                              </motion.button>
-                                            )}
-                                          </div>
-                                        )}
-                                      </>
-                                    )}
-                                  </td>
+                                    {columns.map((col) => {
+                                      const isEditing = editingCellCoord?.rowIdx === rowIdx && editingCellCoord?.colName === col.name;
+                                      const isModified = editingCells[rowIdx]?.[col.name] !== undefined;
+                                      const isCurrentMatch = currentMatchIdx >= 0 && searchMatches[currentMatchIdx]?.rowIdx === rowIdx && searchMatches[currentMatchIdx]?.colName === col.name;
+                                      const displayValue = isModified ? editingCells[rowIdx][col.name] : row[col.name];
+                                      const value = displayValue;
+                                      const normalizedText = sanitizeDisplayText(value);
+                                      const isLongText = normalizedText.length > RESULT_PREVIEW_LENGTH;
+                                      const finalDisplayValue = isLongText ? normalizedText.substring(0, RESULT_PREVIEW_LENGTH) + '...' : normalizedText;
+
+                                      return (
+                                        <td
+                                          key={col.name}
+                                          data-row-idx={rowIdx}
+                                          data-col-name={col.name}
+                                          className={`px-6 py-4 text-sm text-slate-600 border-x border-transparent transition-all ${isModified ? 'bg-yellow-50/50 !text-yellow-700' : ''} ${isEditing ? 'ring-2 ring-blue-500 ring-inset z-10 !bg-white' : ''} ${isCurrentMatch ? 'ring-2 ring-orange-400 ring-inset z-10 bg-orange-50' : ''}`}
+                                          onDoubleClick={() => handleCellDoubleClick(rowIdx, col.name, row[col.name])}
+                                        >
+                                          {isEditing ? (
+                                            <input
+                                              type={getTimeInputType(col.type) || 'text'}
+                                              autoFocus
+                                              className="w-full bg-transparent outline-none font-mono text-[13px] text-blue-600"
+                                              value={editValue}
+                                              onChange={(e) => setEditValue(e.target.value)}
+                                              onBlur={handleCellEditCommit}
+                                              onKeyDown={(e) => {
+                                                if (e.key === 'Enter') handleCellEditCommit();
+                                                if (e.key === 'Escape') setEditingCellCoord(null);
+                                              }}
+                                            />
+                                          ) : (
+                                            <>
+                                              {value === null ? (
+                                                <span className="text-slate-300 italic font-mono text-xs tracking-tighter">NULL</span>
+                                              ) : (
+                                                <div className="flex items-center gap-3">
+                                                  <span className={`truncate max-w-[400px] group-hover:text-slate-900 transition-colors font-mono text-[13px] ${isModified ? 'font-bold' : ''}`}>
+                                                    {activeSearchTerm && activeSearchRegex ? (
+                                                      (() => {
+                                                        const parts = finalDisplayValue.split(activeSearchRegex);
+                                                        return parts.map((part, index) =>
+                                                          part.toLowerCase() === activeSearchTermLower ? (
+                                                            <mark key={index} className="bg-yellow-200 text-slate-900 rounded-sm px-0.5">{part}</mark>
+                                                          ) : part
+                                                        );
+                                                      })()
+                                                    ) : finalDisplayValue}
+                                                  </span>
+                                                  {isLongText && (
+                                                    <motion.button
+                                                      whileHover={{ scale: 1.1 }}
+                                                      whileTap={{ scale: 0.9 }}
+                                                      onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        setTextDetail({ content: value, fieldName: col.name });
+                                                        setIsJsonFormatted(false);
+                                                      }}
+                                                      className="text-blue-500 hover:text-blue-600 p-1.5 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors border border-blue-100"
+                                                    >
+                                                      <Plus size={10} />
+                                                    </motion.button>
+                                                  )}
+                                                </div>
+                                              )}
+                                            </>
+                                          )}
+                                        </td>
+                                      );
+                                    })}
+                                  </tr>
                                 );
                               })}
-                            </motion.tr>
+                              {paddingBottom > 0 && <tr><td colSpan={columns.length} style={{ height: paddingBottom }}></td></tr>}
+                            </>
                           );
-                        })}
+                        })()}
                       </tbody>
                     </table>
                   </div>
@@ -2528,6 +2959,71 @@ const App: React.FC = () => {
                   )}
                 </div>
               </div>
+
+              <AnimatePresence>
+                {tableInspector.open && (
+                  <motion.aside
+                    initial={{ x: 24, opacity: 0 }}
+                    animate={{ x: 0, opacity: 1 }}
+                    exit={{ x: 24, opacity: 0 }}
+                    transition={{ duration: 0.22 }}
+                    className="absolute top-20 right-8 bottom-8 w-[390px] bg-white border border-slate-200 rounded-2xl shadow-xl z-20 overflow-hidden flex flex-col"
+                  >
+                    <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/80 flex items-center justify-between">
+                      <div>
+                        <div className="text-sm font-bold text-slate-800">表信息</div>
+                        <div className="text-[11px] text-slate-500 font-mono mt-0.5">{tableInspector.tableName || selectedTable}</div>
+                      </div>
+                      <button
+                        onClick={() => setTableInspector((prev) => ({ ...prev, open: false }))}
+                        className="w-7 h-7 rounded-lg hover:bg-slate-200/70 flex items-center justify-center text-slate-400 hover:text-slate-700 transition-colors"
+                        title="关闭"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+
+                    <div className="p-4 border-b border-slate-100 grid grid-cols-3 gap-2 text-center">
+                      <div className="bg-slate-50 rounded-xl py-2 px-1">
+                        <div className="text-[10px] text-slate-400 font-bold uppercase">Rows</div>
+                        <div className="text-sm font-bold text-slate-700">{tableInspector.rowCount ?? '-'}</div>
+                      </div>
+                      <div className="bg-slate-50 rounded-xl py-2 px-1">
+                        <div className="text-[10px] text-slate-400 font-bold uppercase">Columns</div>
+                        <div className="text-sm font-bold text-slate-700">{tableInspector.columnCount}</div>
+                      </div>
+                      <div className="bg-slate-50 rounded-xl py-2 px-1">
+                        <div className="text-[10px] text-slate-400 font-bold uppercase">Indexes</div>
+                        <div className="text-sm font-bold text-slate-700">{tableInspector.indexCount}</div>
+                      </div>
+                    </div>
+
+                    <div className="px-4 pt-3 pb-2 flex items-center justify-between">
+                      <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Create SQL</span>
+                      <button
+                        onClick={() => selectedTable && void loadTableInspector(selectedTable)}
+                        className="text-xs font-bold text-blue-600 hover:text-blue-700"
+                      >
+                        刷新
+                      </button>
+                    </div>
+                    <div className="flex-1 px-4 pb-4 overflow-auto custom-scrollbar">
+                      {tableInspector.loading ? (
+                        <div className="h-full flex items-center justify-center text-slate-400 text-sm">
+                          <Loader2 size={16} className="animate-spin mr-2" />
+                          读取中...
+                        </div>
+                      ) : tableInspector.error ? (
+                        <div className="text-sm text-red-500 bg-red-50 border border-red-100 rounded-xl p-3">{tableInspector.error}</div>
+                      ) : (
+                        <pre className="text-[12px] leading-5 text-slate-700 bg-slate-50 border border-slate-200 rounded-xl p-3 whitespace-pre-wrap break-words font-mono">
+                          {tableInspector.ddl || '-- 暂无建表语句 --'}
+                        </pre>
+                      )}
+                    </div>
+                  </motion.aside>
+                )}
+              </AnimatePresence>
 
               {/* 数据编辑浮动操作条 - 移至此处以确保在滚动时保持固定 */}
                 <AnimatePresence>
@@ -2794,7 +3290,7 @@ const App: React.FC = () => {
                           >
                             <div className="bg-slate-50 px-3 py-1.5 border-b border-slate-100 flex items-center justify-between">
                               <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1">
-                                <Table size={10} /> 表名建议
+                                <Sparkles size={10} /> 智能补全
                               </span>
                               <span className="text-[10px] text-slate-400">↑↓ 选择, Enter 确认</span>
                             </div>
@@ -2802,22 +3298,35 @@ const App: React.FC = () => {
                               ref={suggestionListRef}
                               className="max-h-60 overflow-y-auto py-1 custom-scrollbar scroll-smooth"
                             >
-                              {suggestionInfo.list.map((name, i) => (
+                              {suggestionInfo.list.map((item, i) => (
                                 <button
-                                  key={name}
-                                  onClick={() => insertSuggestion(name)}
+                                  key={`${item.kind}-${item.name}-${i}`}
+                                  onClick={() => insertSuggestion(item.name)}
                                   onMouseEnter={() => setSuggestionInfo(prev => ({ ...prev, index: i }))}
                                   className={`w-full text-left px-3 py-2 text-sm flex items-center justify-between group transition-colors ${
                                     suggestionInfo.index === i ? 'bg-blue-600 text-white' : 'hover:bg-blue-50 text-slate-700'
                                   }`}
                                 >
                                   <div className="flex items-center gap-2">
-                                    <Table size={14} className={suggestionInfo.index === i ? 'text-blue-200' : 'text-slate-400'} />
-                                    <span className="font-mono">{name}</span>
+                                    {item.kind === 'keyword' ? (
+                                      <Sparkles size={14} className={suggestionInfo.index === i ? 'text-blue-200' : 'text-indigo-400'} />
+                                    ) : (
+                                      <Table size={14} className={suggestionInfo.index === i ? 'text-blue-200' : 'text-slate-400'} />
+                                    )}
+                                    <span className="font-mono">{item.name}</span>
                                   </div>
-                                  {suggestionInfo.index === i && (
-                                    <span className="text-[10px] bg-blue-500 text-white px-1.5 py-0.5 rounded border border-blue-400">TAB</span>
-                                  )}
+                                  <div className="flex items-center gap-1">
+                                    <span className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                                      suggestionInfo.index === i
+                                        ? 'bg-blue-500 text-white border-blue-400'
+                                        : 'bg-slate-100 text-slate-500 border-slate-200'
+                                    }`}>
+                                      {item.kind === 'keyword' ? 'SQL' : 'TABLE'}
+                                    </span>
+                                    {suggestionInfo.index === i && (
+                                      <span className="text-[10px] bg-blue-500 text-white px-1.5 py-0.5 rounded border border-blue-400">TAB</span>
+                                    )}
+                                  </div>
                                 </button>
                               ))}
                             </div>
@@ -3015,8 +3524,10 @@ const App: React.FC = () => {
                             const results = activeConsole.results || [];
                             
                             // 虚拟列表计算
-                            const startIdx = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - 5);
-                            const endIdx = Math.min(results.length, Math.floor((scrollTop + viewportHeight) / ROW_HEIGHT) + 5);
+                            const visibleRowsCount = Math.max(1, Math.ceil((resultsViewportHeight || ROW_HEIGHT * 10) / ROW_HEIGHT));
+                            const overscanRows = visibleRowsCount; // 默认上下各预渲染 1 屏
+                            const startIdx = Math.max(0, Math.floor(resultsScrollTop / ROW_HEIGHT) - overscanRows);
+                            const endIdx = Math.min(results.length, Math.floor((resultsScrollTop + (resultsViewportHeight || 0)) / ROW_HEIGHT) + overscanRows);
                             const visibleResults = results.slice(startIdx, endIdx);
                             const paddingTop = startIdx * ROW_HEIGHT;
                             const paddingBottom = Math.max(0, (results.length - endIdx) * ROW_HEIGHT);
@@ -3037,51 +3548,61 @@ const App: React.FC = () => {
                                       const actualRowIdx = startIdx + i;
                                       return (
                                         <tr key={actualRowIdx} className="hover:bg-blue-50/30 transition-colors h-[48px]">
-                                          {activeConsole.columns?.map(col => (
-                                            <td 
-                                              key={col} 
-                                              className="px-4 py-3 text-sm text-slate-600 font-mono overflow-hidden truncate"
-                                              data-row-idx={actualRowIdx}
-                                              data-col-name={col}
-                                            >
-                                              {row[col] === null ? (
-                                                <span className="text-slate-300 italic font-mono text-xs tracking-tighter">NULL</span>
-                                              ) : (
-                                                <div className="flex items-center gap-3 overflow-hidden">
-                                                  <span className="truncate max-w-[400px] font-mono text-[13px]">
-                                                    {searchTerm ? (
-                                                      (() => {
-                                                        const text = String(row[col]);
-                                                        const displayText = text.length > 50 ? text.substring(0, 50) + '...' : text;
-                                                        const parts = displayText.split(new RegExp(`(${searchTerm})`, 'gi'));
-                                                        return parts.map((part, index) => 
-                                                          part.toLowerCase() === searchTerm.toLowerCase() ? (
-                                                            <mark key={index} className="bg-yellow-200 text-slate-900 rounded-sm px-0.5">{part}</mark>
-                                                          ) : part
-                                                        );
-                                                      })()
-                                                    ) : (
-                                                      String(row[col]).length > 50 ? String(row[col]).substring(0, 50) + '...' : String(row[col])
+                                          {activeConsole.columns?.map(col => {
+                                            const rawValue = row[col];
+                                            const cellText = sanitizeDisplayText(rawValue);
+                                            const isLongText = cellText.length > RESULT_PREVIEW_LENGTH;
+                                            const displayText = isLongText ? `${cellText.substring(0, RESULT_PREVIEW_LENGTH)}...` : cellText;
+                                            return (
+                                              <td
+                                                key={col}
+                                                className="px-4 py-3 text-sm text-slate-600 font-mono overflow-hidden truncate"
+                                                data-row-idx={actualRowIdx}
+                                                data-col-name={col}
+                                                onDoubleClick={() => {
+                                                  if (rawValue === null || rawValue === undefined) return;
+                                                  setTextDetail({ content: rawValue, fieldName: col });
+                                                  setIsJsonFormatted(false);
+                                                }}
+                                              >
+                                                {rawValue === null ? (
+                                                  <span className="text-slate-300 italic font-mono text-xs tracking-tighter">NULL</span>
+                                                ) : (
+                                                  <div className="flex items-center gap-3 overflow-hidden">
+                                                    <span className="truncate max-w-[400px] font-mono text-[13px]">
+                                                      {activeSearchTerm && activeSearchRegex ? (
+                                                        (() => {
+                                                          const parts = displayText.split(activeSearchRegex);
+                                                          return parts.map((part, index) =>
+                                                            part.toLowerCase() === activeSearchTermLower ? (
+                                                              <mark key={index} className="bg-yellow-200 text-slate-900 rounded-sm px-0.5">{part}</mark>
+                                                            ) : part
+                                                          );
+                                                        })()
+                                                      ) : (
+                                                        displayText
+                                                      )}
+                                                    </span>
+                                                    {isLongText && (
+                                                      <motion.button
+                                                        whileHover={{ scale: 1.1 }}
+                                                        whileTap={{ scale: 0.9 }}
+                                                        onClick={(e) => {
+                                                          e.stopPropagation();
+                                                          setTextDetail({ content: rawValue, fieldName: col });
+                                                          setIsJsonFormatted(false);
+                                                        }}
+                                                        className="flex-shrink-0 text-blue-500 hover:text-blue-600 p-1 bg-blue-50 hover:bg-blue-100 rounded transition-colors border border-blue-100"
+                                                        title="查看完整内容（也可双击单元格）"
+                                                      >
+                                                        <Plus size={8} />
+                                                      </motion.button>
                                                     )}
-                                                  </span>
-                                                  {String(row[col]).length > 50 && (
-                                                    <motion.button
-                                                      whileHover={{ scale: 1.1 }}
-                                                      whileTap={{ scale: 0.9 }}
-                                                      onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        setTextDetail({ content: row[col], fieldName: col });
-                                                        setIsJsonFormatted(false);
-                                                      }}
-                                                      className="flex-shrink-0 text-blue-500 hover:text-blue-600 p-1 bg-blue-50 hover:bg-blue-100 rounded transition-colors border border-blue-100"
-                                                    >
-                                                      <Plus size={8} />
-                                                    </motion.button>
-                                                  )}
-                                                </div>
-                                              )}
-                                            </td>
-                                          ))}
+                                                  </div>
+                                                )}
+                                              </td>
+                                            );
+                                          })}
                                         </tr>
                                       );
                                     })}
@@ -3511,6 +4032,106 @@ const App: React.FC = () => {
                 >
                   保存连接
                 </motion.button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Schema Filter Modal */}
+      <AnimatePresence>
+        {showSchemaFilterModal && activeConnection && (
+          <div className="fixed inset-0 z-[105] flex items-center justify-center p-6">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowSchemaFilterModal(false)}
+              className="absolute inset-0 bg-slate-900/25 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 20 }}
+              className="bg-white border border-slate-200 rounded-[28px] shadow-2xl w-[560px] max-h-[80vh] flex flex-col overflow-hidden z-10"
+            >
+              <div className="px-6 py-5 border-b border-slate-100 bg-gradient-to-b from-slate-50 to-transparent flex items-center justify-between">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900">选择展示的数据库架构</h3>
+                  <p className="text-xs text-slate-500 mt-1">{activeConnection.name}</p>
+                </div>
+                <button
+                  onClick={() => setShowSchemaFilterModal(false)}
+                  className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+
+              <div className="px-6 py-3 border-b border-slate-100 flex items-center gap-2">
+                <button
+                  onClick={() => setSchemaFilterDraft([...databases])}
+                  className="px-3 py-1.5 text-xs font-bold rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-100"
+                >
+                  全选
+                </button>
+                <button
+                  onClick={() => setSchemaFilterDraft([])}
+                  className="px-3 py-1.5 text-xs font-bold rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200"
+                >
+                  显示全部（不筛选）
+                </button>
+                <span className="ml-auto text-xs text-slate-400">
+                  已选 {schemaFilterDraft.length} / {databases.length}
+                </span>
+              </div>
+
+              <div className="flex-1 overflow-auto p-4 space-y-1 custom-scrollbar">
+                {databases.length === 0 ? (
+                  <div className="text-sm text-slate-400 text-center py-8">暂无可选架构</div>
+                ) : (
+                  databases.map((db) => {
+                    const checked = schemaFilterDraft.includes(db);
+                    return (
+                      <label
+                        key={db}
+                        className={`flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer border transition-colors ${
+                          checked ? 'border-blue-100 bg-blue-50/60' : 'border-transparent hover:bg-slate-50'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSchemaFilterDraft((prev) => [...prev, db]);
+                            } else {
+                              setSchemaFilterDraft((prev) => prev.filter((x) => x !== db));
+                            }
+                          }}
+                          className="rounded text-blue-600 focus:ring-blue-500"
+                        />
+                        <Database size={14} className={checked ? 'text-blue-500' : 'text-slate-400'} />
+                        <span className="text-sm font-medium text-slate-700 truncate">{db}</span>
+                      </label>
+                    );
+                  })
+                )}
+              </div>
+
+              <div className="px-6 py-4 border-t border-slate-100 bg-slate-50 flex items-center justify-end gap-3">
+                <button
+                  onClick={() => setShowSchemaFilterModal(false)}
+                  className="px-5 py-2 rounded-xl text-sm font-bold text-slate-600 bg-white border border-slate-200 hover:bg-slate-100"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={handleSaveSchemaFilter}
+                  className="px-6 py-2 rounded-xl text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 shadow-lg shadow-blue-600/20"
+                >
+                  保存筛选
+                </button>
               </div>
             </motion.div>
           </div>
@@ -4465,12 +5086,24 @@ const App: React.FC = () => {
                   </div>
                 </div>
                 <div className="flex items-center gap-3">
+                  {activeSchemaTab === 'columns' && (
+                    <motion.button
+                      whileHover={{ scale: schemaCommentAILoading ? 1 : 1.05 }}
+                      whileTap={{ scale: schemaCommentAILoading ? 1 : 0.95 }}
+                      onClick={handleGenerateColumnCommentsByAI}
+                      disabled={schemaCommentAILoading}
+                      className="flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl text-xs font-bold hover:bg-indigo-100 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      {schemaCommentAILoading ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                      {schemaCommentAILoading ? 'AI 生成中...' : 'AI 一键注释'}
+                    </motion.button>
+                  )}
                   <motion.button
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.95 }}
                     onClick={() => {
                       if (activeSchemaTab === 'columns') {
-                        const newCol = { id: Date.now(), name: 'new_column', type: 'VARCHAR(255)', nullable: true, primaryKey: false, autoIncrement: false, originalName: null };
+                        const newCol = { id: Date.now(), name: 'new_column', type: 'VARCHAR(255)', nullable: true, primaryKey: false, autoIncrement: false, defaultValue: '', comment: '', originalName: null };
                         setSchemaData({ ...schemaData, columns: [...schemaData.columns, newCol] });
                       } else {
                         const newIdx = { id: Date.now(), name: `idx_${schemaData.tableName}_${Date.now().toString().slice(-4)}`, columns: [], unique: false, originalName: null };
@@ -4527,6 +5160,7 @@ const App: React.FC = () => {
                         <th className="px-6 py-3 text-center text-[10px] font-bold text-slate-400 uppercase tracking-widest w-20">主键</th>
                         <th className="px-6 py-3 text-center text-[10px] font-bold text-slate-400 uppercase tracking-widest w-20">自增</th>
                         <th className="px-6 py-3 text-left text-[10px] font-bold text-slate-400 uppercase tracking-widest">默认值</th>
+                        <th className="px-6 py-3 text-left text-[10px] font-bold text-slate-400 uppercase tracking-widest">注释</th>
                         <th className="px-6 py-3 text-center text-[10px] font-bold text-slate-400 uppercase tracking-widest w-16">操作</th>
                       </tr>
                     </thead>
@@ -4631,6 +5265,19 @@ const App: React.FC = () => {
                               onChange={(e) => {
                                 const newCols = [...schemaData.columns];
                                 newCols[idx].defaultValue = e.target.value;
+                                setSchemaData({ ...schemaData, columns: newCols });
+                              }}
+                              className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none text-xs text-slate-500"
+                            />
+                          </td>
+                          <td className="px-6 py-3">
+                            <input
+                              type="text"
+                              value={col.comment || ''}
+                              placeholder="字段注释（可选）"
+                              onChange={(e) => {
+                                const newCols = [...schemaData.columns];
+                                newCols[idx].comment = e.target.value;
                                 setSchemaData({ ...schemaData, columns: newCols });
                               }}
                               className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none text-xs text-slate-500"

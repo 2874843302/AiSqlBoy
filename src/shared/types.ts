@@ -7,6 +7,7 @@ export interface ConnectionConfig {
   user?: string;
   password?: string;
   database?: string; // For MySQL, it's DB name; for SQLite, it's file path
+  selectedSchemas?: string[]; // 数据库/Schema 过滤白名单；空或未设置表示显示全部
 }
 
 export interface TableInfo {

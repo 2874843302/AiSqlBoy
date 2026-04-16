@@ -28,9 +28,15 @@ export class InternalDBService {
           port INTEGER,
           user TEXT,
           password TEXT,
-          database TEXT
+          database TEXT,
+          schema_filter TEXT
         )
       `);
+      this.db.run('ALTER TABLE connections ADD COLUMN schema_filter TEXT', (err: any) => {
+        if (err && !String(err.message || '').includes('duplicate column name')) {
+          console.error('Failed to add schema_filter column:', err);
+        }
+      });
       this.db.run(`
         CREATE TABLE IF NOT EXISTS settings (
           key TEXT PRIMARY KEY,
@@ -109,7 +115,7 @@ export class InternalDBService {
         // 更新现有连接
         const stmt = this.db.prepare(`
           UPDATE connections 
-          SET name = ?, type = ?, host = ?, port = ?, user = ?, password = ?, database = ?
+          SET name = ?, type = ?, host = ?, port = ?, user = ?, password = ?, database = ?, schema_filter = ?
           WHERE id = ?
         `);
         stmt.run(
@@ -120,6 +126,7 @@ export class InternalDBService {
           config.user || null,
           config.password || null,
           config.database || null,
+          config.selectedSchemas && config.selectedSchemas.length > 0 ? JSON.stringify(config.selectedSchemas) : null,
           config.id,
           (err: Error | null) => {
             if (err) reject(err);
@@ -130,8 +137,8 @@ export class InternalDBService {
       } else {
         // 插入新连接
         const stmt = this.db.prepare(`
-          INSERT INTO connections (name, type, host, port, user, password, database)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO connections (name, type, host, port, user, password, database, schema_filter)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `);
         stmt.run(
           config.name,
@@ -141,6 +148,7 @@ export class InternalDBService {
           config.user || null,
           config.password || null,
           config.database || null,
+          config.selectedSchemas && config.selectedSchemas.length > 0 ? JSON.stringify(config.selectedSchemas) : null,
           (err: Error | null) => {
             if (err) reject(err);
             else resolve();
@@ -155,7 +163,26 @@ export class InternalDBService {
     return new Promise((resolve, reject) => {
       this.db.all('SELECT * FROM connections', (err, rows) => {
         if (err) reject(err);
-        else resolve(rows as ConnectionConfig[]);
+        else {
+          const parsed = (rows as any[]).map((row) => {
+            let selectedSchemas: string[] | undefined;
+            if (row.schema_filter) {
+              try {
+                const list = JSON.parse(String(row.schema_filter));
+                if (Array.isArray(list)) {
+                  selectedSchemas = list.map((v) => String(v));
+                }
+              } catch {
+                selectedSchemas = undefined;
+              }
+            }
+            return {
+              ...row,
+              selectedSchemas
+            } as ConnectionConfig;
+          });
+          resolve(parsed);
+        }
       });
     });
   }
