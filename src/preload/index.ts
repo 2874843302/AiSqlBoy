@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Saved connections
   getSavedConnections: () => ipcRenderer.invoke('get-saved-connections'),
   saveConnection: (config: ConnectionConfig) => ipcRenderer.invoke('save-connection', config),
+  validateConnection: (config: ConnectionConfig) => ipcRenderer.invoke('validate-connection', config),
   deleteConnection: (id: number) => ipcRenderer.invoke('delete-connection', id),
   
   // Console Management

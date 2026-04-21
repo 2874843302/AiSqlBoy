@@ -6,6 +6,7 @@ electron.contextBridge.exposeInMainWorld(
     // Saved connections
     getSavedConnections: () => electron.ipcRenderer.invoke("get-saved-connections"),
     saveConnection: (config) => electron.ipcRenderer.invoke("save-connection", config),
+    validateConnection: (config) => electron.ipcRenderer.invoke("validate-connection", config),
     deleteConnection: (id) => electron.ipcRenderer.invoke("delete-connection", id),
     // Console Management
     getConsoles: (connectionId) => electron.ipcRenderer.invoke("get-consoles", connectionId),

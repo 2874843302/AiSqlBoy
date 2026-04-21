@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Activity, RefreshCw, X } from 'lucide-react';
 import { motion } from 'framer-motion';
 
@@ -9,10 +9,24 @@ type ToastProps = {
 };
 
 const Toast: React.FC<ToastProps> = ({ message, type = 'error', onClose }) => {
+  const AUTO_CLOSE_MS = 3000;
+  const [remainingMs, setRemainingMs] = useState(AUTO_CLOSE_MS);
+
   useEffect(() => {
-    const timer = setTimeout(onClose, 3000);
+    setRemainingMs(AUTO_CLOSE_MS);
+    const timer = setTimeout(onClose, AUTO_CLOSE_MS);
     return () => clearTimeout(timer);
-  }, [onClose]);
+  }, [message, type, onClose]);
+
+  useEffect(() => {
+    const startedAt = Date.now();
+    const tick = setInterval(() => {
+      const elapsed = Date.now() - startedAt;
+      const next = Math.max(0, AUTO_CLOSE_MS - elapsed);
+      setRemainingMs(next);
+    }, 100);
+    return () => clearInterval(tick);
+  }, [message, type]);
 
   const colors = {
     error: 'bg-red-50 border-red-200 text-red-800',
@@ -35,6 +49,9 @@ const Toast: React.FC<ToastProps> = ({ message, type = 'error', onClose }) => {
     >
       <div className="flex-shrink-0">{icons[type]}</div>
       <div className="flex-grow text-sm font-medium leading-relaxed">{message}</div>
+      <div className="flex-shrink-0 text-xs font-bold opacity-70 tabular-nums min-w-[2.5rem] text-right">
+        {Math.ceil(remainingMs / 1000)}s
+      </div>
       <button onClick={onClose} className="flex-shrink-0 p-1 hover:bg-black/5 rounded-lg transition-colors">
         <X className="w-4 h-4" />
       </button>

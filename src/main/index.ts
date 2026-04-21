@@ -15,6 +15,50 @@ let mainWindow: BrowserWindow | null = null
 let currentDriver: IDatabaseDriver | null = null
 let heartbeatTimer: NodeJS.Timeout | null = null
 
+function createDriver(config: ConnectionConfig): IDatabaseDriver {
+  if (config.type === 'sqlite') {
+    return new SQLiteDriver(config)
+  }
+  if (config.type === 'mysql') {
+    return new MySQLDriver(config)
+  }
+  if (config.type === 'postgresql') {
+    return new PostgreSQLDriver(config)
+  }
+  if (config.type === 'oracle') {
+    return new OracleDriver(config)
+  }
+  if (config.type === 'redis') {
+    return new RedisDriver(config)
+  }
+  throw new Error('Unsupported database type')
+}
+
+function mapConnectError(error: any, config: ConnectionConfig): string {
+  const message = String(error?.message || '')
+  const dbName = (config.database || '').trim()
+
+  if (config.type === 'mysql') {
+    if (error?.code === 'ER_BAD_DB_ERROR' || /unknown database/i.test(message)) {
+      return dbName ? `数据库不存在：${dbName}` : '数据库不存在，请检查数据库名称'
+    }
+  }
+
+  if (config.type === 'postgresql') {
+    if (error?.code === '3D000' || /database .* does not exist/i.test(message)) {
+      return dbName ? `数据库不存在：${dbName}` : '数据库不存在，请检查数据库名称'
+    }
+  }
+
+  if (config.type === 'oracle') {
+    if (/ORA-12514|ORA-12154/i.test(message)) {
+      return dbName ? `Oracle 服务名不存在：${dbName}` : 'Oracle 服务名不存在，请检查 Service Name'
+    }
+  }
+
+  return message || '连接失败'
+}
+
 function startHeartbeat() {
   if (heartbeatTimer) clearInterval(heartbeatTimer);
   heartbeatTimer = setInterval(async () => {
@@ -128,6 +172,25 @@ ipcMain.handle('save-connection', async (_, config: ConnectionConfig) => {
   return internalDB.saveConnection(config)
 })
 
+ipcMain.handle('validate-connection', async (_, config: ConnectionConfig) => {
+  let tempDriver: IDatabaseDriver | null = null
+  try {
+    tempDriver = createDriver(config)
+    await tempDriver.connect()
+    return { success: true }
+  } catch (error: any) {
+    return { success: false, error: mapConnectError(error, config) }
+  } finally {
+    if (tempDriver) {
+      try {
+        await tempDriver.disconnect()
+      } catch {
+        // ignore disconnect errors for validation flow
+      }
+    }
+  }
+})
+
 ipcMain.handle('delete-connection', async (_, id: number) => {
   return internalDB.deleteConnection(id)
 })
@@ -151,27 +214,16 @@ ipcMain.handle('connect-db', async (_, config: ConnectionConfig) => {
     if (currentDriver) {
       await currentDriver.disconnect()
     }
-    
-    if (config.type === 'sqlite') {
-      currentDriver = new SQLiteDriver(config)
-    } else if (config.type === 'mysql') {
-      currentDriver = new MySQLDriver(config)
-    } else if (config.type === 'postgresql') {
-      currentDriver = new PostgreSQLDriver(config)
-    } else if (config.type === 'oracle') {
-      currentDriver = new OracleDriver(config)
-    } else if (config.type === 'redis') {
-      currentDriver = new RedisDriver(config)
-    } else {
-      throw new Error('Unsupported database type')
-    }
+
+    currentDriver = createDriver(config)
 
     await currentDriver.connect()
     startHeartbeat()
     return { success: true }
   } catch (error: any) {
+    currentDriver = null
     stopHeartbeat()
-    return { success: false, error: error.message }
+    return { success: false, error: mapConnectError(error, config) }
   }
 })
 

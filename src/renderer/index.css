@@ -103,6 +103,11 @@ body[data-theme='dark'] [class*='bg-blue-100/'],
 body[data-theme='dark'] [class*='bg-indigo-100/'] {
   display: none !important;
 }
+/* 深色模式下去掉弹窗头部浅色渐变，避免发灰发白 */
+body[data-theme='dark'] [class*='bg-gradient-to-b'] {
+  background-image: none !important;
+  background-color: #0b1220 !important;
+}
 
 body[data-theme='dark'] input,
 body[data-theme='dark'] select,
@@ -162,4 +167,15 @@ input::placeholder {
 ::selection {
   background: rgba(59, 130, 246, 0.3);
   color: white;
+}
+
+/* Search highlight text in tables/results */
+.search-hit-mark {
+  background-color: #fde047;
+  color: #111827;
+  font-weight: 700;
+}
+body[data-theme='dark'] .search-hit-mark {
+  background-color: #f59e0b;
+  color: #0b1220;
 }

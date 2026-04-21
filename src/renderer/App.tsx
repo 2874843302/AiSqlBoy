@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react'
+﻿import React, { useState, useEffect, useMemo } from 'react'
 import { Database, Table, Play, Plus, Trash2, X, Server, HardDrive, RefreshCw, ChevronRight, Layout, Settings, Activity, AlignLeft, Bot, Sparkles, Send, Loader2, Key, Search, ArrowUp, ArrowDown, FileJson, Save, Terminal, Download, CheckCircle2, Filter } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ConnectionConfig } from '../shared/types'
@@ -113,10 +113,10 @@ const App: React.FC = () => {
     type: 'warning'
   });
 
-  const confirm = (options: { 
-    title: string; 
-    message: string; 
-    onConfirm?: () => void; 
+  const confirm = (options: {
+    title: string;
+    message: string;
+    onConfirm?: () => void;
     type?: 'warning' | 'danger' | 'info';
     buttons?: { label: string; onClick: () => void; variant?: 'primary' | 'secondary' | 'danger' }[];
   }) => {
@@ -126,7 +126,12 @@ const App: React.FC = () => {
 
   // Context Menu State
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, type: 'table' | 'database' | 'row' | 'console', target: string } | null>(null);
-  
+  const [pendingSqlScriptTarget, setPendingSqlScriptTarget] = useState<{
+    scope: 'database' | 'table';
+    dbName: string;
+    tableName?: string;
+  } | null>(null);
+
   // Modals State
   const [showRenameModal, setShowRenameModal] = useState(false);
   const [renameData, setRenameData] = useState({ oldName: '', newName: '' });
@@ -233,29 +238,44 @@ const App: React.FC = () => {
     return text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
   };
 
+  const highlightSqlForDisplay = (sql: string) => {
+    try {
+      return Prism.highlight(sql, Prism.languages.sql, 'sql');
+    } catch {
+      return sql
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+  };
+
   const escapeRegExp = (input: string) => input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const RESULT_PREVIEW_LENGTH = 120;
-  
+
   // Pagination State
   const [pageSize, setPageSize] = useState(20);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalRows, setTotalRows] = useState(0);
   const [tableExecutionTime, setTableExecutionTime] = useState<number | null>(null); // 新增：表格查询耗时
-  
+
   // Sorting State
   const [sortConfig, setSortConfig] = useState<{ column: string; direction: 'ASC' | 'DESC' | null }>({ column: '', direction: null });
 
   // Layout State
   const [sidebarWidth, setSidebarWidth] = useState(320);
+  const [tableInspectorWidth, setTableInspectorWidth] = useState(390);
   const [resultsHeight, setResultsHeight] = useState(300);
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
+  const [isResizingTableInspector, setIsResizingTableInspector] = useState(false);
   const [isResizingResults, setIsResizingResults] = useState(false);
 
   const [showSettings, setShowSettings] = useState(false);
   const [settingsTab, setSettingsTab] = useState<'ai' | 'ui' | 'update'>('ai');
   const [apiKey, setApiKey] = useState('');
+  const [showApiKeyPlain, setShowApiKeyPlain] = useState(false);
   const [providerVendor, setProviderVendor] = useState<AiVendorId>('deepseek');
-  const [providerEndpoint, setProviderEndpoint] = useState('');
   const [providerModel, setProviderModel] = useState('');
   const [providerApiVersion, setProviderApiVersion] = useState('');
 
@@ -418,6 +438,7 @@ const App: React.FC = () => {
   const searchInputRef = React.useRef<HTMLInputElement>(null);
   const tableContainerRef = React.useRef<HTMLDivElement>(null);
   const resultsContainerRef = React.useRef<HTMLDivElement>(null);
+  const sqlScriptFileInputRef = React.useRef<HTMLInputElement>(null);
   const [tableScrollTop, setTableScrollTop] = useState(0);
   const [resultsScrollTop, setResultsScrollTop] = useState(0);
   const [tableViewportHeight, setTableViewportHeight] = useState(0);
@@ -436,6 +457,10 @@ const App: React.FC = () => {
       if (isResizingSidebar) {
         const newWidth = Math.max(200, Math.min(600, e.clientX));
         setSidebarWidth(newWidth);
+      } else if (isResizingTableInspector) {
+        const rightGap = 32; // 对应 right-8
+        const nextWidth = window.innerWidth - e.clientX - rightGap;
+        setTableInspectorWidth(Math.max(300, Math.min(760, nextWidth)));
       } else if (isResizingResults) {
         const newHeight = Math.max(100, Math.min(window.innerHeight - 200, window.innerHeight - e.clientY));
         setResultsHeight(newHeight);
@@ -444,21 +469,22 @@ const App: React.FC = () => {
 
     const handleMouseUp = () => {
       setIsResizingSidebar(false);
+      setIsResizingTableInspector(false);
       setIsResizingResults(false);
       document.body.style.cursor = 'default';
     };
 
-    if (isResizingSidebar || isResizingResults) {
+    if (isResizingSidebar || isResizingTableInspector || isResizingResults) {
       window.addEventListener('mousemove', handleMouseMove);
       window.addEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = isResizingSidebar ? 'col-resize' : 'row-resize';
+      document.body.style.cursor = (isResizingSidebar || isResizingTableInspector) ? 'col-resize' : 'row-resize';
     }
 
     return () => {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [isResizingSidebar, isResizingResults]);
+  }, [isResizingSidebar, isResizingTableInspector, isResizingResults]);
 
   useEffect(() => {
     setSuggestionInfo(prev => ({ ...prev, show: false }));
@@ -565,7 +591,7 @@ const App: React.FC = () => {
   useEffect(() => {
     if (currentMatchIdx >= 0 && searchMatches[currentMatchIdx]) {
       const { rowIdx, colName } = searchMatches[currentMatchIdx];
-      
+
       // 如果是在控制台视图，且匹配项不在当前页，则切换页面
       if (activeConsoleId) {
         const activeConsole = consoles.find(c => c.id === activeConsoleId);
@@ -613,9 +639,9 @@ const App: React.FC = () => {
   const handleScrollToBottom = (type: 'table' | 'results' = 'table') => {
     const ref = type === 'table' ? tableContainerRef : resultsContainerRef;
     if (ref.current) {
-      ref.current.scrollTo({ 
-        top: ref.current.scrollHeight, 
-        behavior: 'smooth' 
+      ref.current.scrollTo({
+        top: ref.current.scrollHeight,
+        behavior: 'smooth'
       });
     }
   };
@@ -686,14 +712,9 @@ const App: React.FC = () => {
       vendor = inferVendorFromStoredBase(base);
     }
     setProviderVendor(vendor);
-    if (vendor === 'azure' || vendor === 'custom') {
-      setProviderEndpoint(base);
-    } else {
-      setProviderEndpoint('');
-    }
     const models = AI_VENDOR_MODELS[vendor];
     const modelInList = models.some((m) => m.value === model);
-    if (vendor === 'custom' || !models.length) {
+    if (!models.length) {
       setProviderModel(model);
     } else if (model && modelInList) {
       setProviderModel(model);
@@ -752,13 +773,7 @@ const App: React.FC = () => {
 
   const handleSaveSettings = async () => {
     let baseToSave = '';
-    if (providerVendor === 'deepseek') {
-      baseToSave = getVendorBaseUrl('deepseek');
-    } else if (providerVendor === 'openai') {
-      baseToSave = getVendorBaseUrl('openai');
-    } else {
-      baseToSave = providerEndpoint.trim();
-    }
+    baseToSave = getVendorBaseUrl(providerVendor);
     await window.electronAPI.saveSetting(AI_SETTING_KEYS.apiKey, apiKey);
     await window.electronAPI.saveSetting(AI_SETTING_KEYS.providerVendor, providerVendor);
     await window.electronAPI.saveSetting(AI_SETTING_KEYS.openaiBaseUrl, baseToSave);
@@ -793,12 +808,100 @@ const App: React.FC = () => {
     return databases.filter((db) => allow.has(db));
   }, [databases, activeConnection]);
 
+  const getConnectionValidationError = (config: ConnectionConfig): string | null => {
+    const name = (config.name || '').trim();
+    const host = (config.host || '').trim();
+    const user = (config.user || '').trim();
+    const password = config.password ?? '';
+    const database = (config.database || '').trim();
+    const port = Number(config.port);
+    const needsHostConfig = config.type !== 'sqlite';
+    const needsUser = config.type === 'mysql' || config.type === 'postgresql' || config.type === 'oracle';
+    const needsPassword = config.type === 'mysql' || config.type === 'postgresql' || config.type === 'oracle';
+
+    if (!name) {
+      return '请输入连接名称'
+    }
+
+    if (config.type === 'sqlite') {
+      if (!database) {
+        return '请输入 SQLite 数据库文件路径'
+      }
+      return null
+    }
+
+    if (needsHostConfig) {
+      if (!host) {
+        return config.type === 'redis' ? '请输入 Redis 主机地址' : '请输入数据库主机地址'
+      }
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        return '请输入有效端口，范围为 1-65535'
+      }
+    }
+
+    if (needsUser && !user) {
+      if (config.type === 'oracle') {
+        return '请输入 Oracle 用户名'
+      }
+      if (config.type === 'postgresql') {
+        return '请输入 PostgreSQL 用户名'
+      }
+      return '请输入数据库用户名'
+    }
+
+    if (needsPassword && !String(password).trim()) {
+      if (config.type === 'oracle') {
+        return '请输入 Oracle 密码'
+      }
+      if (config.type === 'postgresql') {
+        return '请输入 PostgreSQL 密码'
+      }
+      return '请输入数据库密码'
+    }
+
+    if (config.type === 'oracle' && !database) {
+      return '请输入 Oracle Service Name'
+    }
+
+    return null
+  }
+
   const handleSaveConnection = async () => {
-    if (!newConfig.name) return
-    await window.electronAPI.saveConnection(newConfig)
-    setShowAddModal(false)
-    setIsEditingConnection(false)
-    loadSavedConnections()
+    try {
+      const dbName = (newConfig.database || '').trim();
+      const configToSave: ConnectionConfig = {
+        ...newConfig,
+        name: (newConfig.name || '').trim(),
+        host: (newConfig.host || '').trim(),
+        user: (newConfig.user || '').trim(),
+        password: newConfig.password || '',
+        database: dbName
+      };
+
+      const validationError = getConnectionValidationError(configToSave)
+      if (validationError) {
+        setToast({ message: validationError, type: 'error' })
+        return
+      }
+
+      // 新建连接时：如果填写了数据库名，默认只筛选该库/Schema
+      if (!isEditingConnection && dbName && newConfig.type !== 'sqlite' && newConfig.type !== 'redis') {
+        configToSave.selectedSchemas = [dbName];
+      }
+
+      const validateResult = await window.electronAPI.validateConnection(configToSave)
+      if (!validateResult.success) {
+        setToast({ message: validateResult.error || '连接验证失败', type: 'error' })
+        return
+      }
+
+      await window.electronAPI.saveConnection(configToSave)
+      setShowAddModal(false)
+      setIsEditingConnection(false)
+      loadSavedConnections()
+    } catch (err: any) {
+      setToast({ message: err?.message || '保存连接失败', type: 'error' })
+    }
   }
 
   const handleEditConnection = (conn: ConnectionConfig, e: React.MouseEvent) => {
@@ -857,16 +960,16 @@ const App: React.FC = () => {
       const result = await window.electronAPI.connectDB(config)
       if (result.success) {
         setActiveConnection(config)
-        
+
         // 如果是展开操作，确保数据库列表已加载
         // 直接调用 loadDatabases 并传递 config，绕过 activeConnection 状态可能尚未更新的问题
         if (isExpanding) {
           await loadDatabases(config);
         }
-        
+
         // Load consoles for this connection
         await loadConsoles(config.id);
-        
+
         // 如果配置中已经指定了数据库，则自动选择
         if (config.type === 'sqlite') {
           handleSelectDatabase('main')
@@ -945,7 +1048,7 @@ const App: React.FC = () => {
         setSortConfig({ column: '', direction: null })
         setData([])
         setColumns([])
-        
+
         // Redis 自动选择 "Keys" 表
         if (activeConnection?.type === 'redis' && tableList.length > 0) {
           handleSelectTable(tableList[0].name)
@@ -1113,7 +1216,7 @@ const App: React.FC = () => {
 
   const handleSort = (columnName: string) => {
     let nextDir: 'ASC' | 'DESC' | null = 'ASC';
-    
+
     if (sortConfig.column === columnName) {
       if (sortConfig.direction === 'ASC') nextDir = 'DESC';
       else if (sortConfig.direction === 'DESC') nextDir = null;
@@ -1125,11 +1228,11 @@ const App: React.FC = () => {
 
   const stripSqlComments = (sql: string) => {
     if (!sql) return '';
-    
+
     // 1. 移除多行注释 /* ... */
     // 使用非贪婪匹配，确保不会误删两条多行注释之间的正常 SQL
     let cleaned = sql.replace(/\/\*[\s\S]*?\*\//g, '');
-    
+
     // 2. 移除单行注释 -- 或 # 或 //
     // 改进：按行处理，但保留行尾的换行符，避免多条 SQL 被挤到同一行导致语法错误
     cleaned = cleaned.split('\n').map(line => {
@@ -1138,16 +1241,16 @@ const App: React.FC = () => {
       const dashIndex = line.indexOf('--');
       const hashIndex = line.indexOf('#');
       const doubleSlashIndex = line.indexOf('//');
-      
+
       const indices = [dashIndex, hashIndex, doubleSlashIndex].filter(i => i !== -1);
       let commentIndex = indices.length > 0 ? Math.min(...indices) : -1;
-      
+
       if (commentIndex !== -1) {
         return line.substring(0, commentIndex);
       }
       return line;
     }).join('\n');
-    
+
     // 3. 规范化空格，但不移除所有换行，确保多语句 SQL 依然清晰
     return cleaned.trim();
   };
@@ -1159,9 +1262,9 @@ const App: React.FC = () => {
     // 简单策略：如果是被自动限制的，建议用户增加 LIMIT。
     // 如果我们要实现点击加载更多，我们需要解析 SQL 并修改 LIMIT/OFFSET。
     // 对于目前的简单版本，我们告知用户如何操作。
-    setToast({ 
-      message: '请在 SQL 中手动添加或修改 LIMIT 语句来获取更多数据。例如：LIMIT 10000 OFFSET 10000', 
-      type: 'info' 
+    setToast({
+      message: '请在 SQL 中手动添加或修改 LIMIT 语句来获取更多数据。例如：LIMIT 10000 OFFSET 10000',
+      type: 'info'
     });
   };
 
@@ -1193,7 +1296,7 @@ const App: React.FC = () => {
         const tableList = await window.electronAPI.getTables();
         setTables(tableList);
       }
-      
+
       startTime = Date.now();
       const res = await window.electronAPI.executeQuery(sqlToExecute);
       const endTime = Date.now();
@@ -1201,19 +1304,19 @@ const App: React.FC = () => {
 
       if (res.success) {
         let processedData = res.data;
-        
+
         // 移除旧的强制截断逻辑，改用主进程返回的 hasMore 状态
         if (res.isAutoLimited && res.hasMore) {
-          setToast({ 
-            message: `已自动加载前 10,000 条数据。如果需要查看更多，请手动添加 LIMIT 或点击下方按钮。`, 
-            type: 'info' 
+          setToast({
+            message: `已自动加载前 10,000 条数据。如果需要查看更多，请手动添加 LIMIT 或点击下方按钮。`,
+            type: 'info'
           });
         }
 
-        setConsoles(prev => prev.map(c => c.id === id ? { 
-          ...c, 
-          results: processedData, 
-          columns: res.columns, 
+        setConsoles(prev => prev.map(c => c.id === id ? {
+          ...c,
+          results: processedData,
+          columns: res.columns,
           executing: false,
           currentPage: 1,
           executionTime: duration,
@@ -1221,7 +1324,7 @@ const App: React.FC = () => {
           isAutoLimited: res.isAutoLimited,
           totalCount: res.totalCount
         } : c));
-        
+
         // 如果执行的是创建/删除数据库语句，刷新数据库列表
         const upperSql = consoleTab.sql.trim().toUpperCase();
         if (upperSql.includes('CREATE DATABASE') || upperSql.includes('DROP DATABASE')) {
@@ -1284,7 +1387,7 @@ const App: React.FC = () => {
   const handleCellEditCommit = () => {
     if (!editingCellCoord) return;
     const { rowIdx, colName } = editingCellCoord;
-    
+
     // 如果输入为空字符串，将其视为 null
     let finalValue: any = editValue === '' ? null : editValue;
 
@@ -1303,10 +1406,10 @@ const App: React.FC = () => {
         if (finalValue.length === 5) finalValue += ':00';
       }
     }
-    
+
     // 检查是否真的有变化
     const originalValue = editOriginalData[rowIdx][colName];
-    
+
     let isChanged = false;
     if (originalValue === null) {
       isChanged = finalValue !== null;
@@ -1373,9 +1476,9 @@ const App: React.FC = () => {
   // Submit all changes to database
   const handleSubmitChanges = async () => {
     if (!selectedTable || !activeConnection) return;
-    
+
     const sqls: string[] = [];
-    
+
     if (activeConnection.type === 'redis') {
       // Redis 提交逻辑
       // 1. 处理删除
@@ -1419,7 +1522,7 @@ const App: React.FC = () => {
     } else {
       // SQL 数据库提交逻辑 (MySQL, PostgreSQL, SQLite)
       const primaryKeyCols = columns.filter(c => c.primaryKey).map(c => c.name);
-      
+
       if (primaryKeyCols.length === 0) {
         setToast({ message: '无法提交更改：该表没有主键，无法精确定位行。', type: 'error' });
         return;
@@ -1473,10 +1576,10 @@ const App: React.FC = () => {
 
   const handleDeleteDB = async (dbName: string) => {
     const isRedis = activeConnection?.type === 'redis';
-    const confirmMsg = isRedis 
+    const confirmMsg = isRedis
       ? `确定要清空数据库 DB ${dbName} 吗？此操作将删除该库下所有 Key！`
       : `确定要删除数据库 "${dbName}" 吗？此操作不可撤销！`;
-      
+
     confirm({
       title: isRedis ? '清空数据库' : '删除数据库',
       message: confirmMsg,
@@ -1507,9 +1610,9 @@ const App: React.FC = () => {
 
     try {
       const formatted = format(consoleTab.sql, {
-        language: 
-          activeConnection?.type === 'mysql' ? 'mysql' : 
-          activeConnection?.type === 'postgresql' ? 'postgresql' : 
+        language:
+          activeConnection?.type === 'mysql' ? 'mysql' :
+          activeConnection?.type === 'postgresql' ? 'postgresql' :
           activeConnection?.type === 'oracle' ? 'plsql' :
           'sql',
         tabWidth: 2,
@@ -1526,7 +1629,7 @@ const App: React.FC = () => {
       setShowRenameModal(false);
       return;
     }
-    
+
     setLoading(true);
     try {
       const result = await window.electronAPI.renameTable(renameData.oldName, renameData.newName);
@@ -1572,7 +1675,7 @@ const App: React.FC = () => {
 
     const value = textarea.value;
     const start = suggestionInfo.start;
-    
+
     // 找到当前单词的结束位置（支持覆盖完整单词）
     let end = textarea.selectionStart;
     const rest = value.substring(end);
@@ -1585,16 +1688,16 @@ const App: React.FC = () => {
     const after = value.substring(end);
     const newValue = before + tableName + ' ' + after;
 
-    setConsoles(prev => prev.map(c => 
-      c.id === activeConsoleId ? { 
-        ...c, 
-        sql: newValue, 
-        isDirty: newValue !== c.savedSql 
+    setConsoles(prev => prev.map(c =>
+      c.id === activeConsoleId ? {
+        ...c,
+        sql: newValue,
+        isDirty: newValue !== c.savedSql
       } : c
     ));
 
     setSuggestionInfo(prev => ({ ...prev, show: false }));
-    
+
     // 恢复焦点并设置光标位置
     setTimeout(() => {
       textarea.focus();
@@ -1614,7 +1717,7 @@ const App: React.FC = () => {
       const value = textarea.value;
       const pos = textarea.selectionStart;
       const textBefore = value.substring(0, pos);
-      
+
       // 获取当前正在输入的词 (英文字母、数字、下划线)
       const match = textBefore.match(/([a-zA-Z0-9_]+)$/);
       if (!match) {
@@ -1624,7 +1727,7 @@ const App: React.FC = () => {
 
       const word = match[1].toLowerCase();
       const start = match.index!;
-      
+
       const keywordSuggestions = SQL_KEYWORDS
         .filter((k) => k.toLowerCase().startsWith(word) && k.toLowerCase() !== word)
         .slice(0, 30)
@@ -1669,26 +1772,26 @@ const App: React.FC = () => {
         div.style.wordWrap = 'break-word';
         div.style.top = '0';
         div.style.left = '0';
-        
+
         const textBeforeWord = value.substring(0, start);
         const span = document.createElement('span');
         span.textContent = textBeforeWord;
         div.appendChild(span);
-        
+
         const marker = document.createElement('span');
         marker.textContent = '|';
         div.appendChild(marker);
-        
+
         document.body.appendChild(div);
         const markerRect = marker.getBoundingClientRect();
         const divRect = div.getBoundingClientRect();
-        
+
         const fontSize = parseInt(style.fontSize) || 14;
         const lineHeight = parseInt(style.lineHeight) || fontSize * 1.5;
-        
+
         let posX = markerRect.left - divRect.left + textarea.offsetLeft - textarea.scrollLeft;
         let posY = markerRect.top - divRect.top + textarea.offsetTop - textarea.scrollTop + lineHeight + 24; // 进一步增加间距，让提示框明显下移
-        
+
         // 边界检查：如果下方空间不足，则显示在上方
         const suggestionHeight = Math.min(filtered.length * 36 + 40, 240); // 预估高度
         if (posY + suggestionHeight > rect.height + rect.top) {
@@ -1704,7 +1807,7 @@ const App: React.FC = () => {
           x: posX,
           y: posY
         });
-        
+
         document.body.removeChild(div);
       }
     }, 0);
@@ -1769,6 +1872,129 @@ const App: React.FC = () => {
   const handleTableContextMenu = (e: React.MouseEvent, tableName: string) => {
     e.preventDefault();
     setContextMenu({ x: e.clientX, y: e.clientY, type: 'table', target: tableName });
+  };
+
+  const handleCopyInspectorSql = async () => {
+    const sqlText = tableInspector.ddl || '-- 暂无建表语句 --';
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(sqlText);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = sqlText;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      setToast({ message: 'Create SQL 已复制到剪贴板', type: 'success' });
+    } catch (err: any) {
+      setToast({ message: err?.message || '复制失败', type: 'error' });
+    }
+  };
+
+  const handleOpenSqlScriptPicker = (scope: 'database' | 'table', target: string) => {
+    if (!activeConnection) {
+      setToast({ message: '请先连接数据库', type: 'error' });
+      return;
+    }
+    if (activeConnection.type === 'redis') {
+      setToast({ message: 'Redis 不支持 SQL 脚本执行', type: 'error' });
+      return;
+    }
+
+    const dbName = scope === 'database' ? target : selectedDatabase;
+    if (!dbName) {
+      setToast({ message: '请先选择数据库', type: 'error' });
+      return;
+    }
+
+    setPendingSqlScriptTarget(
+      scope === 'database'
+        ? { scope, dbName }
+        : { scope, dbName, tableName: target }
+    );
+    sqlScriptFileInputRef.current?.click();
+  };
+
+  const handleSqlScriptFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (!files.length || !pendingSqlScriptTarget) return;
+
+    let shouldRefreshSelectedTable = false;
+    try {
+      setLoading(true);
+
+      const useDbRes = await window.electronAPI.useDatabase(pendingSqlScriptTarget.dbName);
+      if (!useDbRes.success) {
+        throw new Error(useDbRes.error || '切换数据库失败');
+      }
+      setSelectedDatabase(pendingSqlScriptTarget.dbName);
+
+      const results: { fileName: string; success: boolean; error?: string }[] = [];
+      for (const file of files) {
+        try {
+          const sqlText = await file.text();
+          if (!sqlText.trim()) {
+            results.push({ fileName: file.name, success: false, error: '脚本文件为空' });
+            continue;
+          }
+
+          const execRes = await window.electronAPI.executeQuery(sqlText);
+          if (!execRes.success) {
+            results.push({ fileName: file.name, success: false, error: execRes.error || 'SQL 脚本执行失败' });
+            continue;
+          }
+
+          results.push({ fileName: file.name, success: true });
+        } catch (err: any) {
+          results.push({ fileName: file.name, success: false, error: err?.message || '脚本执行异常' });
+        }
+      }
+
+      const tableList = await window.electronAPI.getTables();
+      setTables(tableList);
+
+      if (
+        pendingSqlScriptTarget.scope === 'table' &&
+        pendingSqlScriptTarget.tableName &&
+        selectedTable === pendingSqlScriptTarget.tableName
+      ) {
+        shouldRefreshSelectedTable = true;
+      }
+
+      const successCount = results.filter((r) => r.success).length;
+      const failItems = results.filter((r) => !r.success);
+      const failCount = failItems.length;
+      const failureSummary = failItems
+        .slice(0, 5)
+        .map((item) => `${item.fileName}(${item.error || '执行失败'})`)
+        .join('；');
+      const hasMoreFailure = failCount > 5;
+      const message = failCount === 0
+        ? `共执行 ${files.length} 个脚本，全部成功。`
+        : `共执行 ${files.length} 个脚本，成功 ${successCount} 个，失败 ${failCount} 个。${failureSummary ? `失败详情：${failureSummary}${hasMoreFailure ? `；另有 ${failCount - 5} 个失败` : ''}` : ''}`;
+
+      confirm({
+        title: 'SQL 脚本执行结果',
+        message,
+        type: failCount === 0 ? 'info' : 'warning',
+        buttons: [{ label: '知道了', onClick: () => {}, variant: 'primary' }]
+      });
+      setToast({ message: failCount === 0 ? '批量脚本执行完成' : '批量脚本执行完成（含失败）', type: failCount === 0 ? 'success' : 'info' });
+    } catch (err: any) {
+      setToast({ message: err.message || 'SQL 脚本执行失败', type: 'error' });
+    } finally {
+      setLoading(false);
+      setPendingSqlScriptTarget(null);
+      if (shouldRefreshSelectedTable && selectedTable) {
+        await handleSelectTable(selectedTable, currentPage, pageSize);
+      }
+    }
   };
 
   const handleGenerateERDiagram = async (tableName: string, labelLanguage: ERLabelLanguage) => {
@@ -2139,7 +2365,7 @@ const App: React.FC = () => {
       // 找出新增、修改、删除的列
       const originalCols = await window.electronAPI.getTableColumns(schemaData.tableName);
       const originalIdxs = await window.electronAPI.getTableIndexes(schemaData.tableName);
-      
+
       const changes: any = {
         added: schemaData.columns.filter(c => !originalCols.some(oc => oc.name === c.originalName)),
         modified: schemaData.columns
@@ -2151,9 +2377,9 @@ const App: React.FC = () => {
           .filter(m => {
             const oc = originalCols.find(o => o.name === m.oldName);
             return oc && (
-              oc.name !== m.column.name || 
-              oc.type !== m.column.type || 
-              oc.nullable !== m.column.nullable || 
+              oc.name !== m.column.name ||
+              oc.type !== m.column.type ||
+              oc.nullable !== m.column.nullable ||
               oc.primaryKey !== m.column.primaryKey ||
               oc.defaultValue !== m.column.defaultValue ||
               oc.autoIncrement !== m.column.autoIncrement ||
@@ -2168,7 +2394,7 @@ const App: React.FC = () => {
             // 新增的索引
             const isNew = !originalIdxs.some(oi => oi.name === idx.originalName);
             if (isNew) return true;
-            
+
             // 检查现有索引是否被修改（名称、唯一性或包含列改变）
             const oi = originalIdxs.find(o => o.name === idx.originalName);
             const hasChanged = oi && (
@@ -2183,7 +2409,7 @@ const App: React.FC = () => {
               // 被删除的索引
               const stillExists = schemaData.indexes.some(idx => idx.originalName === oi.name);
               if (!stillExists) return true;
-              
+
               // 被修改的索引需要先删除旧的再添加新的
               const idx = schemaData.indexes.find(i => i.originalName === oi.name);
               const hasChanged = idx && (
@@ -2319,13 +2545,13 @@ ${JSON.stringify(payload)}
     <div className="flex h-screen bg-[#f8fafc] text-slate-700 font-sans selection:bg-blue-100 overflow-hidden">
       <style>{editorStyles}</style>
       {/* Sidebar */}
-      <motion.div 
+      <motion.div
         initial={{ x: -20, opacity: 0 }}
         animate={{ x: 0, opacity: 1 }}
         style={{ width: sidebarWidth }}
         className="bg-white border-r border-slate-200 flex flex-col z-20 shadow-xl relative shrink-0"
       >
-        <div 
+        <div
           className="absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-blue-500/20 active:bg-blue-500/40 z-30 transition-colors"
           onMouseDown={() => setIsResizingSidebar(true)}
         />
@@ -2337,7 +2563,7 @@ ${JSON.stringify(payload)}
             <span className="font-bold text-xl tracking-tight text-slate-900 truncate">AiSqlBoy</span>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <motion.button 
+            <motion.button
               whileHover={{ scale: 1.1 }}
               whileTap={{ scale: 0.9 }}
               onClick={() => {
@@ -2360,7 +2586,7 @@ ${JSON.stringify(payload)}
             </motion.button>
           </div>
         </div>
-        
+
         <div className="flex-1 overflow-y-auto custom-scrollbar">
           {/* Saved Connections */}
           <div className="p-4 space-y-4">
@@ -2402,7 +2628,7 @@ ${JSON.stringify(payload)}
                           <span className="truncate font-semibold">{conn.name}</span>
                         </div>
                         <div className="flex items-center gap-1 z-10">
-                          <motion.button 
+                          <motion.button
                             whileHover={{ scale: 1.1, color: '#2563eb' }}
                             onClick={(e) => handleEditConnection(conn, e)}
                             className="opacity-0 group-hover:opacity-100 p-1.5 hover:bg-blue-50 rounded-lg transition-all text-slate-400"
@@ -2410,7 +2636,7 @@ ${JSON.stringify(payload)}
                           >
                             <Settings size={14} />
                           </motion.button>
-                          <motion.button 
+                          <motion.button
                             whileHover={{ scale: 1.1, color: '#ef4444' }}
                             onClick={(e) => handleDeleteConnection(conn.id!, e)}
                             className="opacity-0 group-hover:opacity-100 p-1.5 hover:bg-red-50 rounded-lg transition-all text-slate-400"
@@ -2547,7 +2773,7 @@ ${JSON.stringify(payload)}
         </div>
 
         <div className="p-4 border-t border-slate-100 bg-slate-50/50">
-          <motion.div 
+          <motion.div
             whileHover={{ backgroundColor: '#f1f5f9' }}
             onClick={() => {
               void loadAiSettings();
@@ -2574,7 +2800,7 @@ ${JSON.stringify(payload)}
           <div className="flex items-center gap-4">
             <AnimatePresence mode="wait">
               {activeConnection ? (
-                <motion.div 
+                <motion.div
                   initial={{ opacity: 0, x: -10 }}
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0, x: -10 }}
@@ -2594,7 +2820,7 @@ ${JSON.stringify(payload)}
                   )}
                 </motion.div>
               ) : (
-                <motion.div 
+                <motion.div
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   className="text-slate-400 text-sm font-semibold"
@@ -2609,7 +2835,7 @@ ${JSON.stringify(payload)}
           {(selectedTable || activeConsoleId) && (
             <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-2xl px-3 py-1.5 focus-within:ring-2 focus-within:ring-blue-500/20 focus-within:border-blue-500/50 transition-all shadow-sm">
               <Search size={14} className="text-slate-400" />
-              <input 
+              <input
                 ref={searchInputRef}
                 type="text"
                 placeholder="搜索结果数据 (Ctrl+F)..."
@@ -2632,21 +2858,21 @@ ${JSON.stringify(payload)}
                     {searchMatches.length > 0 ? `${currentMatchIdx + 1} / ${searchMatches.length}` : '无匹配'}
                   </span>
                   <div className="flex items-center gap-1">
-                    <button 
+                    <button
                       onClick={handlePrevMatch}
                       className="p-1 hover:bg-slate-200 rounded-lg transition-colors text-slate-400 hover:text-slate-600"
                       title="上一个匹配"
                     >
                       <ChevronRight size={14} className="rotate-180" />
                     </button>
-                    <button 
+                    <button
                       onClick={handleNextMatch}
                       className="p-1 hover:bg-slate-200 rounded-lg transition-colors text-slate-400 hover:text-slate-600"
                       title="下一个匹配"
                     >
                       <ChevronRight size={14} />
                     </button>
-                    <button 
+                    <button
                       onClick={() => setSearchTerm('')}
                       className="p-1 hover:bg-slate-200 rounded-lg transition-colors text-slate-400 hover:text-red-500"
                       title="清除搜索"
@@ -2666,7 +2892,7 @@ ${JSON.stringify(payload)}
           {consoles.length > 0 && (
             <div className="flex bg-slate-50 border-b border-slate-200 px-4 pt-2 gap-1 overflow-x-auto custom-scrollbar items-end">
               {consoles.map((tab, idx) => (
-                <div 
+                <div
                   key={tab.id || `console-${idx}`}
                   title={tab.name}
                   onClick={() => {
@@ -2675,11 +2901,11 @@ ${JSON.stringify(payload)}
                   }}
                   onContextMenu={(e) => {
                     e.preventDefault();
-                    setContextMenu({ 
-                      x: e.clientX, 
-                      y: e.clientY, 
-                      type: 'console', 
-                      target: tab.id 
+                    setContextMenu({
+                      x: e.clientX,
+                      y: e.clientY,
+                      type: 'console',
+                      target: tab.id
                     });
                   }}
                   className={`flex items-center gap-2 px-4 py-2 rounded-t-xl text-xs font-bold transition-all cursor-pointer border-t border-x ${
@@ -2691,14 +2917,14 @@ ${JSON.stringify(payload)}
                   <Play size={12} className={tab.executing ? 'animate-spin' : ''} />
                   <span className="truncate max-w-[120px]">{tab.name}</span>
                   {tab.isDirty && <div className="w-1.5 h-1.5 rounded-full bg-blue-500" />}
-                  <X 
-                    size={12} 
-                    className="hover:text-red-500 transition-colors" 
+                  <X
+                    size={12}
+                    className="hover:text-red-500 transition-colors"
                     onClick={(e) => handleCloseConsole(tab.id, e)}
                   />
                 </div>
               ))}
-              
+
               {/* Add Button */}
               <button
                 onClick={handleOpenLoadConsoleModal}
@@ -2712,7 +2938,7 @@ ${JSON.stringify(payload)}
 
           <AnimatePresence mode="wait">
             {selectedTable ? (
-              <motion.div 
+              <motion.div
                 key={selectedTable}
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -2720,24 +2946,18 @@ ${JSON.stringify(payload)}
                 transition={{ duration: 0.4, ease: "easeOut" }}
                 className="flex-1 flex flex-col relative overflow-hidden"
               >
-                <div className="absolute top-6 right-8 z-20 flex items-center gap-2">
+                {!tableInspector.open && (
                   <button
-                    onClick={() => {
-                      if (tableInspector.open) {
-                        setTableInspector((prev) => ({ ...prev, open: false }));
-                      } else if (selectedTable) {
-                        void loadTableInspector(selectedTable);
-                      }
-                    }}
-                    className="px-3 py-1.5 text-xs font-bold rounded-xl border border-slate-200 bg-white/90 hover:bg-white text-slate-600 shadow-sm transition-all flex items-center gap-2"
-                    title="查看表信息与建表语句"
+                    onClick={() => selectedTable && void loadTableInspector(selectedTable)}
+                    className="absolute right-1 top-1/2 -translate-y-1/2 z-20 w-8 h-16 rounded-l-xl border border-r-0 border-slate-200 bg-white/95 hover:bg-white text-slate-400 hover:text-blue-600 shadow-md transition-all flex items-center justify-center"
+                    title="展开表信息"
                   >
-                    <FileJson size={14} />
-                    {tableInspector.open ? '隐藏表信息' : '表信息'}
+                    <ChevronRight size={16} className="rotate-180" />
                   </button>
-                </div>
-                <div 
-                  className={`flex-1 overflow-auto p-8 custom-scrollbar relative transition-all ${tableInspector.open ? 'pr-[430px]' : ''}`}
+                )}
+                <div
+                  className="flex-1 overflow-auto p-8 custom-scrollbar relative transition-all"
+                  style={tableInspector.open ? { paddingRight: tableInspectorWidth + 40 } : undefined}
                   ref={tableContainerRef}
                   onScroll={(e) => handleContainerScroll(e, 'table')}
                 >
@@ -2844,7 +3064,7 @@ ${JSON.stringify(payload)}
                                                         const parts = finalDisplayValue.split(activeSearchRegex);
                                                         return parts.map((part, index) =>
                                                           part.toLowerCase() === activeSearchTermLower ? (
-                                                            <mark key={index} className="bg-yellow-200 text-slate-900 rounded-sm px-0.5">{part}</mark>
+                                                            <mark key={index} className="search-hit-mark rounded-sm px-0.5">{part}</mark>
                                                           ) : part
                                                         );
                                                       })()
@@ -2881,7 +3101,7 @@ ${JSON.stringify(payload)}
                       </tbody>
                     </table>
                   </div>
-                  
+
                   {/* Pagination Controls */}
                   {data.length > 0 && (
                     <div className="px-6 py-4 border-t border-slate-100 bg-slate-50/50 flex items-center justify-between">
@@ -2900,7 +3120,7 @@ ${JSON.stringify(payload)}
                         <div className="h-4 w-px bg-slate-200" />
                         <div className="flex items-center gap-2">
                           <span className="text-xs text-slate-500 font-semibold">每页显示</span>
-                          <select 
+                          <select
                             value={pageSize}
                             onChange={(e) => {
                               const newSize = Number(e.target.value);
@@ -2924,7 +3144,7 @@ ${JSON.stringify(payload)}
                         >
                           <ChevronRight size={14} className="rotate-180" />
                         </button>
-                        
+
                         <div className="flex items-center gap-1 px-2">
                           <span className="text-sm font-bold text-blue-600">{currentPage}</span>
                           <span className="text-sm text-slate-400">/</span>
@@ -2944,7 +3164,7 @@ ${JSON.stringify(payload)}
 
                   {data.length === 0 && (
                     <div className="p-24 text-center">
-                      <motion.div 
+                      <motion.div
                         initial={{ scale: 0.9, opacity: 0 }}
                         animate={{ scale: 1, opacity: 1 }}
                         className="inline-flex flex-col items-center"
@@ -2967,8 +3187,21 @@ ${JSON.stringify(payload)}
                     animate={{ x: 0, opacity: 1 }}
                     exit={{ x: 24, opacity: 0 }}
                     transition={{ duration: 0.22 }}
-                    className="absolute top-20 right-8 bottom-8 w-[390px] bg-white border border-slate-200 rounded-2xl shadow-xl z-20 overflow-hidden flex flex-col"
+                    className="absolute top-8 right-8 bottom-8 bg-white border border-slate-200 rounded-2xl shadow-xl z-20 overflow-hidden flex flex-col"
+                    style={{ width: tableInspectorWidth }}
                   >
+                    <div
+                      className="absolute left-0 top-0 h-full w-1 cursor-col-resize hover:bg-blue-500/20 active:bg-blue-500/40 z-30 transition-colors"
+                      onMouseDown={() => setIsResizingTableInspector(true)}
+                      title="拖拽调整宽度"
+                    />
+                    <button
+                      onClick={() => setTableInspector((prev) => ({ ...prev, open: false }))}
+                      className="absolute left-0 top-1/2 -translate-x-full -translate-y-1/2 w-8 h-16 rounded-l-xl border border-r-0 border-slate-200 bg-white/95 hover:bg-white text-slate-400 hover:text-blue-600 shadow-md transition-all flex items-center justify-center"
+                      title="收起表信息"
+                    >
+                      <ChevronRight size={16} />
+                    </button>
                     <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/80 flex items-center justify-between">
                       <div>
                         <div className="text-sm font-bold text-slate-800">表信息</div>
@@ -3000,12 +3233,20 @@ ${JSON.stringify(payload)}
 
                     <div className="px-4 pt-3 pb-2 flex items-center justify-between">
                       <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Create SQL</span>
-                      <button
-                        onClick={() => selectedTable && void loadTableInspector(selectedTable)}
-                        className="text-xs font-bold text-blue-600 hover:text-blue-700"
-                      >
-                        刷新
-                      </button>
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={handleCopyInspectorSql}
+                          className="text-xs font-bold text-slate-500 hover:text-slate-700"
+                        >
+                          复制
+                        </button>
+                        <button
+                          onClick={() => selectedTable && void loadTableInspector(selectedTable)}
+                          className="text-xs font-bold text-blue-600 hover:text-blue-700"
+                        >
+                          刷新
+                        </button>
+                      </div>
                     </div>
                     <div className="flex-1 px-4 pb-4 overflow-auto custom-scrollbar">
                       {tableInspector.loading ? (
@@ -3016,8 +3257,14 @@ ${JSON.stringify(payload)}
                       ) : tableInspector.error ? (
                         <div className="text-sm text-red-500 bg-red-50 border border-red-100 rounded-xl p-3">{tableInspector.error}</div>
                       ) : (
-                        <pre className="text-[12px] leading-5 text-slate-700 bg-slate-50 border border-slate-200 rounded-xl p-3 whitespace-pre-wrap break-words font-mono">
-                          {tableInspector.ddl || '-- 暂无建表语句 --'}
+                        <pre className="text-[12px] leading-5 text-slate-700 bg-slate-50 border border-slate-200 rounded-xl p-3 font-mono max-w-full overflow-hidden whitespace-pre-wrap break-words">
+                          <code
+                            className="language-sql block max-w-full whitespace-pre-wrap break-words"
+                            style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}
+                            dangerouslySetInnerHTML={{
+                              __html: highlightSqlForDisplay(tableInspector.ddl || '-- 暂无建表语句 --')
+                            }}
+                          />
                         </pre>
                       )}
                     </div>
@@ -3117,11 +3364,11 @@ ${JSON.stringify(payload)}
                             {activeConnection?.type === 'redis' ? '命令编辑器' : 'SQL 编辑器'}
                           </span>
                         </div>
-                        
+
                         {/* 数据库选择下拉框 */}
                         <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-lg px-2 py-1 shadow-sm">
                           {activeConnection?.type === 'redis' ? <Server size={12} className="text-slate-400" /> : <Database size={12} className="text-slate-400" />}
-                          <select 
+                          <select
                             className="text-xs font-medium text-slate-600 outline-none bg-transparent cursor-pointer"
                             value={consoles.find(c => c.id === activeConsoleId)?.dbName || ''}
                             onChange={(e) => handleConsoleDBChange(activeConsoleId!, e.target.value)}
@@ -3136,7 +3383,7 @@ ${JSON.stringify(payload)}
                         {/* 表选择下拉框（辅助输入） */}
                         <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-lg px-2 py-1 shadow-sm">
                           {activeConnection?.type === 'redis' ? <Key size={12} className="text-slate-400" /> : <Table size={12} className="text-slate-400" />}
-                          <select 
+                          <select
                             className="text-xs font-medium text-slate-600 outline-none bg-transparent cursor-pointer"
                             onChange={(e) => {
                               if (e.target.value) {
@@ -3214,7 +3461,7 @@ ${JSON.stringify(payload)}
                         </motion.button>
                       </div>
                     </div>
-                    <div 
+                    <div
                       className="flex-1 overflow-auto custom-scrollbar p-6 sql-editor-container relative"
                       onMouseUp={handleSelection}
                       onKeyUp={handleSelection}
@@ -3222,11 +3469,11 @@ ${JSON.stringify(payload)}
                       <Editor
                         value={consoles.find(c => c.id === activeConsoleId)?.sql || ''}
                         onValueChange={val => {
-                          setConsoles(prev => prev.map(c => 
-                            c.id === activeConsoleId ? { 
-                              ...c, 
-                              sql: val, 
-                              isDirty: val !== c.savedSql 
+                          setConsoles(prev => prev.map(c =>
+                            c.id === activeConsoleId ? {
+                              ...c,
+                              sql: val,
+                              isDirty: val !== c.savedSql
                             } : c
                           ));
                           updateSuggestions();
@@ -3244,7 +3491,7 @@ ${JSON.stringify(payload)}
                               'PUBLISH', 'SUBSCRIBE', 'PSUBSCRIBE',
                               'INFO', 'PING', 'SELECT', 'AUTH', 'QUIT', 'CONFIG'
                             ];
-                            
+
                             // 转义正则
                             const escapedCode = code
                               .replace(/&/g, "&amp;")
@@ -3283,9 +3530,9 @@ ${JSON.stringify(payload)}
                             animate={{ opacity: 1, y: 0 }}
                             exit={{ opacity: 0, y: -5 }}
                             className="absolute z-[100] bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden w-64"
-                            style={{ 
-                              left: suggestionInfo.x, 
-                              top: suggestionInfo.y 
+                            style={{
+                              left: suggestionInfo.x,
+                              top: suggestionInfo.y
                             }}
                           >
                             <div className="bg-slate-50 px-3 py-1.5 border-b border-slate-100 flex items-center justify-between">
@@ -3294,7 +3541,7 @@ ${JSON.stringify(payload)}
                               </span>
                               <span className="text-[10px] text-slate-400">↑↓ 选择, Enter 确认</span>
                             </div>
-                            <div 
+                            <div
                               ref={suggestionListRef}
                               className="max-h-60 overflow-y-auto py-1 custom-scrollbar scroll-smooth"
                             >
@@ -3339,8 +3586,8 @@ ${JSON.stringify(payload)}
                         {selectedSql && selectionPosition && !showAISelectionInput && (
                           <motion.div
                             initial={{ opacity: 0, scale: 0.8 }}
-                            animate={{ 
-                              opacity: 1, 
+                            animate={{
+                              opacity: 1,
                               scale: 1,
                               left: selectionPosition.x - 10,
                               top: selectionPosition.y + 25 // 紧挨着首字符下方，且稍微往左移一点避免遮挡
@@ -3369,12 +3616,12 @@ ${JSON.stringify(payload)}
                             drag
                             dragMomentum={false}
                             initial={{ opacity: 0, scale: 0.9, y: -10 }}
-                            animate={{ 
-                              opacity: 1, 
+                            animate={{
+                              opacity: 1,
                               scale: 1,
                               y: 0,
-                              left: Math.max(10, Math.min(selectionPosition.x - 160, 400)), 
-                              top: selectionPosition.y + 30 
+                              left: Math.max(10, Math.min(selectionPosition.x - 160, 400)),
+                              top: selectionPosition.y + 30
                             }}
                             exit={{ opacity: 0, scale: 0.9, y: -10 }}
                             className="absolute z-30 w-80 bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden cursor-default"
@@ -3390,7 +3637,7 @@ ${JSON.stringify(payload)}
                                   <Bot size={14} className="text-indigo-600" />
                                   AI 智能修改
                                 </span>
-                                <button 
+                                <button
                                   onClick={() => setShowAISelectionInput(false)}
                                   className="text-slate-400 hover:text-slate-600 p-1 hover:bg-slate-100 rounded-lg transition-colors"
                                 >
@@ -3443,11 +3690,11 @@ ${JSON.stringify(payload)}
                   </div>
 
                   {/* Results Area */}
-                  <div 
+                  <div
                     style={{ height: resultsHeight }}
                     className="bg-white rounded-3xl border border-slate-200 shadow-xl overflow-hidden flex flex-col relative shrink-0"
                   >
-                    <div 
+                    <div
                       className="absolute top-0 left-0 w-full h-1 cursor-row-resize hover:bg-blue-500/20 active:bg-blue-500/40 z-30 transition-colors"
                       onMouseDown={() => setIsResizingResults(true)}
                     />
@@ -3471,7 +3718,7 @@ ${JSON.stringify(payload)}
                       </div>
                       <div className="flex items-center gap-3">
                         {activeConsoleId && consoles.find(c => c.id === activeConsoleId)?.hasMore && (
-                          <button 
+                          <button
                             onClick={() => handleLoadMore(activeConsoleId)}
                             className="text-[10px] font-bold text-blue-600 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 px-3 py-1 rounded-full uppercase tracking-widest transition-colors flex items-center gap-1.5"
                           >
@@ -3481,7 +3728,7 @@ ${JSON.stringify(payload)}
                       </div>
                     </div>
                     <div className="flex-1 relative overflow-hidden flex flex-col">
-                      <div 
+                      <div
                         className="flex-1 overflow-auto custom-scrollbar"
                         ref={resultsContainerRef}
                         onScroll={(e) => handleContainerScroll(e, 'results')}
@@ -3489,7 +3736,7 @@ ${JSON.stringify(payload)}
                         {(() => {
                           const activeConsole = consoles.find(c => c.id === activeConsoleId);
                           if (!activeConsole) return null;
-                          
+
                           if (activeConsole.executing) {
                             return (
                               <div className="h-full flex flex-col items-center justify-center">
@@ -3518,11 +3765,11 @@ ${JSON.stringify(payload)}
                                 </div>
                               );
                             }
-                            
+
                             const page = activeConsole.currentPage || 1;
                             const size = activeConsole.pageSize || 50;
                             const results = activeConsole.results || [];
-                            
+
                             // 虚拟列表计算
                             const visibleRowsCount = Math.max(1, Math.ceil((resultsViewportHeight || ROW_HEIGHT * 10) / ROW_HEIGHT));
                             const overscanRows = visibleRowsCount; // 默认上下各预渲染 1 屏
@@ -3575,7 +3822,7 @@ ${JSON.stringify(payload)}
                                                           const parts = displayText.split(activeSearchRegex);
                                                           return parts.map((part, index) =>
                                                             part.toLowerCase() === activeSearchTermLower ? (
-                                                              <mark key={index} className="bg-yellow-200 text-slate-900 rounded-sm px-0.5">{part}</mark>
+                                                              <mark key={index} className="search-hit-mark rounded-sm px-0.5">{part}</mark>
                                                             ) : part
                                                           );
                                                         })()
@@ -3625,12 +3872,12 @@ ${JSON.stringify(payload)}
                       {(() => {
                         const activeConsole = consoles.find(c => c.id === activeConsoleId);
                         if (!activeConsole) return null;
-                        
+
                         // 只要有执行时间、有结果或有错误，就显示状态栏
                         const hasExecutionTime = activeConsole.executionTime !== undefined;
                         const hasResults = Array.isArray(activeConsole.results);
                         const hasError = !!activeConsole.error;
-                        
+
                         if (!hasExecutionTime && !hasResults && !hasError) return null;
 
                         const total = activeConsole.results?.length || 0;
@@ -3650,8 +3897,8 @@ ${JSON.stringify(payload)}
                                 <>
                                   {total > 0 && <div className="h-3 w-px bg-slate-200" />}
                                   <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
-                                    耗时 {activeConsole.executionTime! < 1000 
-                                      ? `${activeConsole.executionTime}ms` 
+                                    耗时 {activeConsole.executionTime! < 1000
+                                      ? `${activeConsole.executionTime}ms`
                                       : `${(activeConsole.executionTime! / 1000).toFixed(2)}s`}
                                   </div>
                                 </>
@@ -3661,7 +3908,7 @@ ${JSON.stringify(payload)}
                                   <div className="h-3 w-px bg-slate-200" />
                                   <div className="flex items-center gap-2">
                                     <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">每页</span>
-                                    <select 
+                                    <select
                                       value={size}
                                       onChange={(e) => {
                                         const newSize = Number(e.target.value);
@@ -3679,7 +3926,7 @@ ${JSON.stringify(payload)}
                             </div>
                             {totalPages > 1 && (
                               <div className="flex items-center gap-2">
-                                <button 
+                                <button
                                   disabled={page === 1}
                                   onClick={() => {
                                     setConsoles(prev => prev.map(c => c.id === activeConsoleId ? { ...c, currentPage: page - 1 } : c));
@@ -3688,7 +3935,7 @@ ${JSON.stringify(payload)}
                                 >
                                   <ChevronRight size={12} className="rotate-180" />
                                 </button>
-                                <button 
+                                <button
                                   disabled={page === totalPages}
                                   onClick={() => {
                                     setConsoles(prev => prev.map(c => c.id === activeConsoleId ? { ...c, currentPage: page + 1 } : c));
@@ -3738,19 +3985,19 @@ ${JSON.stringify(payload)}
                 </div>
               </motion.div>
             ) : (
-              <motion.div 
+              <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 className="h-full flex flex-col items-center justify-center relative overflow-hidden"
               >
                 <div className="relative z-10 flex flex-col items-center">
-                  <motion.div 
-                    animate={{ 
+                  <motion.div
+                    animate={{
                       y: [0, -10, 0],
                       rotate: [0, 5, -5, 0]
                     }}
-                    transition={{ 
-                      duration: 6, 
+                    transition={{
+                      duration: 6,
                       repeat: Infinity,
                       ease: "easeInOut"
                     }}
@@ -3779,14 +4026,14 @@ ${JSON.stringify(payload)}
       <AnimatePresence>
         {showConsoleRenameModal && (
           <div className="fixed inset-0 z-[220] flex items-center justify-center p-6">
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setShowConsoleRenameModal(false)}
               className="absolute inset-0 bg-slate-900/20 backdrop-blur-md"
             />
-            <motion.div 
+            <motion.div
               initial={{ scale: 0.9, opacity: 0, y: 20 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.9, opacity: 0, y: 20 }}
@@ -3796,9 +4043,9 @@ ${JSON.stringify(payload)}
                 <div>
                   <h3 className="font-bold text-xl text-slate-900 tracking-tight">保存/重命名控制台</h3>
                 </div>
-                <motion.button 
+                <motion.button
                   whileHover={{ rotate: 90, scale: 1.1 }}
-                  onClick={() => setShowConsoleRenameModal(false)} 
+                  onClick={() => setShowConsoleRenameModal(false)}
                   className="w-10 h-10 flex items-center justify-center bg-slate-100 hover:bg-slate-200 rounded-full text-slate-400 transition-colors"
                 >
                   <X size={20} />
@@ -3822,13 +4069,13 @@ ${JSON.stringify(payload)}
                   />
                 </div>
                 <div className="flex gap-3 pt-2">
-                  <button 
+                  <button
                     onClick={() => setShowConsoleRenameModal(false)}
                     className="flex-1 py-3 rounded-2xl text-sm font-bold text-slate-500 hover:text-slate-700 hover:bg-slate-100 transition-all"
                   >
                     取消
                   </button>
-                  <button 
+                  <button
                     onClick={() => {
                       handleSaveConsole(consoleRenameData.id, consoleRenameData.name);
                       setShowConsoleRenameModal(false);
@@ -3842,7 +4089,7 @@ ${JSON.stringify(payload)}
             </motion.div>
           </div>
         )}
-        <ConfirmModal 
+        <ConfirmModal
           show={showConfirm}
           title={confirmOptions.title}
           message={confirmOptions.message}
@@ -3853,14 +4100,14 @@ ${JSON.stringify(payload)}
         />
         {showAddModal && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setShowAddModal(false)}
               className="absolute inset-0 bg-slate-900/20 backdrop-blur-md"
             />
-            <motion.div 
+            <motion.div
               initial={{ scale: 0.9, opacity: 0, y: 20 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.9, opacity: 0, y: 20 }}
@@ -3871,15 +4118,15 @@ ${JSON.stringify(payload)}
                   <h3 className="font-bold text-xl text-slate-900 tracking-tight">新建连接</h3>
                   <p className="text-xs text-slate-500 mt-1 font-semibold">配置您的数据库连接信息</p>
                 </div>
-                <motion.button 
+                <motion.button
                   whileHover={{ rotate: 90, scale: 1.1 }}
-                  onClick={() => setShowAddModal(false)} 
+                  onClick={() => setShowAddModal(false)}
                   className="w-10 h-10 flex items-center justify-center bg-slate-100 hover:bg-slate-200 rounded-full text-slate-400 transition-colors"
                 >
                   <X size={20} />
                 </motion.button>
               </div>
-              
+
               <div className="p-8 space-y-6">
                 <div className="flex flex-wrap gap-2 p-1.5 bg-slate-100 rounded-2xl border border-slate-200">
                   <button
@@ -4018,13 +4265,13 @@ ${JSON.stringify(payload)}
               </div>
 
               <div className="px-8 py-6 border-t border-slate-100 bg-slate-50 flex gap-3">
-                <button 
+                <button
                   onClick={() => setShowAddModal(false)}
                   className="flex-1 py-3.5 rounded-2xl text-sm font-bold text-slate-500 hover:text-slate-700 hover:bg-slate-200/50 transition-all"
                 >
                   取消
                 </button>
-                <motion.button 
+                <motion.button
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
                   onClick={handleSaveConnection}
@@ -4142,14 +4389,14 @@ ${JSON.stringify(payload)}
       <AnimatePresence>
         {textDetail && (
           <div className="fixed inset-0 z-[100] flex items-center justify-center p-10">
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setTextDetail(null)}
               className="absolute inset-0 bg-slate-900/40 backdrop-blur-xl"
             />
-            <motion.div 
+            <motion.div
               initial={{ scale: 0.9, opacity: 0, y: 30 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.9, opacity: 0, y: 30 }}
@@ -4165,9 +4412,9 @@ ${JSON.stringify(payload)}
                     <p className="text-[10px] text-slate-400 mt-1 font-bold uppercase tracking-widest">详细内容预览</p>
                   </div>
                 </div>
-                <motion.button 
+                <motion.button
                   whileHover={{ rotate: 90, scale: 1.1 }}
-                  onClick={() => setTextDetail(null)} 
+                  onClick={() => setTextDetail(null)}
                   className="w-12 h-12 flex items-center justify-center bg-slate-100 hover:bg-slate-200 rounded-full text-slate-400 transition-colors"
                 >
                   <X size={24} />
@@ -4198,7 +4445,7 @@ ${JSON.stringify(payload)}
                     </motion.button>
                   )}
                 </div>
-                <motion.button 
+                <motion.button
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
                   onClick={() => setTextDetail(null)}
@@ -4228,9 +4475,9 @@ ${JSON.stringify(payload)}
                   danger: !deletedRows.has(parseInt(contextMenu.target))
                 }
               ] : contextMenu.type === 'console' ? [
-                { 
-                  label: '重命名', 
-                  icon: <Activity size={14} />, 
+                {
+                  label: '重命名',
+                  icon: <Activity size={14} />,
                   onClick: () => {
                     const tab = consoles.find(c => c.id === contextMenu.target);
                     if (tab) {
@@ -4239,28 +4486,37 @@ ${JSON.stringify(payload)}
                     }
                   }
                 },
-                { 
-                  label: '从本地删除', 
-                  icon: <Trash2 size={14} />, 
+                {
+                  label: '从本地删除',
+                  icon: <Trash2 size={14} />,
                   onClick: () => handleDeleteConsole(contextMenu.target),
-                  danger: true 
+                  danger: true
                 },
-                { 
-                  label: '关闭', 
-                  icon: <X size={14} />, 
-                  onClick: () => handleCloseConsole(contextMenu.target) 
+                {
+                  label: '关闭',
+                  icon: <X size={14} />,
+                  onClick: () => handleCloseConsole(contextMenu.target)
                 }
               ] : contextMenu.type === 'database' ? [
-                { 
-                  label: activeConnection?.type === 'redis' ? '新建命令控制台' : '新建查询控制台', 
-                  icon: <Play size={14} />, 
-                  onClick: () => handleNewConsole(contextMenu.target) 
+                {
+                  label: activeConnection?.type === 'redis' ? '新建命令控制台' : '新建查询控制台',
+                  icon: <Play size={14} />,
+                  onClick: () => handleNewConsole(contextMenu.target)
                 },
-                { 
-                  label: 'AI 助手', 
-                  icon: <Sparkles size={14} className="text-indigo-500" />, 
-                  onClick: () => handleOpenAIModal('database', contextMenu.target) 
+                {
+                  label: 'AI 助手',
+                  icon: <Sparkles size={14} className="text-indigo-500" />,
+                  onClick: () => handleOpenAIModal('database', contextMenu.target)
                 },
+                ...(activeConnection?.type !== 'redis'
+                  ? [
+                      {
+                        label: '运行 SQL 脚本',
+                        icon: <Terminal size={14} />,
+                        onClick: () => handleOpenSqlScriptPicker('database', contextMenu.target)
+                      }
+                    ]
+                  : []),
                 ...(activeConnection?.type !== 'redis'
                   ? [
                       {
@@ -4278,57 +4534,66 @@ ${JSON.stringify(payload)}
                       }
                     ]
                   : []),
-                { 
-                  label: '刷新', 
-                  icon: <RefreshCw size={14} />, 
-                  onClick: () => loadDatabases() 
+                {
+                  label: '刷新',
+                  icon: <RefreshCw size={14} />,
+                  onClick: () => loadDatabases()
                 },
                 ...(activeConnection?.type !== 'redis' ? [
-                  { 
-                    label: '导出 SQL (仅结构)', 
-                    icon: <Server size={14} />, 
-                    onClick: () => handleExportDB(false) 
+                  {
+                    label: '导出 SQL (仅结构)',
+                    icon: <Server size={14} />,
+                    onClick: () => handleExportDB(false)
                   },
-                  { 
-                    label: '导出 SQL (结构 + 数据)', 
-                    icon: <Server size={14} />, 
-                    onClick: () => handleExportDB(true) 
+                  {
+                    label: '导出 SQL (结构 + 数据)',
+                    icon: <Server size={14} />,
+                    onClick: () => handleExportDB(true)
                   }
                 ] : []),
-                { 
-                  label: activeConnection?.type === 'redis' ? '清空数据库 (Flush)' : '删除数据库', 
-                  icon: <Trash2 size={14} />, 
+                {
+                  label: activeConnection?.type === 'redis' ? '清空数据库 (Flush)' : '删除数据库',
+                  icon: <Trash2 size={14} />,
                   onClick: () => handleDeleteDB(contextMenu.target),
-                  danger: true 
+                  danger: true
                 },
               ] : [
-                { 
-                  label: activeConnection?.type === 'redis' ? '查看 Key 内容' : '打开表', 
-                  icon: <Play size={14} />, 
-                  onClick: () => handleSelectTable(contextMenu.target) 
+                {
+                  label: activeConnection?.type === 'redis' ? '查看 Key 内容' : '打开表',
+                  icon: <Play size={14} />,
+                  onClick: () => handleSelectTable(contextMenu.target)
                 },
-                { 
-                  label: '新建查询控制台', 
-                  icon: <Play size={14} />, 
-                  onClick: () => handleNewConsole(selectedDatabase!, contextMenu.target) 
+                {
+                  label: '新建查询控制台',
+                  icon: <Play size={14} />,
+                  onClick: () => handleNewConsole(selectedDatabase!, contextMenu.target)
                 },
-                { 
-                  label: 'AI 助手', 
-                  icon: <Sparkles size={14} className="text-indigo-500" />, 
-                  onClick: () => handleOpenAIModal('table', contextMenu.target) 
+                {
+                  label: 'AI 助手',
+                  icon: <Sparkles size={14} className="text-indigo-500" />,
+                  onClick: () => handleOpenAIModal('table', contextMenu.target)
                 },
+                ...(activeConnection?.type !== 'redis'
+                  ? [
+                      {
+                        label: '运行 SQL 脚本',
+                        icon: <Terminal size={14} />,
+                        onClick: () => handleOpenSqlScriptPicker('table', contextMenu.target)
+                      }
+                    ]
+                  : []),
                 {
                   label: '生成 ER 图',
                   icon: <Layout size={14} className="text-blue-600" />,
                   onClick: () => setErLanguagePickTable(contextMenu.target)
                 },
-                { 
-                  label: '刷新列表', 
-                  icon: <RefreshCw size={14} />, 
+                {
+                  label: '刷新列表',
+                  icon: <RefreshCw size={14} />,
                   onClick: async () => {
                     const tableList = await window.electronAPI.getTables();
                     setTables(tableList);
-                  } 
+                  }
                 },
                 ...(activeConnection?.type === 'redis' ? [
                   ...(contextMenu.target !== 'Keys' ? [
@@ -4340,24 +4605,24 @@ ${JSON.stringify(payload)}
                     }
                   ] : [])
                 ] : [
-                  { 
-                    label: '修改表结构', 
-                    icon: <Activity size={14} />, 
+                  {
+                    label: '修改表结构',
+                    icon: <Activity size={14} />,
                     onClick: () => handleOpenSchemaModal(contextMenu.target)
                   },
-                  { 
-                    label: '重命名', 
-                    icon: <RefreshCw size={14} />, 
+                  {
+                    label: '重命名',
+                    icon: <RefreshCw size={14} />,
                     onClick: () => {
                       setRenameData({ oldName: contextMenu.target, newName: contextMenu.target });
                       setShowRenameModal(true);
-                    } 
+                    }
                   },
-                  { 
-                    label: '删除表', 
-                    icon: <Trash2 size={14} />, 
+                  {
+                    label: '删除表',
+                    icon: <Trash2 size={14} />,
                     onClick: () => handleDeleteTable(contextMenu.target),
-                    danger: true 
+                    danger: true
                   }
                 ])
               ]
@@ -4370,14 +4635,14 @@ ${JSON.stringify(payload)}
       <AnimatePresence>
         {showSettings && (
           <div className="fixed inset-0 z-[110] flex items-center justify-center p-6">
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setShowSettings(false)}
               className="absolute inset-0 bg-slate-900/20 backdrop-blur-md"
             />
-            <motion.div 
+            <motion.div
               initial={{ scale: 0.9, opacity: 0, y: 20 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.9, opacity: 0, y: 20 }}
@@ -4388,15 +4653,15 @@ ${JSON.stringify(payload)}
                   <Bot size={20} className="text-indigo-600" />
                   <h3 className="font-bold text-lg text-slate-900 tracking-tight">系统设置</h3>
                 </div>
-                <motion.button 
+                <motion.button
                   whileHover={{ rotate: 90, scale: 1.1 }}
-                  onClick={() => setShowSettings(false)} 
+                  onClick={() => setShowSettings(false)}
                   className="w-8 h-8 flex items-center justify-center bg-slate-100 hover:bg-slate-200 rounded-full text-slate-400 transition-colors"
                 >
                   <X size={16} />
                 </motion.button>
               </div>
-              
+
               <div className="p-8 space-y-6 max-h-[min(70vh,640px)] overflow-y-auto custom-scrollbar">
                 <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-2xl p-1">
                   <button
@@ -4447,11 +4712,6 @@ ${JSON.stringify(payload)}
                         setProviderVendor(v);
                         setProviderModel(defaultModelForVendor(v));
                         setProviderApiVersion(AI_VERSION_OPTIONS[v][0]?.value ?? '');
-                        if (v === 'azure' || v === 'custom') {
-                          setProviderEndpoint((prev) => prev || '');
-                        } else {
-                          setProviderEndpoint('');
-                        }
                       }}
                     >
                       {AI_VENDOR_LIST.map((v) => (
@@ -4461,50 +4721,22 @@ ${JSON.stringify(payload)}
                       ))}
                     </select>
                     <p className="text-xs text-slate-400 px-1">
-                      DeepSeek / OpenAI 使用预设地址；请求会发往 <code className="text-[11px]">…/chat/completions</code>。
+                      仅支持国产 API 预设地址；请求会发往 <code className="text-[11px]">…/chat/completions</code>。
                     </p>
                   </div>
-                  {(providerVendor === 'azure' || providerVendor === 'custom') && (
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">
-                        {providerVendor === 'azure' ? 'Azure 部署 URL' : '自定义 Base URL'}
-                      </label>
-                      <input
-                        type="url"
-                        placeholder={
-                          providerVendor === 'azure'
-                            ? 'https://资源名.openai.azure.com/openai/deployments/部署名'
-                            : 'https://网关地址/v1 或完整 …/chat/completions'
-                        }
-                        className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-sm text-slate-900 focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600 outline-none transition-all"
-                        value={providerEndpoint}
-                        onChange={(e) => setProviderEndpoint(e.target.value)}
-                      />
-                    </div>
-                  )}
                   <div className="space-y-2">
                     <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">模型</label>
-                    {providerVendor === 'custom' ? (
-                      <input
-                        type="text"
-                        placeholder="自定义模型 ID"
-                        className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-sm text-slate-900 focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600 outline-none transition-all"
-                        value={providerModel}
-                        onChange={(e) => setProviderModel(e.target.value)}
-                      />
-                    ) : (
-                      <select
-                        className={aiSelectClass}
-                        value={providerModel}
-                        onChange={(e) => setProviderModel(e.target.value)}
-                      >
-                        {AI_VENDOR_MODELS[providerVendor].map((m) => (
-                          <option key={m.value} value={m.value}>
-                            {m.label}
-                          </option>
-                        ))}
-                      </select>
-                    )}
+                    <select
+                      className={aiSelectClass}
+                      value={providerModel}
+                      onChange={(e) => setProviderModel(e.target.value)}
+                    >
+                      {AI_VENDOR_MODELS[providerVendor].map((m) => (
+                        <option key={m.value} value={m.value}>
+                          {m.label}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                   <div className="space-y-2">
                     <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">API Version</label>
@@ -4525,16 +4757,30 @@ ${JSON.stringify(payload)}
                     </select>
                   </div>
                   <div className="space-y-2">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">API Key（Bearer）</label>
-                    <input
-                      type="password"
-                      autoFocus
-                      placeholder="sk-..."
-                      className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-slate-900 focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600 outline-none transition-all"
-                      value={apiKey}
-                      onChange={(e) => setApiKey(e.target.value)}
-                    />
-                    <p className="text-xs text-slate-400 px-1">兼容 OpenAI 格式的网关均使用 Bearer 鉴权；沿用原 DeepSeek Key 存储项，升级后无需重新填 Key。</p>
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">
+                      API Key（Bearer）
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showApiKeyPlain ? 'text' : 'password'}
+                        autoFocus
+                        placeholder="sk-..."
+                        className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 pr-14 text-slate-900 focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600 outline-none transition-all"
+                        value={apiKey}
+                        onChange={(e) => setApiKey(e.target.value)}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowApiKeyPlain((v) => !v)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-500 hover:text-slate-700 bg-white/70 hover:bg-white border border-slate-200 rounded-xl px-2 py-1 transition-colors"
+                        aria-label={showApiKeyPlain ? '隐藏 API Key' : '显示 API Key'}
+                      >
+                        {showApiKeyPlain ? '隐藏' : '显示'}
+                      </button>
+                    </div>
+                    <p className="text-xs text-slate-400 px-1">
+                      所有国产兼容网关均使用 Bearer 鉴权。
+                    </p>
                   </div>
                 </div>
 
@@ -4582,7 +4828,7 @@ ${JSON.stringify(payload)}
                     <RefreshCw size={14} className="text-indigo-500" />
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em]">软件更新</span>
                   </div>
-                  
+
                   <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100">
                     <div className="flex items-start justify-between gap-4">
                       <div className="space-y-1">
@@ -4594,7 +4840,7 @@ ${JSON.stringify(payload)}
                           {updateStatus.message || '检查新版本以获取最新功能和修复'}
                         </p>
                       </div>
-                      
+
                       {['idle', 'not-available', 'error'].includes(updateStatus.type) ? (
                         <motion.button
                           whileHover={{ scale: 1.05 }}
@@ -4621,9 +4867,9 @@ ${JSON.stringify(payload)}
                             <p className="text-xs font-bold text-indigo-600">发现新版本 v{updateStatus.info?.version}</p>
                             {updateStatus.info?.releaseNotes && (
                               <div className="mt-2 text-[10px] text-slate-500 line-clamp-2 overflow-hidden whitespace-pre-wrap">
-                                {typeof updateStatus.info.releaseNotes === 'string' 
-                                  ? updateStatus.info.releaseNotes.replace(/<[^>]*>?/gm, '') 
-                                  : Array.isArray(updateStatus.info.releaseNotes) 
+                                {typeof updateStatus.info.releaseNotes === 'string'
+                                  ? updateStatus.info.releaseNotes.replace(/<[^>]*>?/gm, '')
+                                  : Array.isArray(updateStatus.info.releaseNotes)
                                     ? updateStatus.info.releaseNotes.map((n: any) => typeof n === 'string' ? n : n.note).join(', ').replace(/<[^>]*>?/gm, '')
                                     : ''}
                               </div>
@@ -4649,7 +4895,7 @@ ${JSON.stringify(payload)}
                           <span className="text-slate-400">{Math.round(updateStatus.progress || 0)}%</span>
                         </div>
                         <div className="h-1.5 w-full bg-slate-200 rounded-full overflow-hidden">
-                          <motion.div 
+                          <motion.div
                             className="h-full bg-indigo-600"
                             initial={{ width: 0 }}
                             animate={{ width: `${updateStatus.progress || 0}%` }}
@@ -4680,13 +4926,13 @@ ${JSON.stringify(payload)}
               </div>
 
               <div className="px-8 py-6 border-t border-slate-100 bg-slate-50 flex gap-3">
-                <button 
+                <button
                   onClick={() => setShowSettings(false)}
                   className="flex-1 py-3 rounded-2xl text-sm font-bold text-slate-500 hover:text-slate-700 hover:bg-slate-200/50 transition-all"
                 >
                   取消
                 </button>
-                <motion.button 
+                <motion.button
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
                   onClick={handleSaveSettings}
@@ -4704,14 +4950,14 @@ ${JSON.stringify(payload)}
       <AnimatePresence>
         {showUpdateModal && (
           <div className="fixed inset-0 z-[120] flex items-center justify-center p-6">
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setShowUpdateModal(false)}
               className="absolute inset-0 bg-slate-900/40 backdrop-blur-md"
             />
-            <motion.div 
+            <motion.div
               initial={{ scale: 0.9, opacity: 0, y: 20 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.9, opacity: 0, y: 20 }}
@@ -4724,15 +4970,15 @@ ${JSON.stringify(payload)}
                   </div>
                   <h3 className="font-bold text-lg text-slate-900 tracking-tight">发现新版本</h3>
                 </div>
-                <motion.button 
+                <motion.button
                   whileHover={{ rotate: 90, scale: 1.1 }}
-                  onClick={() => setShowUpdateModal(false)} 
+                  onClick={() => setShowUpdateModal(false)}
                   className="w-8 h-8 flex items-center justify-center bg-slate-100 hover:bg-slate-200 rounded-full text-slate-400 transition-colors"
                 >
                   <X size={16} />
                 </motion.button>
               </div>
-              
+
               <div className="p-8 space-y-6">
                 <div className="flex flex-col items-center text-center space-y-2">
                   <div className="text-4xl font-black text-slate-900 tracking-tighter italic">
@@ -4751,7 +4997,7 @@ ${JSON.stringify(payload)}
                     </div>
                     <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4 max-h-[150px] overflow-y-auto custom-scrollbar">
                       {typeof updateStatus.info.releaseNotes === 'string' ? (
-                        <div 
+                        <div
                           className="text-xs text-slate-600 leading-relaxed whitespace-pre-wrap"
                           dangerouslySetInnerHTML={{ __html: updateStatus.info.releaseNotes }}
                         />
@@ -4776,7 +5022,7 @@ ${JSON.stringify(payload)}
                       <span className="text-slate-400">{Math.round(updateStatus.progress || 0)}%</span>
                     </div>
                     <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden border border-slate-200/50 p-0.5">
-                      <motion.div 
+                      <motion.div
                         className="h-full bg-indigo-600 rounded-full shadow-sm shadow-indigo-600/20"
                         initial={{ width: 0 }}
                         animate={{ width: `${updateStatus.progress || 0}%` }}
@@ -4792,7 +5038,7 @@ ${JSON.stringify(payload)}
               </div>
 
               <div className="px-8 py-6 border-t border-slate-100 bg-slate-50 flex gap-3">
-                <button 
+                <button
                   onClick={() => setShowUpdateModal(false)}
                   disabled={updateStatus.type === 'downloading'}
                   className="flex-1 py-3 rounded-2xl text-sm font-bold text-slate-500 hover:text-slate-700 hover:bg-slate-200/50 transition-all disabled:opacity-50"
@@ -4800,7 +5046,7 @@ ${JSON.stringify(payload)}
                   稍后再说
                 </button>
                 {updateStatus.type === 'downloaded' ? (
-                  <motion.button 
+                  <motion.button
                     whileHover={{ scale: 1.02 }}
                     whileTap={{ scale: 0.98 }}
                     onClick={handleInstallUpdate}
@@ -4810,7 +5056,7 @@ ${JSON.stringify(payload)}
                     立即重启安装
                   </motion.button>
                 ) : (
-                  <motion.button 
+                  <motion.button
                     whileHover={{ scale: 1.02 }}
                     whileTap={{ scale: 0.98 }}
                     onClick={handleDownloadUpdate}
@@ -4981,14 +5227,14 @@ ${JSON.stringify(payload)}
       <AnimatePresence>
         {showRenameModal && (
           <div className="fixed inset-0 z-[110] flex items-center justify-center p-6">
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setShowRenameModal(false)}
               className="absolute inset-0 bg-slate-900/20 backdrop-blur-md"
             />
-            <motion.div 
+            <motion.div
               initial={{ scale: 0.9, opacity: 0, y: 20 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.9, opacity: 0, y: 20 }}
@@ -4996,15 +5242,15 @@ ${JSON.stringify(payload)}
             >
               <div className="px-8 py-6 border-b border-slate-100 flex justify-between items-center bg-gradient-to-b from-slate-50 to-transparent">
                 <h3 className="font-bold text-lg text-slate-900 tracking-tight">重命名数据表</h3>
-                <motion.button 
+                <motion.button
                   whileHover={{ rotate: 90, scale: 1.1 }}
-                  onClick={() => setShowRenameModal(false)} 
+                  onClick={() => setShowRenameModal(false)}
                   className="w-8 h-8 flex items-center justify-center bg-slate-100 hover:bg-slate-200 rounded-full text-slate-400 transition-colors"
                 >
                   <X size={16} />
                 </motion.button>
               </div>
-              
+
               <div className="p-8 space-y-4">
                 <div className="space-y-2">
                   <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">旧名称</label>
@@ -5029,13 +5275,13 @@ ${JSON.stringify(payload)}
               </div>
 
               <div className="px-8 py-6 border-t border-slate-100 bg-slate-50 flex gap-3">
-                <button 
+                <button
                   onClick={() => setShowRenameModal(false)}
                   className="flex-1 py-3 rounded-2xl text-sm font-bold text-slate-500 hover:text-slate-700 hover:bg-slate-200/50 transition-all"
                 >
                   取消
                 </button>
-                <motion.button 
+                <motion.button
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
                   onClick={handleRenameTable}
@@ -5052,14 +5298,14 @@ ${JSON.stringify(payload)}
       <AnimatePresence>
         {showSchemaModal && (
           <div className="fixed inset-0 z-[120] flex items-center justify-center p-6">
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setShowSchemaModal(false)}
               className="absolute inset-0 bg-slate-900/20 backdrop-blur-md"
             />
-            <motion.div 
+            <motion.div
               initial={{ scale: 0.95, opacity: 0, y: 20 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.95, opacity: 0, y: 20 }}
@@ -5114,16 +5360,16 @@ ${JSON.stringify(payload)}
                   >
                     <Plus size={14} /> {activeSchemaTab === 'columns' ? '添加列' : '添加索引'}
                   </motion.button>
-                  <motion.button 
+                  <motion.button
                     whileHover={{ rotate: 90, scale: 1.1 }}
-                    onClick={() => setShowSchemaModal(false)} 
+                    onClick={() => setShowSchemaModal(false)}
                     className="w-8 h-8 flex items-center justify-center bg-slate-100 hover:bg-slate-200 rounded-full text-slate-400 transition-colors"
                   >
                     <X size={16} />
                   </motion.button>
                 </div>
               </div>
-              
+
               <div className="px-8 py-2 border-b border-slate-100 flex gap-6 bg-slate-50/30">
                 <button
                   onClick={() => setActiveSchemaTab('columns')}
@@ -5166,15 +5412,15 @@ ${JSON.stringify(payload)}
                     </thead>
                     <tbody className="divide-y divide-slate-50">
                       {schemaData.columns.map((col, idx) => (
-                        <motion.tr 
+                        <motion.tr
                           key={col.id}
                           initial={{ opacity: 0, x: -10 }}
                           animate={{ opacity: 1, x: 0 }}
                           className="group hover:bg-slate-50/50 transition-colors"
                         >
                           <td className="px-6 py-3">
-                            <input 
-                              type="text" 
+                            <input
+                              type="text"
                               value={col.name}
                               onChange={(e) => {
                                 const newCols = [...schemaData.columns];
@@ -5186,8 +5432,8 @@ ${JSON.stringify(payload)}
                           </td>
                           <td className="px-6 py-3 relative group/type">
                               <div className="flex items-center">
-                                <input 
-                                  type="text" 
+                                <input
+                                  type="text"
                                   value={col.type}
                                   onChange={(e) => {
                                     const newCols = [...schemaData.columns];
@@ -5200,7 +5446,7 @@ ${JSON.stringify(payload)}
                                 <div className="absolute right-4 pointer-events-none text-slate-300 group-hover/type:text-blue-400 transition-colors z-20">
                                   <ChevronRight size={12} className="rotate-90" />
                                 </div>
-                                <select 
+                                <select
                                   value=""
                                   onChange={(e) => {
                                     const newCols = [...schemaData.columns];
@@ -5211,8 +5457,8 @@ ${JSON.stringify(payload)}
                                 >
                                   <option value="" disabled>选择常用类型...</option>
                                   {(
-                                    activeConnection?.type === 'sqlite' ? DB_TYPES.sqlite : 
-                                    activeConnection?.type === 'postgresql' ? DB_TYPES.postgresql : 
+                                    activeConnection?.type === 'sqlite' ? DB_TYPES.sqlite :
+                                    activeConnection?.type === 'postgresql' ? DB_TYPES.postgresql :
                                     activeConnection?.type === 'oracle' ? DB_TYPES.oracle :
                                     DB_TYPES.mysql
                                   ).map(type => (
@@ -5222,8 +5468,8 @@ ${JSON.stringify(payload)}
                               </div>
                             </td>
                           <td className="px-6 py-3 text-center">
-                            <input 
-                              type="checkbox" 
+                            <input
+                              type="checkbox"
                               checked={col.nullable}
                               onChange={(e) => {
                                 const newCols = [...schemaData.columns];
@@ -5234,8 +5480,8 @@ ${JSON.stringify(payload)}
                             />
                           </td>
                           <td className="px-6 py-3 text-center">
-                            <input 
-                              type="checkbox" 
+                            <input
+                              type="checkbox"
                               checked={col.primaryKey}
                               onChange={(e) => {
                                 const newCols = [...schemaData.columns];
@@ -5246,8 +5492,8 @@ ${JSON.stringify(payload)}
                             />
                           </td>
                           <td className="px-6 py-3 text-center">
-                            <input 
-                              type="checkbox" 
+                            <input
+                              type="checkbox"
                               checked={col.autoIncrement}
                               onChange={(e) => {
                                 const newCols = [...schemaData.columns];
@@ -5258,8 +5504,8 @@ ${JSON.stringify(payload)}
                             />
                           </td>
                           <td className="px-6 py-3">
-                            <input 
-                              type="text" 
+                            <input
+                              type="text"
                               value={col.defaultValue || ''}
                               placeholder="NULL"
                               onChange={(e) => {
@@ -5284,7 +5530,7 @@ ${JSON.stringify(payload)}
                             />
                           </td>
                           <td className="px-6 py-3 text-center">
-                            <button 
+                            <button
                               onClick={() => {
                                 const newCols = schemaData.columns.filter(c => c.id !== col.id);
                                 setSchemaData({ ...schemaData, columns: newCols });
@@ -5311,15 +5557,15 @@ ${JSON.stringify(payload)}
                       </thead>
                       <tbody className="divide-y divide-slate-50">
                         {schemaData.indexes.map((idx, i) => (
-                          <motion.tr 
+                          <motion.tr
                             key={idx.id}
                             initial={{ opacity: 0, x: -10 }}
                             animate={{ opacity: 1, x: 0 }}
                             className="group hover:bg-slate-50/50 transition-colors"
                           >
                             <td className="px-6 py-3">
-                              <input 
-                                type="text" 
+                              <input
+                                type="text"
                                 value={idx.name}
                                 onChange={(e) => {
                                   const newIdxs = [...schemaData.indexes];
@@ -5334,9 +5580,9 @@ ${JSON.stringify(payload)}
                                 {idx.columns.map((colName: string, colIdx: number) => (
                                   <div key={colIdx} className="bg-blue-50 text-blue-600 px-2 py-0.5 rounded flex items-center gap-1 text-xs font-semibold">
                                     {colName}
-                                    <X 
-                                      size={10} 
-                                      className="cursor-pointer hover:text-red-500" 
+                                    <X
+                                      size={10}
+                                      className="cursor-pointer hover:text-red-500"
                                       onClick={() => {
                                         const newIdxs = [...schemaData.indexes];
                                         newIdxs[i].columns = newIdxs[i].columns.filter((_: any, ci: number) => ci !== colIdx);
@@ -5365,8 +5611,8 @@ ${JSON.stringify(payload)}
                               </div>
                             </td>
                             <td className="px-6 py-3 text-center">
-                              <input 
-                                type="checkbox" 
+                              <input
+                                type="checkbox"
                                 checked={idx.unique}
                                 onChange={(e) => {
                                   const newIdxs = [...schemaData.indexes];
@@ -5377,7 +5623,7 @@ ${JSON.stringify(payload)}
                               />
                             </td>
                             <td className="px-6 py-3 text-center">
-                              <button 
+                              <button
                                 onClick={() => {
                                   const newIdxs = schemaData.indexes.filter((_, idxIdx) => idxIdx !== i);
                                   setSchemaData({ ...schemaData, indexes: newIdxs });
@@ -5402,13 +5648,13 @@ ${JSON.stringify(payload)}
               </div>
 
               <div className="px-8 py-6 border-t border-slate-100 bg-slate-50 flex gap-3 justify-end">
-                <button 
+                <button
                   onClick={() => setShowSchemaModal(false)}
                   className="px-6 py-3 rounded-2xl text-sm font-bold text-slate-500 hover:text-slate-700 hover:bg-slate-200/50 transition-all"
                 >
                   取消
                 </button>
-                <motion.button 
+                <motion.button
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
                   onClick={handleUpdateSchema}
@@ -5426,7 +5672,7 @@ ${JSON.stringify(payload)}
       <AnimatePresence>
         {showLoadConsoleModal && (
           <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-md z-[100] flex items-center justify-center p-4">
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
@@ -5442,7 +5688,7 @@ ${JSON.stringify(payload)}
                     <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">选择要重新加载的查询控制台</p>
                   </div>
                 </div>
-                <button 
+                <button
                   onClick={() => setShowLoadConsoleModal(false)}
                   className="p-2 hover:bg-slate-100 rounded-xl transition-colors text-slate-400 hover:text-slate-600"
                 >
@@ -5495,7 +5741,7 @@ ${JSON.stringify(payload)}
               </div>
 
               <div className="px-8 py-6 border-t border-slate-100 bg-white flex justify-end">
-                <button 
+                <button
                   onClick={() => setShowLoadConsoleModal(false)}
                   className="px-6 py-3 rounded-2xl text-sm font-bold text-slate-500 hover:text-slate-700 hover:bg-slate-50 transition-all"
                 >
@@ -5507,13 +5753,22 @@ ${JSON.stringify(payload)}
         )}
       </AnimatePresence>
 
+      <input
+        ref={sqlScriptFileInputRef}
+        type="file"
+        accept=".sql,text/sql"
+        multiple
+        className="hidden"
+        onChange={handleSqlScriptFileChange}
+      />
+
       {/* Global Toast */}
       <AnimatePresence>
         {toast && (
-          <Toast 
-            message={toast.message} 
-            type={toast.type} 
-            onClose={() => setToast(null)} 
+          <Toast
+            message={toast.message}
+            type={toast.type}
+            onClose={() => setToast(null)}
           />
         )}
       </AnimatePresence>

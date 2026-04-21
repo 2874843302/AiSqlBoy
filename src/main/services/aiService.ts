@@ -1,4 +1,5 @@
 import { AI_SETTING_KEYS } from '../../shared/aiSettings';
+import { defaultModelForVendor, getVendorBaseUrl, type AiVendorId } from '../../shared/aiProviderPresets';
 import { internalDB } from './internalDB';
 
 const LEGACY_CHAT_URL = 'https://api.deepseek.com/chat/completions';
@@ -21,10 +22,11 @@ function appendApiVersion(url: string, apiVersion: string): string {
   return `${url}${sep}api-version=${encodeURIComponent(v)}`;
 }
 
-function resolveModel(baseConfigured: boolean, modelRaw: string | null): string {
-  const m = (modelRaw || '').trim();
+function resolveModel(opts: { vendor: AiVendorId; baseConfigured: boolean; modelRaw: string | null }): string {
+  const m = (opts.modelRaw || '').trim();
   if (m) return m;
-  return baseConfigured ? 'gpt-3.5-turbo' : LEGACY_MODEL;
+  if (!opts.baseConfigured) return LEGACY_MODEL;
+  return defaultModelForVendor(opts.vendor) || LEGACY_MODEL;
 }
 
 export class AIService {
@@ -38,24 +40,38 @@ export class AIService {
       throw new Error('未配置 API Key，请在设置中填写。');
     }
 
+    const vendorRaw = await internalDB.getSetting(AI_SETTING_KEYS.providerVendor);
+    const vendor: AiVendorId =
+      vendorRaw === 'deepseek' ||
+      vendorRaw === 'qwen' ||
+      vendorRaw === 'moonshot' ||
+      vendorRaw === 'doubao' ||
+      vendorRaw === 'zhipu' ||
+      vendorRaw === 'minimax'
+        ? vendorRaw
+        : 'deepseek';
+
     const baseRaw = await internalDB.getSetting(AI_SETTING_KEYS.openaiBaseUrl);
     const modelRaw = await internalDB.getSetting(AI_SETTING_KEYS.openaiModel);
     const apiVersionRaw = await internalDB.getSetting(AI_SETTING_KEYS.openaiApiVersion);
 
-    const baseConfigured = !!(baseRaw && baseRaw.trim());
+    const effectiveBase = baseRaw && baseRaw.trim() ? baseRaw : getVendorBaseUrl(vendor);
+
     const url = appendApiVersion(
-      baseConfigured ? resolveOpenAiCompatibleChatUrl(baseRaw!) : LEGACY_CHAT_URL,
+      effectiveBase && effectiveBase.trim() ? resolveOpenAiCompatibleChatUrl(effectiveBase) : LEGACY_CHAT_URL,
       apiVersionRaw || ''
     );
-    const model = resolveModel(baseConfigured, modelRaw);
+    const model = resolveModel({ vendor, baseConfigured: !!(effectiveBase && effectiveBase.trim()), modelRaw });
 
     try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      headers.Authorization = `Bearer ${apiKey}`;
+
       const response = await fetch(url, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
+        headers,
         body: JSON.stringify({
           model,
           messages,

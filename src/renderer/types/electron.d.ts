@@ -5,6 +5,7 @@ declare global {
     electronAPI: {
       getSavedConnections: () => Promise<ConnectionConfig[]>;
       saveConnection: (config: ConnectionConfig) => Promise<any>;
+      validateConnection: (config: ConnectionConfig) => Promise<{ success: boolean; error?: string }>;
       deleteConnection: (id: number) => Promise<any>;
 
       // Console Management

@@ -47,7 +47,7 @@ const ConfirmModal: React.FC<ConfirmModalProps> = ({
             exit={{ scale: 0.9, opacity: 0, y: 20 }}
             className="bg-white border border-slate-200 rounded-[32px] shadow-2xl w-[400px] overflow-hidden z-10"
           >
-            <div className="px-8 py-6 border-b border-slate-100 flex justify-between items-center bg-gradient-to-b from-slate-50 to-transparent">
+            <div className="px-8 py-6 border-b border-slate-100 flex justify-between items-center bg-gradient-to-b from-slate-50 to-transparent dark:from-slate-900 dark:to-slate-900">
               <div className="flex items-center gap-2">
                 <div
                   className={`w-8 h-8 rounded-full flex items-center justify-center ${
