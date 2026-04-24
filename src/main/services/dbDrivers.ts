@@ -390,7 +390,9 @@ export class MySQLDriver implements IDatabaseDriver {
       user: this.config.user,
       password: this.config.password,
       database: this.config.database, // 可以为空
-      multipleStatements: true // 允许执行多条 SQL 语句
+      multipleStatements: true, // 允许执行多条 SQL 语句
+      supportBigNumbers: true,
+      bigNumberStrings: true
     });
   }
 

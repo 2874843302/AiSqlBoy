@@ -70,10 +70,76 @@ const formatTimeForInput = (value: any, inputType: string) => {
   return value.toString();
 };
 
+type OverflowPreviewTextProps = {
+  text: string;
+  textClassName: string;
+  containerClassName?: string;
+  buttonClassName: string;
+  buttonTitle: string;
+  buttonSize: number;
+  onPreview: () => void;
+  children: React.ReactNode;
+};
+
+const OverflowPreviewText: React.FC<OverflowPreviewTextProps> = ({
+  text,
+  textClassName,
+  containerClassName = 'flex items-center gap-3 overflow-hidden min-w-0',
+  buttonClassName,
+  buttonTitle,
+  buttonSize,
+  onPreview,
+  children
+}) => {
+  const textRef = React.useRef<HTMLSpanElement>(null);
+  const [isOverflowing, setIsOverflowing] = useState(false);
+
+  useEffect(() => {
+    const el = textRef.current;
+    if (!el) return;
+
+    const checkOverflow = () => {
+      setIsOverflowing(el.scrollWidth > el.clientWidth + 1);
+    };
+
+    checkOverflow();
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(checkOverflow) : null;
+    ro?.observe(el);
+    window.addEventListener('resize', checkOverflow);
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener('resize', checkOverflow);
+    };
+  }, [text]);
+
+  return (
+    <div className={containerClassName}>
+      <span ref={textRef} className={textClassName}>
+        {children}
+      </span>
+      {isOverflowing && (
+        <motion.button
+          whileHover={{ scale: 1.1 }}
+          whileTap={{ scale: 0.9 }}
+          onClick={(e) => {
+            e.stopPropagation();
+            onPreview();
+          }}
+          className={buttonClassName}
+          title={buttonTitle}
+        >
+          <Plus size={buttonSize} />
+        </motion.button>
+      )}
+    </div>
+  );
+};
+
 const App: React.FC = () => {
   // State for connections
   const [savedConnections, setSavedConnections] = useState<ConnectionConfig[]>([])
   const [activeConnection, setActiveConnection] = useState<ConnectionConfig | null>(null)
+  const [connectingConnectionId, setConnectingConnectionId] = useState<number | null>(null)
   const [showAddModal, setShowAddModal] = useState(false)
   const [isEditingConnection, setIsEditingConnection] = useState(false)
   const [expandedConnections, setExpandedConnections] = useState<Set<number>>(new Set())
@@ -136,6 +202,7 @@ const App: React.FC = () => {
   const [showRenameModal, setShowRenameModal] = useState(false);
   const [renameData, setRenameData] = useState({ oldName: '', newName: '' });
   const [showSchemaModal, setShowSchemaModal] = useState(false);
+  const [insertingRow, setInsertingRow] = useState<Record<string, string> | null>(null);
   const [erDiagram, setERDiagram] = useState<{
     show: boolean;
     loading: boolean;
@@ -190,6 +257,11 @@ const App: React.FC = () => {
   });
   const [textDetail, setTextDetail] = useState<{ content: any; fieldName: string } | null>(null)
   const [isJsonFormatted, setIsJsonFormatted] = useState(false);
+  const [textDetailSearchTerm, setTextDetailSearchTerm] = useState('');
+  const [textDetailMatchIndex, setTextDetailMatchIndex] = useState(0);
+  const [textDetailSearchVisible, setTextDetailSearchVisible] = useState(false);
+  const textDetailSearchInputRef = React.useRef<HTMLInputElement>(null);
+  const textDetailMatchRefs = React.useRef<(HTMLElement | null)[]>([]);
   const [rowLimit, setRowLimit] = useState(10000); // 新增：大数据量限制行数
   const [useVirtualScroll] = useState(true); // 是否开启虚拟滚动
   const ROW_HEIGHT = 48; // 预估行高
@@ -219,11 +291,74 @@ const App: React.FC = () => {
     }
   };
 
-  const sanitizeDisplayText = (val: any) => {
+  const textDetailDisplayText = useMemo(() => {
+    if (!textDetail) return '';
+    const rendered = isJsonFormatted
+      ? formatJson(textDetail.content)
+      : (typeof textDetail.content === 'object' ? JSON.stringify(textDetail.content) : String(textDetail.content ?? ''));
+    return typeof rendered === 'string' ? rendered : String(rendered ?? '');
+  }, [textDetail, isJsonFormatted]);
+
+  const textDetailMatches = useMemo(() => {
+    const keyword = textDetailSearchTerm.trim();
+    if (!keyword || !textDetailDisplayText) return [] as number[];
+    const source = textDetailDisplayText.toLowerCase();
+    const target = keyword.toLowerCase();
+    const indices: number[] = [];
+    let start = 0;
+    while (true) {
+      const idx = source.indexOf(target, start);
+      if (idx === -1) break;
+      indices.push(idx);
+      start = idx + target.length;
+    }
+    return indices;
+  }, [textDetailDisplayText, textDetailSearchTerm]);
+
+  useEffect(() => {
+    setTextDetailMatchIndex(0);
+  }, [textDetailSearchTerm, textDetailDisplayText]);
+
+  useEffect(() => {
+    if (!textDetail) {
+      setTextDetailSearchTerm('');
+      setTextDetailMatchIndex(0);
+      setTextDetailSearchVisible(false);
+    }
+  }, [textDetail]);
+
+  useEffect(() => {
+    if (!textDetailMatches.length) return;
+    const node = textDetailMatchRefs.current[textDetailMatchIndex];
+    node?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, [textDetailMatchIndex, textDetailMatches.length]);
+
+  const formatDateForDisplay = (date: Date, colType?: string) => {
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    const yyyy = date.getFullYear();
+    const mm = pad(date.getMonth() + 1);
+    const dd = pad(date.getDate());
+    const hh = pad(date.getHours());
+    const mi = pad(date.getMinutes());
+    const ss = pad(date.getSeconds());
+    const t = (colType || '').toUpperCase();
+
+    if (t.includes('DATE') && !t.includes('DATETIME') && !t.includes('TIMESTAMP')) {
+      return `${yyyy}-${mm}-${dd}`;
+    }
+    if (t.includes('TIME') && !t.includes('DATETIME') && !t.includes('TIMESTAMP')) {
+      return `${hh}:${mi}:${ss}`;
+    }
+    return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+  };
+
+  const sanitizeDisplayText = (val: any, colType?: string) => {
     if (val === null) return 'NULL';
     if (val === undefined) return '';
     let text = '';
-    if (typeof val === 'string') {
+    if (val instanceof Date) {
+      text = formatDateForDisplay(val, colType);
+    } else if (typeof val === 'string') {
       text = val;
     } else if (typeof val === 'object') {
       try {
@@ -252,8 +387,6 @@ const App: React.FC = () => {
   };
 
   const escapeRegExp = (input: string) => input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const RESULT_PREVIEW_LENGTH = 120;
-
   // Pagination State
   const [pageSize, setPageSize] = useState(20);
   const [currentPage, setCurrentPage] = useState(1);
@@ -270,6 +403,14 @@ const App: React.FC = () => {
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
   const [isResizingTableInspector, setIsResizingTableInspector] = useState(false);
   const [isResizingResults, setIsResizingResults] = useState(false);
+  const [tableColumnWidths, setTableColumnWidths] = useState<Record<string, number>>({});
+  const [resultColumnWidths, setResultColumnWidths] = useState<Record<string, number>>({});
+  const [resizingColumn, setResizingColumn] = useState<{
+    table: 'table' | 'results';
+    key: string;
+    startX: number;
+    startWidth: number;
+  } | null>(null);
 
   const [showSettings, setShowSettings] = useState(false);
   const [settingsTab, setSettingsTab] = useState<'ai' | 'ui' | 'update'>('ai');
@@ -445,6 +586,8 @@ const App: React.FC = () => {
   const [resultsViewportHeight, setResultsViewportHeight] = useState(0);
   const [showScrollButtons, setShowScrollButtons] = useState(false);
   const [showResultsScrollButtons, setShowResultsScrollButtons] = useState(false);
+  const TABLE_COL_MIN_WIDTH = 120;
+  const TABLE_COL_MAX_WIDTH = 420;
   const tableScrollRafRef = React.useRef<number | null>(null);
   const resultsScrollRafRef = React.useRef<number | null>(null);
   const pendingTableScrollTopRef = React.useRef(0);
@@ -487,12 +630,95 @@ const App: React.FC = () => {
   }, [isResizingSidebar, isResizingTableInspector, isResizingResults]);
 
   useEffect(() => {
+    if (!resizingColumn) return;
+
+    const handleMove = (e: MouseEvent) => {
+      const delta = e.clientX - resizingColumn.startX;
+      const nextWidth = Math.max(TABLE_COL_MIN_WIDTH, Math.min(TABLE_COL_MAX_WIDTH, resizingColumn.startWidth + delta));
+      if (resizingColumn.table === 'table') {
+        setTableColumnWidths((prev) => ({ ...prev, [resizingColumn.key]: nextWidth }));
+      } else {
+        setResultColumnWidths((prev) => ({ ...prev, [resizingColumn.key]: nextWidth }));
+      }
+    };
+    const handleUp = () => setResizingColumn(null);
+
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    return () => {
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [resizingColumn]);
+
+  const startColumnResize = (
+    e: React.MouseEvent,
+    table: 'table' | 'results',
+    key: string,
+    currentWidth?: number
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setResizingColumn({
+      table,
+      key,
+      startX: e.clientX,
+      startWidth: currentWidth ?? 220
+    });
+  };
+
+  const resetColumnWidth = (table: 'table' | 'results', key: string) => {
+    if (table === 'table') {
+      setTableColumnWidths((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+      return;
+    }
+    setResultColumnWidths((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  };
+
+  const resetAllTableColumnWidths = () => {
+    setTableColumnWidths({});
+  };
+
+  const resetAllResultColumnWidths = (consoleId?: string | null) => {
+    if (!consoleId) {
+      setResultColumnWidths({});
+      return;
+    }
+    const prefix = `${consoleId}::`;
+    setResultColumnWidths((prev) => {
+      const next: Record<string, number> = {};
+      Object.entries(prev).forEach(([k, v]) => {
+        if (!k.startsWith(prefix)) next[k] = v;
+      });
+      return next;
+    });
+  };
+
+  useEffect(() => {
     setSuggestionInfo(prev => ({ ...prev, show: false }));
   }, [activeConsoleId, activeConnection]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+        if (textDetail) {
+          e.preventDefault();
+          setTextDetailSearchVisible(true);
+          requestAnimationFrame(() => textDetailSearchInputRef.current?.focus());
+          return;
+        }
         if (selectedTable || activeConsoleId) {
           e.preventDefault();
           searchInputRef.current?.focus();
@@ -504,10 +730,15 @@ const App: React.FC = () => {
           handleSaveConsole(activeConsoleId);
         }
       }
+      if (e.key === 'Escape' && textDetail && textDetailSearchVisible) {
+        e.preventDefault();
+        setTextDetailSearchVisible(false);
+        textDetailSearchInputRef.current?.blur();
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedTable, activeConsoleId, consoles]);
+  }, [selectedTable, activeConsoleId, consoles, textDetail, textDetailSearchVisible]);
 
   // 点击外部关闭弹窗逻辑
   useEffect(() => {
@@ -942,30 +1173,118 @@ const App: React.FC = () => {
   }
 
   const handleConnect = async (config: ConnectionConfig) => {
-    // 切换折叠状态
-    const isExpanding = !expandedConnections.has(config.id!);
-    const newExpanded = new Set(expandedConnections)
-    if (newExpanded.has(config.id!)) {
-      newExpanded.delete(config.id!)
-      setExpandedConnections(newExpanded)
-      return
-    } else {
-      newExpanded.add(config.id!)
-      setExpandedConnections(newExpanded)
+    if (connectingConnectionId !== null) return;
+    // 当前连接支持折叠/展开
+    if (activeConnection?.id === config.id && expandedConnections.has(config.id!)) {
+      const next = new Set(expandedConnections);
+      next.delete(config.id!);
+      setExpandedConnections(next);
+      return;
     }
 
+    setConnectingConnectionId(config.id ?? null);
     setLoading(true)
-    setDatabases([]) // 清空旧的数据库列表，触发加载状态
+    const previousActiveConnection = activeConnection;
+    const previousDatabases = [...databases];
+    const previousSelectedDatabase = selectedDatabase;
+    const previousTables = [...tables];
+    const previousSelectedTable = selectedTable;
+    const previousData = [...data];
+    const previousColumns = [...columns];
+    const previousExpandedDatabases = new Set(expandedDatabases);
+    const previousCurrentPage = currentPage;
+    const previousPageSize = pageSize;
+    const previousSortConfig = { ...sortConfig };
+
+    const restorePreviousConnectionView = async () => {
+      // 无历史连接时，恢复到空白视图
+      if (!previousActiveConnection) {
+        setActiveConnection(null);
+        setDatabases([]);
+        setSelectedDatabase(null);
+        setTables([]);
+        setSelectedTable(null);
+        setData([]);
+        setColumns([]);
+        setExpandedDatabases(new Set());
+        return;
+      }
+
+      // 先恢复主进程中的真实连接，再恢复前端视图，避免“看起来恢复但后台已断开”
+      const reconnect = await window.electronAPI.connectDB(previousActiveConnection);
+      if (!reconnect.success) {
+        setActiveConnection(previousActiveConnection);
+        setDatabases(previousDatabases);
+        setSelectedDatabase(previousSelectedDatabase);
+        setTables(previousTables);
+        setSelectedTable(previousSelectedTable);
+        setData(previousData);
+        setColumns(previousColumns);
+        setExpandedDatabases(previousExpandedDatabases);
+        setToast({ message: '回滚到原连接失败，请点击“刷新”重试', type: 'error' });
+        return;
+      }
+
+      setActiveConnection(previousActiveConnection);
+      setExpandedConnections((prev) => {
+        const next = new Set(prev);
+        next.add(previousActiveConnection.id!);
+        return next;
+      });
+
+      await loadDatabases(previousActiveConnection);
+      setExpandedDatabases(previousExpandedDatabases);
+
+      if (!previousSelectedDatabase) {
+        setSelectedDatabase(null);
+        setTables([]);
+        setSelectedTable(null);
+        setData([]);
+        setColumns([]);
+        return;
+      }
+
+      const useRes = await window.electronAPI.useDatabase(previousSelectedDatabase);
+      if (!useRes.success) {
+        setSelectedDatabase(previousSelectedDatabase);
+        setTables(previousTables);
+        setSelectedTable(previousSelectedTable);
+        setData(previousData);
+        setColumns(previousColumns);
+        return;
+      }
+
+      setSelectedDatabase(previousSelectedDatabase);
+      const latestTables = await window.electronAPI.getTables();
+      setTables(latestTables);
+
+      if (!previousSelectedTable || !latestTables.some((t) => t.name === previousSelectedTable)) {
+        setSelectedTable(null);
+        setData([]);
+        setColumns([]);
+        return;
+      }
+
+      await handleSelectTable(
+        previousSelectedTable,
+        previousCurrentPage,
+        previousPageSize,
+        previousSortConfig.column,
+        previousSortConfig.direction
+      );
+    };
     try {
       const result = await window.electronAPI.connectDB(config)
       if (result.success) {
         setActiveConnection(config)
+        setExpandedConnections((prev) => {
+          const next = new Set(prev);
+          next.add(config.id!);
+          return next;
+        });
 
-        // 如果是展开操作，确保数据库列表已加载
-        // 直接调用 loadDatabases 并传递 config，绕过 activeConnection 状态可能尚未更新的问题
-        if (isExpanding) {
-          await loadDatabases(config);
-        }
+        // 连接成功后加载数据库列表
+        await loadDatabases(config);
 
         // Load consoles for this connection
         await loadConsoles(config.id);
@@ -988,12 +1307,15 @@ const App: React.FC = () => {
         setData([])
         setColumns([])
       } else {
+        await restorePreviousConnectionView();
         setToast({ message: result.error || '连接失败', type: 'error' })
       }
     } catch (err: any) {
+      await restorePreviousConnectionView();
       setToast({ message: err.message, type: 'error' })
     } finally {
       setLoading(false)
+      setConnectingConnectionId(null);
     }
   }
 
@@ -1460,12 +1782,54 @@ const App: React.FC = () => {
     setEditingCells({});
     setDeletedRows(new Set());
     setEditingCellCoord(null);
+    setInsertingRow(null);
   };
 
   const formatSqlValue = (val: any) => {
     if (val === null || val === undefined) return 'NULL';
     if (typeof val === 'number') return val;
     return `'${val.toString().replace(/'/g, "''")}'`;
+  };
+
+  const quoteIdentifier = (name: string) => {
+    if (activeConnection?.type === 'mysql') {
+      return `\`${name.replace(/`/g, '``')}\``;
+    }
+    if (activeConnection?.type === 'postgresql' || activeConnection?.type === 'sqlite') {
+      return `"${name.replace(/"/g, '""')}"`;
+    }
+    // Oracle / fallback
+    return name;
+  };
+
+  const normalizeInputValueByColumnType = (input: string, colType?: string): any => {
+    const raw = input.trim();
+    if (raw === '') return null;
+    const t = (colType || '').toUpperCase();
+    const isNumeric =
+      t.includes('INT') || t.includes('DECIMAL') || t.includes('NUMERIC') || t.includes('FLOAT') ||
+      t.includes('DOUBLE') || t.includes('REAL') || t.includes('BIT');
+    if (isNumeric && /^-?\d+(\.\d+)?$/.test(raw)) {
+      return Number(raw);
+    }
+    return raw;
+  };
+
+  const getRowValueByColumn = (row: Record<string, any>, columnName: string) => {
+    if (!row) return undefined;
+    if (Object.prototype.hasOwnProperty.call(row, columnName)) return row[columnName];
+    const key = Object.keys(row).find((k) => k.toLowerCase() === columnName.toLowerCase());
+    return key ? row[key] : undefined;
+  };
+
+  const buildSqlWhereByColumns = (row: Record<string, any>, cols: string[], quote: string) => {
+    return cols.map((col) => {
+      const value = getRowValueByColumn(row, col);
+      if (value === null || value === undefined) {
+        return `${quote}${col}${quote} IS NULL`;
+      }
+      return `${quote}${col}${quote} = ${formatSqlValue(value)}`;
+    }).join(' AND ');
   };
 
   const formatRedisValue = (val: any) => {
@@ -1521,19 +1885,56 @@ const App: React.FC = () => {
       }
     } else {
       // SQL 数据库提交逻辑 (MySQL, PostgreSQL, SQLite)
-      const primaryKeyCols = columns.filter(c => c.primaryKey).map(c => c.name);
+      const quote = activeConnection.type === 'mysql' ? '`' : '"';
+      const hasUpdateOrDeleteChanges = deletedRows.size > 0 || Object.keys(editingCells).length > 0;
 
-      if (primaryKeyCols.length === 0) {
-        setToast({ message: '无法提交更改：该表没有主键，无法精确定位行。', type: 'error' });
-        return;
+      // 0. 处理新增行（可视化添加）
+      if (insertingRow) {
+        const insertableColumns = columns.filter((col) => !col.autoIncrement);
+        const requiredButEmpty = insertableColumns
+          .filter((col) => {
+            const raw = (insertingRow[col.name] ?? '').trim();
+            const hasInput = raw !== '';
+            const hasDefault =
+              col.defaultValue !== undefined &&
+              col.defaultValue !== null &&
+              String(col.defaultValue).trim() !== '';
+            return !col.nullable && !hasDefault && !hasInput;
+          })
+          .map((col) => col.name);
+
+        if (requiredButEmpty.length > 0) {
+          setToast({
+            message: `新增失败，以下必填字段不能为空：${requiredButEmpty.join(', ')}`,
+            type: 'error'
+          });
+          return;
+        }
+
+        const provided = insertableColumns
+          .map((col) => ({
+            name: col.name,
+            value: normalizeInputValueByColumnType(insertingRow[col.name] ?? '', col.type)
+          }))
+          .filter((item) => item.value !== null);
+
+        if (provided.length > 0) {
+          const colsSql = provided.map((item) => `${quote}${item.name}${quote}`).join(', ');
+          const valsSql = provided.map((item) => formatSqlValue(item.value)).join(', ');
+          sqls.push(`INSERT INTO ${quote}${selectedTable}${quote} (${colsSql}) VALUES (${valsSql})`);
+        }
       }
 
-      const quote = activeConnection.type === 'mysql' ? '`' : '"';
+      const primaryKeyCols = columns.filter(c => c.primaryKey).map(c => c.name);
+      if (hasUpdateOrDeleteChanges && primaryKeyCols.length === 0) {
+        setToast({ message: '无法提交更改：该表没有主键，无法精确定位删除/修改的行。', type: 'error' });
+        return;
+      }
 
       // 1. 处理删除
       for (const rowIdx of Array.from(deletedRows)) {
         const rowData = editOriginalData[rowIdx];
-        const whereClause = primaryKeyCols.map(pk => `${quote}${pk}${quote} = ${formatSqlValue(rowData[pk])}`).join(' AND ');
+        const whereClause = buildSqlWhereByColumns(rowData, primaryKeyCols, quote);
         sqls.push(`DELETE FROM ${quote}${selectedTable}${quote} WHERE ${whereClause}`);
       }
 
@@ -1545,7 +1946,7 @@ const App: React.FC = () => {
         const rowEdits = editingCells[rowIdx];
         const rowData = editOriginalData[rowIdx];
         const setClause = Object.entries(rowEdits).map(([col, val]) => `${quote}${col}${quote} = ${formatSqlValue(val)}`).join(', ');
-        const whereClause = primaryKeyCols.map(pk => `${quote}${pk}${quote} = ${formatSqlValue(rowData[pk])}`).join(' AND ');
+        const whereClause = buildSqlWhereByColumns(rowData, primaryKeyCols, quote);
         sqls.push(`UPDATE ${quote}${selectedTable}${quote} SET ${setClause} WHERE ${whereClause}`);
       }
     }
@@ -1867,6 +2268,48 @@ const App: React.FC = () => {
         }
       }
     });
+  };
+
+  const handleTruncateTable = async (tableName: string) => {
+    if (!activeConnection || activeConnection.type === 'redis') return;
+    confirm({
+      title: '清空表',
+      message: `确定要清空表 "${tableName}" 吗？将删除该表所有数据，但保留表结构。`,
+      type: 'danger',
+      onConfirm: async () => {
+        setLoading(true);
+        try {
+          const quotedTableName = quoteTableNameForQuery(tableName);
+          const sql = activeConnection.type === 'sqlite'
+            ? `DELETE FROM ${quotedTableName}`
+            : `TRUNCATE TABLE ${quotedTableName}`;
+          const result = await window.electronAPI.executeQuery(sql);
+          if (!result.success) {
+            throw new Error(result.error || '清空表失败');
+          }
+
+          // 若当前正在查看该表，清空后刷新数据视图
+          if (selectedTable === tableName) {
+            await handleSelectTable(tableName, 1, pageSize);
+          }
+          setToast({ message: `表 ${tableName} 已清空`, type: 'success' });
+        } catch (err: any) {
+          setToast({ message: err.message || '清空表失败', type: 'error' });
+        } finally {
+          setLoading(false);
+          setContextMenu(null);
+        }
+      }
+    });
+  };
+
+  const handleStartInsertRow = () => {
+    if (!selectedTable || !columns.length || activeConnection?.type === 'redis') return;
+    const initial: Record<string, string> = {};
+    columns.forEach((col) => {
+      if (!col.autoIncrement) initial[col.name] = '';
+    });
+    setInsertingRow(initial);
   };
 
   const handleTableContextMenu = (e: React.MouseEvent, tableName: string) => {
@@ -2540,6 +2983,10 @@ ${JSON.stringify(payload)}
   };
 
   const totalPages = Math.ceil(totalRows / pageSize);
+  const connectingConnectionName = useMemo(
+    () => savedConnections.find((c) => c.id === connectingConnectionId)?.name || '',
+    [savedConnections, connectingConnectionId]
+  );
 
   return (
     <div className="flex h-screen bg-[#f8fafc] text-slate-700 font-sans selection:bg-blue-100 overflow-hidden">
@@ -2602,11 +3049,11 @@ ${JSON.stringify(payload)}
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, scale: 0.95 }}
                         onClick={() => handleConnect(conn)}
-                        className={`group flex items-center justify-between px-3 py-2.5 rounded-xl cursor-pointer transition-all duration-300 relative overflow-hidden ${
+                        className={`group flex items-center justify-between px-3 py-2.5 rounded-xl transition-all duration-300 relative overflow-hidden ${
                           activeConnection?.id === conn.id 
                           ? 'bg-blue-50 text-blue-600 border border-blue-100 shadow-sm' 
                           : 'hover:bg-slate-50 text-slate-600 border border-transparent'
-                        }`}
+                        } ${connectingConnectionId !== null ? 'cursor-not-allowed opacity-85' : 'cursor-pointer'}`}
                       >
                         <div className="flex items-center gap-3 overflow-hidden z-10">
                           <div
@@ -2631,20 +3078,26 @@ ${JSON.stringify(payload)}
                           <motion.button
                             whileHover={{ scale: 1.1, color: '#2563eb' }}
                             onClick={(e) => handleEditConnection(conn, e)}
-                            className="opacity-0 group-hover:opacity-100 p-1.5 hover:bg-blue-50 rounded-lg transition-all text-slate-400"
+                            className="opacity-0 group-hover:opacity-100 p-1.5 hover:bg-blue-50 rounded-lg transition-all text-slate-400 disabled:opacity-30 disabled:cursor-not-allowed"
                             title="修改配置"
+                            disabled={connectingConnectionId !== null}
                           >
                             <Settings size={14} />
                           </motion.button>
                           <motion.button
                             whileHover={{ scale: 1.1, color: '#ef4444' }}
                             onClick={(e) => handleDeleteConnection(conn.id!, e)}
-                            className="opacity-0 group-hover:opacity-100 p-1.5 hover:bg-red-50 rounded-lg transition-all text-slate-400"
+                            className="opacity-0 group-hover:opacity-100 p-1.5 hover:bg-red-50 rounded-lg transition-all text-slate-400 disabled:opacity-30 disabled:cursor-not-allowed"
                             title="删除连接"
+                            disabled={connectingConnectionId !== null}
                           >
                             <Trash2 size={14} />
                           </motion.button>
-                          <ChevronRight size={14} className={`transition-transform duration-300 ${expandedConnections.has(conn.id!) ? 'rotate-90 opacity-100 text-blue-400' : 'opacity-0 group-hover:opacity-40'}`} />
+                          {connectingConnectionId === conn.id ? (
+                            <Loader2 size={14} className="animate-spin text-blue-500" />
+                          ) : (
+                            <ChevronRight size={14} className={`transition-transform duration-300 ${expandedConnections.has(conn.id!) ? 'rotate-90 opacity-100 text-blue-400' : 'opacity-0 group-hover:opacity-40'}`} />
+                          )}
                         </div>
                       </motion.div>
 
@@ -2662,13 +3115,24 @@ ${JSON.stringify(payload)}
                             <div className="px-2">
                               <div className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] mb-3 flex items-center gap-2">
                                 <Layout size={16} /> 数据库
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void loadDatabases();
+                                  }}
+                                  className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold normal-case tracking-normal bg-slate-100 text-slate-600 hover:bg-slate-200"
+                                  title="刷新当前连接数据库列表"
+                                >
+                                  <RefreshCw size={12} />
+                                  刷新
+                                </button>
                                 {activeConnection?.type !== 'sqlite' && activeConnection?.type !== 'redis' && (
                                   <button
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       handleOpenSchemaFilterModal();
                                     }}
-                                    className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold normal-case tracking-normal bg-slate-100 text-slate-600 hover:bg-slate-200"
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold normal-case tracking-normal bg-slate-100 text-slate-600 hover:bg-slate-200"
                                     title="筛选要展示的数据库架构"
                                   >
                                     <Filter size={12} />
@@ -2961,17 +3425,41 @@ ${JSON.stringify(payload)}
                   ref={tableContainerRef}
                   onScroll={(e) => handleContainerScroll(e, 'table')}
                 >
+                  {Object.keys(tableColumnWidths).length > 0 && (
+                    <div className="mb-3 flex items-center justify-between">
+                      <div />
+                      <div>
+                        {Object.keys(tableColumnWidths).length > 0 && (
+                          <button
+                            onClick={resetAllTableColumnWidths}
+                            className="px-3 py-1.5 text-[10px] font-bold rounded-lg bg-white border border-slate-200 text-slate-500 hover:text-blue-600 hover:border-blue-200 hover:bg-blue-50 transition-colors shadow-sm"
+                            title="恢复默认列宽"
+                          >
+                            恢复默认列宽
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
                   <div className="bg-white rounded-3xl border border-slate-200 overflow-hidden shadow-2xl shadow-slate-200/50 backdrop-blur-sm relative">
                     <div className="overflow-x-auto">
                       <table className="w-full border-collapse">
                       <thead>
                         <tr className="bg-slate-50/50 border-b border-slate-100">
                           {columns.map((col) => (
+                            (() => {
+                              const colWidth = tableColumnWidths[col.name];
+                              return (
                             <th
                               key={col.name}
-                              className="px-6 py-5 text-left cursor-pointer hover:bg-slate-100/50 transition-colors group/th"
+                              className="px-6 py-5 text-left cursor-pointer hover:bg-slate-100/50 transition-colors group/th relative"
                               onClick={() => handleSort(col.name)}
                               title={col.comment ? `${col.name}: ${col.comment}` : undefined}
+                              style={
+                                colWidth
+                                  ? { width: colWidth, minWidth: colWidth, maxWidth: colWidth }
+                                  : { maxWidth: TABLE_COL_MAX_WIDTH }
+                              }
                             >
                               <div className="flex flex-col gap-1">
                                 <div className="flex items-center justify-between">
@@ -2984,7 +3472,14 @@ ${JSON.stringify(payload)}
                                 </div>
                                 <span className="text-sm font-bold text-slate-800 tracking-tight">{col.name}</span>
                               </div>
+                              <span
+                                className="absolute top-0 right-0 h-full w-2 cursor-col-resize group-hover/th:bg-blue-200/70"
+                                onMouseDown={(e) => startColumnResize(e, 'table', col.name, colWidth)}
+                                title="拖拽调整列宽"
+                              />
                             </th>
+                              );
+                            })()
                           ))}
                         </tr>
                       </thead>
@@ -3003,6 +3498,35 @@ ${JSON.stringify(payload)}
 
                           return (
                             <>
+                              {insertingRow && activeConnection?.type !== 'redis' && (
+                                <tr className="bg-emerald-50/70 border-b border-emerald-100">
+                                  {columns.map((col) => (
+                                    <td
+                                      key={`insert-${col.name}`}
+                                      className="px-6 py-3 text-sm text-slate-700 border-x border-transparent"
+                                      style={
+                                        tableColumnWidths[col.name]
+                                          ? { width: tableColumnWidths[col.name], minWidth: tableColumnWidths[col.name], maxWidth: tableColumnWidths[col.name] }
+                                          : { maxWidth: TABLE_COL_MAX_WIDTH }
+                                      }
+                                    >
+                                      {col.autoIncrement ? (
+                                        <span className="text-[11px] text-slate-400 italic">AUTO</span>
+                                      ) : (
+                                        <input
+                                          type={getTimeInputType(col.type) || 'text'}
+                                          value={insertingRow[col.name] ?? ''}
+                                          onChange={(e) =>
+                                            setInsertingRow((prev) => ({ ...(prev || {}), [col.name]: e.target.value }))
+                                          }
+                                          placeholder={col.nullable ? 'NULL' : ''}
+                                          className="w-full bg-white border border-emerald-200 rounded-lg px-2.5 py-1.5 text-[13px] font-mono text-slate-700 outline-none focus:ring-2 focus:ring-emerald-500/20"
+                                        />
+                                      )}
+                                    </td>
+                                  ))}
+                                </tr>
+                              )}
                               {paddingTop > 0 && <tr><td colSpan={columns.length} style={{ height: paddingTop }}></td></tr>}
                               {visibleRows.map((row, i) => {
                                 const rowIdx = startIdx + i;
@@ -3027,9 +3551,7 @@ ${JSON.stringify(payload)}
                                       const isCurrentMatch = currentMatchIdx >= 0 && searchMatches[currentMatchIdx]?.rowIdx === rowIdx && searchMatches[currentMatchIdx]?.colName === col.name;
                                       const displayValue = isModified ? editingCells[rowIdx][col.name] : row[col.name];
                                       const value = displayValue;
-                                      const normalizedText = sanitizeDisplayText(value);
-                                      const isLongText = normalizedText.length > RESULT_PREVIEW_LENGTH;
-                                      const finalDisplayValue = isLongText ? normalizedText.substring(0, RESULT_PREVIEW_LENGTH) + '...' : normalizedText;
+                                      const normalizedText = sanitizeDisplayText(value, col.type);
 
                                       return (
                                         <td
@@ -3038,6 +3560,11 @@ ${JSON.stringify(payload)}
                                           data-col-name={col.name}
                                           className={`px-6 py-4 text-sm text-slate-600 border-x border-transparent transition-all ${isModified ? 'bg-yellow-50/50 !text-yellow-700' : ''} ${isEditing ? 'ring-2 ring-blue-500 ring-inset z-10 !bg-white' : ''} ${isCurrentMatch ? 'ring-2 ring-orange-400 ring-inset z-10 bg-orange-50' : ''}`}
                                           onDoubleClick={() => handleCellDoubleClick(rowIdx, col.name, row[col.name])}
+                                          style={
+                                            tableColumnWidths[col.name]
+                                              ? { width: tableColumnWidths[col.name], minWidth: tableColumnWidths[col.name], maxWidth: tableColumnWidths[col.name] }
+                                              : { maxWidth: TABLE_COL_MAX_WIDTH }
+                                          }
                                         >
                                           {isEditing ? (
                                             <input
@@ -3057,34 +3584,29 @@ ${JSON.stringify(payload)}
                                               {value === null ? (
                                                 <span className="text-slate-300 italic font-mono text-xs tracking-tighter">NULL</span>
                                               ) : (
-                                                <div className="flex items-center gap-3">
-                                                  <span className={`truncate max-w-[400px] group-hover:text-slate-900 transition-colors font-mono text-[13px] ${isModified ? 'font-bold' : ''}`}>
+                                                <OverflowPreviewText
+                                                  text={normalizedText}
+                                                  textClassName={`truncate min-w-0 flex-1 group-hover:text-slate-900 transition-colors font-mono text-[13px] ${isModified ? 'font-bold' : ''}`}
+                                                  containerClassName="flex items-center gap-3 min-w-0"
+                                                  buttonClassName="text-blue-500 hover:text-blue-600 p-1.5 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors border border-blue-100"
+                                                  buttonTitle="查看完整内容"
+                                                  buttonSize={10}
+                                                  onPreview={() => {
+                                                    setTextDetail({ content: value, fieldName: col.name });
+                                                    setIsJsonFormatted(false);
+                                                  }}
+                                                >
                                                     {activeSearchTerm && activeSearchRegex ? (
                                                       (() => {
-                                                        const parts = finalDisplayValue.split(activeSearchRegex);
+                                                        const parts = normalizedText.split(activeSearchRegex);
                                                         return parts.map((part, index) =>
                                                           part.toLowerCase() === activeSearchTermLower ? (
                                                             <mark key={index} className="search-hit-mark rounded-sm px-0.5">{part}</mark>
                                                           ) : part
                                                         );
                                                       })()
-                                                    ) : finalDisplayValue}
-                                                  </span>
-                                                  {isLongText && (
-                                                    <motion.button
-                                                      whileHover={{ scale: 1.1 }}
-                                                      whileTap={{ scale: 0.9 }}
-                                                      onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        setTextDetail({ content: value, fieldName: col.name });
-                                                        setIsJsonFormatted(false);
-                                                      }}
-                                                      className="text-blue-500 hover:text-blue-600 p-1.5 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors border border-blue-100"
-                                                    >
-                                                      <Plus size={10} />
-                                                    </motion.button>
-                                                  )}
-                                                </div>
+                                                    ) : normalizedText}
+                                                </OverflowPreviewText>
                                               )}
                                             </>
                                           )}
@@ -3163,7 +3685,18 @@ ${JSON.stringify(payload)}
                   )}
 
                   {data.length === 0 && (
-                    <div className="p-24 text-center">
+                    <div
+                      className="p-24 text-center"
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        setContextMenu({
+                          x: e.clientX,
+                          y: e.clientY,
+                          type: 'row',
+                          target: '-1'
+                        });
+                      }}
+                    >
                       <motion.div
                         initial={{ scale: 0.9, opacity: 0 }}
                         animate={{ scale: 1, opacity: 1 }}
@@ -3274,7 +3807,7 @@ ${JSON.stringify(payload)}
 
               {/* 数据编辑浮动操作条 - 移至此处以确保在滚动时保持固定 */}
                 <AnimatePresence>
-                  {(Object.keys(editingCells).length > 0 || deletedRows.size > 0) && (
+                  {(Object.keys(editingCells).length > 0 || deletedRows.size > 0 || !!insertingRow) && (
                     <motion.div
                       initial={{ y: 50, opacity: 0 }}
                       animate={{ y: 0, opacity: 1 }}
@@ -3292,6 +3825,12 @@ ${JSON.stringify(payload)}
                           <div className="w-2 h-2 bg-red-400 rounded-full" />
                           <span className="text-xs font-bold text-slate-300">
                             {deletedRows.size} 行待删除
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="w-2 h-2 bg-emerald-400 rounded-full" />
+                          <span className="text-xs font-bold text-slate-300">
+                            {insertingRow ? '1 行待新增' : '0 行待新增'}
                           </span>
                         </div>
                       </div>
@@ -3717,6 +4256,15 @@ ${JSON.stringify(payload)}
                         )}
                       </div>
                       <div className="flex items-center gap-3">
+                        {activeConsoleId && Object.keys(resultColumnWidths).some((k) => k.startsWith(`${activeConsoleId}::`)) && (
+                          <button
+                            onClick={() => resetAllResultColumnWidths(activeConsoleId)}
+                            className="text-[10px] font-bold text-slate-500 hover:text-blue-600 bg-white border border-slate-200 hover:border-blue-200 hover:bg-blue-50 px-3 py-1 rounded-full uppercase tracking-widest transition-colors"
+                            title="恢复当前结果表的默认列宽"
+                          >
+                            恢复默认列宽
+                          </button>
+                        )}
                         {activeConsoleId && consoles.find(c => c.id === activeConsoleId)?.hasMore && (
                           <button
                             onClick={() => handleLoadMore(activeConsoleId)}
@@ -3784,9 +4332,28 @@ ${JSON.stringify(payload)}
                                 <table className="w-full border-collapse table-fixed">
                                   <thead>
                                     <tr className="bg-slate-50 sticky top-0 z-10 h-[48px]">
-                                      {activeConsole.columns?.map(col => (
-                                        <th key={col} className="px-4 py-3 text-left text-[10px] font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100 overflow-hidden truncate">{col}</th>
-                                      ))}
+                                      {activeConsole.columns?.map(col => {
+                                        const colKey = `${activeConsoleId ?? 'console'}::${col}`;
+                                        const colWidth = resultColumnWidths[colKey];
+                                        return (
+                                          <th
+                                            key={col}
+                                            className="px-4 py-3 text-left text-[10px] font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100 overflow-hidden truncate relative"
+                                            style={
+                                              colWidth
+                                                ? { width: colWidth, minWidth: colWidth, maxWidth: colWidth }
+                                                : { maxWidth: TABLE_COL_MAX_WIDTH }
+                                            }
+                                          >
+                                            {col}
+                                            <span
+                                              className="absolute top-0 right-0 h-full w-2 cursor-col-resize hover:bg-blue-200/70"
+                                              onMouseDown={(e) => startColumnResize(e, 'results', colKey, colWidth)}
+                                              title="拖拽调整列宽"
+                                            />
+                                          </th>
+                                        );
+                                      })}
                                     </tr>
                                   </thead>
                                   <tbody className="divide-y divide-slate-50">
@@ -3798,8 +4365,6 @@ ${JSON.stringify(payload)}
                                           {activeConsole.columns?.map(col => {
                                             const rawValue = row[col];
                                             const cellText = sanitizeDisplayText(rawValue);
-                                            const isLongText = cellText.length > RESULT_PREVIEW_LENGTH;
-                                            const displayText = isLongText ? `${cellText.substring(0, RESULT_PREVIEW_LENGTH)}...` : cellText;
                                             return (
                                               <td
                                                 key={col}
@@ -3811,15 +4376,34 @@ ${JSON.stringify(payload)}
                                                   setTextDetail({ content: rawValue, fieldName: col });
                                                   setIsJsonFormatted(false);
                                                 }}
+                                                style={
+                                                  resultColumnWidths[`${activeConsoleId ?? 'console'}::${col}`]
+                                                    ? {
+                                                        width: resultColumnWidths[`${activeConsoleId ?? 'console'}::${col}`],
+                                                        minWidth: resultColumnWidths[`${activeConsoleId ?? 'console'}::${col}`],
+                                                        maxWidth: resultColumnWidths[`${activeConsoleId ?? 'console'}::${col}`]
+                                                      }
+                                                    : { maxWidth: TABLE_COL_MAX_WIDTH }
+                                                }
                                               >
                                                 {rawValue === null ? (
                                                   <span className="text-slate-300 italic font-mono text-xs tracking-tighter">NULL</span>
                                                 ) : (
-                                                  <div className="flex items-center gap-3 overflow-hidden">
-                                                    <span className="truncate max-w-[400px] font-mono text-[13px]">
+                                                  <OverflowPreviewText
+                                                    text={cellText}
+                                                    textClassName="truncate min-w-0 flex-1 font-mono text-[13px]"
+                                                    containerClassName="flex items-center gap-3 overflow-hidden min-w-0"
+                                                    buttonClassName="flex-shrink-0 text-blue-500 hover:text-blue-600 p-1 bg-blue-50 hover:bg-blue-100 rounded transition-colors border border-blue-100"
+                                                    buttonTitle="查看完整内容（也可双击单元格）"
+                                                    buttonSize={8}
+                                                    onPreview={() => {
+                                                      setTextDetail({ content: rawValue, fieldName: col });
+                                                      setIsJsonFormatted(false);
+                                                    }}
+                                                  >
                                                       {activeSearchTerm && activeSearchRegex ? (
                                                         (() => {
-                                                          const parts = displayText.split(activeSearchRegex);
+                                                          const parts = cellText.split(activeSearchRegex);
                                                           return parts.map((part, index) =>
                                                             part.toLowerCase() === activeSearchTermLower ? (
                                                               <mark key={index} className="search-hit-mark rounded-sm px-0.5">{part}</mark>
@@ -3827,25 +4411,9 @@ ${JSON.stringify(payload)}
                                                           );
                                                         })()
                                                       ) : (
-                                                        displayText
+                                                        cellText
                                                       )}
-                                                    </span>
-                                                    {isLongText && (
-                                                      <motion.button
-                                                        whileHover={{ scale: 1.1 }}
-                                                        whileTap={{ scale: 0.9 }}
-                                                        onClick={(e) => {
-                                                          e.stopPropagation();
-                                                          setTextDetail({ content: rawValue, fieldName: col });
-                                                          setIsJsonFormatted(false);
-                                                        }}
-                                                        className="flex-shrink-0 text-blue-500 hover:text-blue-600 p-1 bg-blue-50 hover:bg-blue-100 rounded transition-colors border border-blue-100"
-                                                        title="查看完整内容（也可双击单元格）"
-                                                      >
-                                                        <Plus size={8} />
-                                                      </motion.button>
-                                                    )}
-                                                  </div>
+                                                  </OverflowPreviewText>
                                                 )}
                                               </td>
                                             );
@@ -4020,6 +4588,17 @@ ${JSON.stringify(payload)}
             )}
           </AnimatePresence>
         </main>
+
+        {connectingConnectionId !== null && (
+          <div className="absolute inset-0 z-40 bg-white/45 backdrop-blur-[1px] flex items-center justify-center">
+            <div className="px-5 py-4 rounded-2xl bg-white border border-slate-200 shadow-xl flex items-center gap-3 text-slate-700">
+              <Loader2 size={18} className="animate-spin text-blue-600" />
+              <div className="text-sm font-semibold">
+                正在连接 {connectingConnectionName || '目标连接'}，请稍候...
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Modals with AnimatePresence */}
@@ -4409,21 +4988,112 @@ ${JSON.stringify(payload)}
                   </div>
                   <div>
                     <h3 className="font-bold text-2xl text-slate-900 tracking-tight">{textDetail.fieldName}</h3>
-                    <p className="text-[10px] text-slate-400 mt-1 font-bold uppercase tracking-widest">详细内容预览</p>
+                    <p className="text-[10px] text-slate-400 mt-1 font-bold uppercase tracking-widest">
+                      详细内容预览
+                      <span className="font-normal normal-case tracking-normal text-slate-400/80 ml-2">Ctrl+F 查找</span>
+                    </p>
                   </div>
                 </div>
-                <motion.button
-                  whileHover={{ rotate: 90, scale: 1.1 }}
-                  onClick={() => setTextDetail(null)}
-                  className="w-12 h-12 flex items-center justify-center bg-slate-100 hover:bg-slate-200 rounded-full text-slate-400 transition-colors"
-                >
-                  <X size={24} />
-                </motion.button>
+                <div className="flex items-center gap-2 shrink-0">
+                  {textDetailSearchVisible && (
+                    <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white shadow-sm pl-1.5 pr-1 py-0.5">
+                      <Search size={12} className="text-slate-400 shrink-0" />
+                      <input
+                        ref={textDetailSearchInputRef}
+                        value={textDetailSearchTerm}
+                        onChange={(e) => setTextDetailSearchTerm(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Escape') {
+                            e.stopPropagation();
+                            setTextDetailSearchVisible(false);
+                            return;
+                          }
+                          if (!textDetailMatches.length) return;
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            setTextDetailMatchIndex((prev) => (prev + 1) % textDetailMatches.length);
+                          }
+                        }}
+                        placeholder="查找"
+                        className="w-[5.5rem] text-[11px] bg-transparent outline-none text-slate-700 placeholder:text-slate-400"
+                      />
+                      <span className="text-[9px] text-slate-400 tabular-nums px-0.5 min-w-[1.75rem] text-center">
+                        {textDetailMatches.length ? `${textDetailMatchIndex + 1}/${textDetailMatches.length}` : '—'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!textDetailMatches.length) return;
+                          setTextDetailMatchIndex((prev) => (prev - 1 + textDetailMatches.length) % textDetailMatches.length);
+                        }}
+                        disabled={!textDetailMatches.length}
+                        className="w-5 h-5 rounded border border-slate-200/80 text-slate-500 hover:text-blue-600 hover:border-blue-200/80 disabled:opacity-35 disabled:cursor-not-allowed flex items-center justify-center"
+                        title="上一个"
+                      >
+                        <ArrowUp size={10} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!textDetailMatches.length) return;
+                          setTextDetailMatchIndex((prev) => (prev + 1) % textDetailMatches.length);
+                        }}
+                        disabled={!textDetailMatches.length}
+                        className="w-5 h-5 rounded border border-slate-200/80 text-slate-500 hover:text-blue-600 hover:border-blue-200/80 disabled:opacity-35 disabled:cursor-not-allowed flex items-center justify-center"
+                        title="下一个"
+                      >
+                        <ArrowDown size={10} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTextDetailSearchVisible(false);
+                          setTextDetailSearchTerm('');
+                        }}
+                        className="w-5 h-5 rounded text-slate-400 hover:text-slate-600 hover:bg-slate-100 flex items-center justify-center"
+                        title="关闭查找"
+                      >
+                        <X size={10} />
+                      </button>
+                    </div>
+                  )}
+                  <motion.button
+                    whileHover={{ rotate: 90, scale: 1.1 }}
+                    onClick={() => setTextDetail(null)}
+                    className="w-12 h-12 flex items-center justify-center bg-slate-100 hover:bg-slate-200 rounded-full text-slate-400 transition-colors"
+                  >
+                    <X size={24} />
+                  </motion.button>
+                </div>
               </div>
               <div className="p-10 overflow-y-auto custom-scrollbar flex-1">
                 <div className="bg-slate-50 rounded-3xl p-8 border border-slate-200 shadow-inner">
                   <pre className="whitespace-pre-wrap break-all text-[15px] leading-relaxed text-slate-700 font-mono selection:bg-blue-100">
-                    {isJsonFormatted ? formatJson(textDetail.content) : (typeof textDetail.content === 'object' ? JSON.stringify(textDetail.content) : textDetail.content)}
+                    {(() => {
+                      const keyword = textDetailSearchTerm.trim();
+                      if (!keyword) return textDetailDisplayText;
+                      const regex = new RegExp(`(${escapeRegExp(keyword)})`, 'gi');
+                      const parts = textDetailDisplayText.split(regex);
+                      let hitIndex = -1;
+                      textDetailMatchRefs.current = [];
+                      return parts.map((part, index) => {
+                        if (part.toLowerCase() !== keyword.toLowerCase()) return part;
+                        hitIndex += 1;
+                        const isActive = hitIndex === textDetailMatchIndex;
+                        const currentHit = hitIndex;
+                        return (
+                          <mark
+                            key={`hit-${index}`}
+                            ref={(el) => {
+                              textDetailMatchRefs.current[currentHit] = el;
+                            }}
+                            className={isActive ? 'bg-amber-300 text-slate-900 rounded px-0.5' : 'bg-yellow-200 text-slate-900 rounded px-0.5'}
+                          >
+                            {part}
+                          </mark>
+                        );
+                      });
+                    })()}
                   </pre>
                 </div>
               </div>
@@ -4468,12 +5138,24 @@ ${JSON.stringify(payload)}
             onClose={() => setContextMenu(null)}
             options={
               contextMenu.type === 'row' ? [
-                {
-                  label: deletedRows.has(parseInt(contextMenu.target)) ? '取消删除' : '删除行',
-                  icon: <Trash2 size={14} />,
-                  onClick: () => handleLocalRowDelete(parseInt(contextMenu.target)),
-                  danger: !deletedRows.has(parseInt(contextMenu.target))
-                }
+                ...(activeConnection?.type !== 'redis' ? [
+                  {
+                    label: insertingRow ? '取消添加行' : '添加行',
+                    icon: <Plus size={14} />,
+                    onClick: () => {
+                      if (insertingRow) setInsertingRow(null);
+                      else handleStartInsertRow();
+                    }
+                  }
+                ] : []),
+                ...(parseInt(contextMenu.target, 10) >= 0 ? [
+                  {
+                    label: deletedRows.has(parseInt(contextMenu.target, 10)) ? '取消删除' : '删除行',
+                    icon: <Trash2 size={14} />,
+                    onClick: () => handleLocalRowDelete(parseInt(contextMenu.target, 10)),
+                    danger: !deletedRows.has(parseInt(contextMenu.target, 10))
+                  }
+                ] : [])
               ] : contextMenu.type === 'console' ? [
                 {
                   label: '重命名',
@@ -4609,6 +5291,12 @@ ${JSON.stringify(payload)}
                     label: '修改表结构',
                     icon: <Activity size={14} />,
                     onClick: () => handleOpenSchemaModal(contextMenu.target)
+                  },
+                  {
+                    label: '清空表',
+                    icon: <Trash2 size={14} />,
+                    onClick: () => handleTruncateTable(contextMenu.target),
+                    danger: true
                   },
                   {
                     label: '重命名',
