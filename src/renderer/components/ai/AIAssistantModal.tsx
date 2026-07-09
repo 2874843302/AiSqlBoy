@@ -39,7 +39,7 @@ const AIAssistantModal: React.FC<AIAssistantModalProps> = ({
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="absolute inset-0 bg-slate-900/10 backdrop-blur-[2px] pointer-events-auto"
+              className="absolute inset-0 bg-slate-900/10 pointer-events-auto"
             />
             <motion.div
               initial={{ scale: 0.9, opacity: 0, y: 20 }}

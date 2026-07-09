@@ -1,5 +1,5 @@
-﻿import React, { useState, useEffect, useMemo } from 'react'
-import { Database, Table, Play, Plus, Trash2, X, Server, HardDrive, RefreshCw, ChevronRight, Layout, Settings, Activity, AlignLeft, Bot, Sparkles, Send, Loader2, Key, Search, ArrowUp, ArrowDown, FileJson, Save, Terminal, Download, CheckCircle2, Filter } from 'lucide-react'
+import React, { useState, useEffect, useMemo } from 'react'
+import { Database, Table, Play, Plus, Trash2, X, Server, HardDrive, RefreshCw, ChevronRight, Layout, Settings, Activity, AlignLeft, Bot, Sparkles, Send, Loader2, Key, Search, ArrowUp, ArrowDown, FileJson, Save, Terminal, Download, CheckCircle2, Filter, Star, Copy } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ConnectionConfig } from '../shared/types'
 import { AI_SETTING_KEYS } from '../shared/aiSettings'
@@ -44,6 +44,14 @@ const getTimeInputType = (type: string): 'datetime-local' | 'date' | 'time' | nu
   if (t.includes('DATE')) return 'date';
   if (t.includes('TIME')) return 'time';
   return null;
+};
+
+/** 判断列类型是否为布尔类型 */
+const isBooleanType = (type: string): boolean => {
+  if (!type) return false;
+  const t = type.toUpperCase();
+  // MySQL: tinyint(1), boolean; PostgreSQL: boolean, bool; SQL Server: bit; Oracle: number(1) 也常作布尔
+  return t.includes('BOOL') || t === 'TINYINT(1)' || t === 'BIT';
 };
 
 // 辅助函数：格式化时间值为 input 要求的格式
@@ -192,6 +200,9 @@ const App: React.FC = () => {
 
   // Context Menu State
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, type: 'table' | 'database' | 'row' | 'console', target: string } | null>(null);
+
+  // 表置顶：被置顶的表在左侧列表优先显示
+  const [pinnedTables, setPinnedTables] = useState<Set<string>>(new Set());
   const [pendingSqlScriptTarget, setPendingSqlScriptTarget] = useState<{
     scope: 'database' | 'table';
     dbName: string;
@@ -261,7 +272,6 @@ const App: React.FC = () => {
   const [textDetailMatchIndex, setTextDetailMatchIndex] = useState(0);
   const [textDetailSearchVisible, setTextDetailSearchVisible] = useState(false);
   const textDetailSearchInputRef = React.useRef<HTMLInputElement>(null);
-  const textDetailMatchRefs = React.useRef<(HTMLElement | null)[]>([]);
   const [rowLimit, setRowLimit] = useState(10000); // 新增：大数据量限制行数
   const [useVirtualScroll] = useState(true); // 是否开启虚拟滚动
   const ROW_HEIGHT = 48; // 预估行高
@@ -280,6 +290,8 @@ const App: React.FC = () => {
     }
   };
 
+  const escapeRegExp = (input: string) => input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
   const formatJson = (val: any) => {
     try {
       if (typeof val === 'string') {
@@ -289,6 +301,61 @@ const App: React.FC = () => {
     } catch (e) {
       return String(val);
     }
+  };
+
+  /**
+   * 将 JSON 字符串按语法着色为 JSX 元素。
+   * 支持高亮：key、string、number、boolean、null、punctuation
+   */
+  const renderJsonSyntax = (jsonStr: string): React.ReactNode => {
+    // 正则匹配 JSON 的各个 token
+    // 顺序很重要：先匹配 string（含 key），再 number、boolean、null
+    const tokenRegex = /("(?:[^"\\]|\\.)*"\s*:)|("(?:[^"\\]|\\.)*")|(-?\d+\.?\d*(?:[eE][+-]?\d+)?)\b|\b(true|false)\b|\b(null)\b/g;
+    const parts: React.ReactNode[] = [];
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+    let keyCounter = 0;
+
+    while ((match = tokenRegex.exec(jsonStr)) !== null) {
+      // 前面的普通文本（标点、空白）
+      if (match.index > lastIndex) {
+        parts.push(jsonStr.slice(lastIndex, match.index));
+      }
+
+      const [full, keyPart, strPart, numPart, boolPart, nullPart] = match;
+
+      if (keyPart) {
+        // key: "keyName":
+        parts.push(
+          <span key={`k-${keyCounter++}`} className="json-key">{keyPart}</span>
+        );
+      } else if (strPart) {
+        parts.push(
+          <span key={`s-${keyCounter++}`} className="json-string">{strPart}</span>
+        );
+      } else if (numPart) {
+        parts.push(
+          <span key={`n-${keyCounter++}`} className="json-number">{numPart}</span>
+        );
+      } else if (boolPart) {
+        parts.push(
+          <span key={`b-${keyCounter++}`} className="json-boolean">{boolPart}</span>
+        );
+      } else if (nullPart) {
+        parts.push(
+          <span key={`nl-${keyCounter++}`} className="json-null">{nullPart}</span>
+        );
+      }
+
+      lastIndex = match.index + full.length;
+    }
+
+    // 尾部普通文本
+    if (lastIndex < jsonStr.length) {
+      parts.push(jsonStr.slice(lastIndex));
+    }
+
+    return parts;
   };
 
   const textDetailDisplayText = useMemo(() => {
@@ -315,6 +382,37 @@ const App: React.FC = () => {
     return indices;
   }, [textDetailDisplayText, textDetailSearchTerm]);
 
+  /** 搜索高亮后的 JSX 内容，独立 memo 避免每次输入都重建 React 元素 */
+  const textDetailHighlightedContent = useMemo(() => {
+    if (!textDetailDisplayText) return null;
+    const keyword = textDetailSearchTerm.trim();
+    // 无搜索关键词时：JSON 格式化则语法着色，否则原文
+    if (!keyword) {
+      if (isJsonFormatted && isJsonLike(textDetail?.content)) {
+        return renderJsonSyntax(textDetailDisplayText);
+      }
+      return textDetailDisplayText;
+    }
+    // 有搜索关键词时：先做 JSON 着色再叠加搜索高亮太复杂，直接用纯文本搜索高亮
+    const regex = new RegExp(`(${escapeRegExp(keyword)})`, 'gi');
+    const parts = textDetailDisplayText.split(regex);
+    let hitIndex = -1;
+    return parts.map((part, index) => {
+      if (part.toLowerCase() !== keyword.toLowerCase()) return part;
+      hitIndex += 1;
+      const isActive = hitIndex === textDetailMatchIndex;
+      return (
+        <mark
+          key={`hit-${index}`}
+          data-hit-idx={hitIndex}
+          className={`text-detail-modal-mark ${isActive ? 'bg-amber-300 text-slate-900' : 'bg-yellow-200 text-slate-900'} rounded px-0.5`}
+        >
+          {part}
+        </mark>
+      );
+    });
+  }, [textDetailDisplayText, textDetailSearchTerm, textDetailMatchIndex, isJsonFormatted, textDetail]);
+
   useEffect(() => {
     setTextDetailMatchIndex(0);
   }, [textDetailSearchTerm, textDetailDisplayText]);
@@ -329,8 +427,9 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (!textDetailMatches.length) return;
-    const node = textDetailMatchRefs.current[textDetailMatchIndex];
-    node?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    const marks = document.querySelectorAll<HTMLElement>('.text-detail-modal-mark');
+    const target = marks[textDetailMatchIndex];
+    target?.scrollIntoView({ block: 'center', behavior: 'smooth' });
   }, [textDetailMatchIndex, textDetailMatches.length]);
 
   const formatDateForDisplay = (date: Date, colType?: string) => {
@@ -386,7 +485,6 @@ const App: React.FC = () => {
     }
   };
 
-  const escapeRegExp = (input: string) => input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   // Pagination State
   const [pageSize, setPageSize] = useState(20);
   const [currentPage, setCurrentPage] = useState(1);
@@ -395,6 +493,10 @@ const App: React.FC = () => {
 
   // Sorting State
   const [sortConfig, setSortConfig] = useState<{ column: string; direction: 'ASC' | 'DESC' | null }>({ column: '', direction: null });
+
+  // Column Filter State (per-column text filter for the data table)
+  const [columnFilters, setColumnFilters] = useState<Record<string, string>>({});
+  const [activeFilterCol, setActiveFilterCol] = useState<string | null>(null);
 
   // Layout State
   const [sidebarWidth, setSidebarWidth] = useState(320);
@@ -1172,6 +1274,33 @@ const App: React.FC = () => {
     }
   }
 
+  /** 从持久化存储中加载当前连接的置顶表列表 */
+  const loadPinnedTables = async () => {
+    if (!activeConnection?.id) return;
+    const raw = await window.electronAPI.getSetting(`pinned_tables_${activeConnection.id}`);
+    if (raw) {
+      try {
+        const list = JSON.parse(raw);
+        if (Array.isArray(list)) setPinnedTables(new Set(list));
+      } catch { /* ignore */ }
+    }
+  };
+
+  /** 切换表的置顶状态（非阻塞） */
+  const togglePinTable = (tableName: string) => {
+    if (!activeConnection?.id) return;
+    const next = new Set(pinnedTables);
+    if (next.has(tableName)) {
+      next.delete(tableName);
+    } else {
+      next.add(tableName);
+    }
+    setPinnedTables(next);
+    // 异步写入持久化
+    window.electronAPI.saveSetting(`pinned_tables_${activeConnection.id}`, JSON.stringify([...next]))
+      .catch((err: any) => console.error('保存置顶表失败:', err));
+  };
+
   const handleConnect = async (config: ConnectionConfig) => {
     if (connectingConnectionId !== null) return;
     // 当前连接支持折叠/展开
@@ -1289,6 +1418,9 @@ const App: React.FC = () => {
         // Load consoles for this connection
         await loadConsoles(config.id);
 
+        // 加载当前连接的置顶表列表
+        await loadPinnedTables();
+
         // 如果配置中已经指定了数据库，则自动选择
         if (config.type === 'sqlite') {
           handleSelectDatabase('main')
@@ -1306,6 +1438,7 @@ const App: React.FC = () => {
         setSelectedTable(null)
         setData([])
         setColumns([])
+        setColumnFilters({})
       } else {
         await restorePreviousConnectionView();
         setToast({ message: result.error || '连接失败', type: 'error' })
@@ -1368,6 +1501,7 @@ const App: React.FC = () => {
         setTables(tableList)
         setSelectedTable(null)
         setSortConfig({ column: '', direction: null })
+        setColumnFilters({})
         setData([])
         setColumns([])
 
@@ -1390,6 +1524,8 @@ const App: React.FC = () => {
     setCurrentPage(page);
     setLoading(true)
     setTableExecutionTime(null);
+    setColumnFilters({});
+    setActiveFilterCol(null);
     try {
       const offset = (page - 1) * size;
       const startTime = Date.now();
@@ -1700,8 +1836,22 @@ const App: React.FC = () => {
 
     if (timeInputType && value) {
       setEditValue(formatTimeForInput(value, timeInputType));
+    } else if (col && col.type && isBooleanType(col.type)) {
+      // 布尔字段：将 1/true 映射为 "true"，0/false 映射为 "false"，null 映射为空
+      if (value === null || value === undefined) {
+        setEditValue('');
+      } else if (value === true || value === 1 || value === '1' || value === 'true' || value === 'TRUE' || value === 'T') {
+        setEditValue('true');
+      } else {
+        setEditValue('false');
+      }
+    } else if (value === null || value === undefined) {
+      setEditValue('');
+    } else if (typeof value === 'object') {
+      // 对象/数组使用 JSON.stringify，避免 toString 返回 "[object Object]" 或丢掉方括号
+      setEditValue(JSON.stringify(value));
     } else {
-      setEditValue(value === null ? '' : value.toString());
+      setEditValue(String(value));
     }
   };
 
@@ -1729,6 +1879,19 @@ const App: React.FC = () => {
       }
     }
 
+    // 处理布尔类型：将 "true"/"false" 字符串转为对应的数据库值
+    if (finalValue !== null) {
+      const col = columns.find(c => c.name === colName);
+      if (col && col.type && isBooleanType(col.type)) {
+        // MySQL tinyint(1)/bit → 1/0，PostgreSQL boolean → true/false
+        if (finalValue === 'true') {
+          finalValue = col.type.toUpperCase() === 'BOOLEAN' || col.type.toUpperCase() === 'BOOL' ? true : 1;
+        } else if (finalValue === 'false') {
+          finalValue = col.type.toUpperCase() === 'BOOLEAN' || col.type.toUpperCase() === 'BOOL' ? false : 0;
+        }
+      }
+    }
+
     // 检查是否真的有变化
     const originalValue = editOriginalData[rowIdx][colName];
 
@@ -1738,8 +1901,10 @@ const App: React.FC = () => {
     } else if (finalValue === null) {
       isChanged = originalValue !== null;
     } else {
-      // 时间字符串比对时，可能需要归一化，但目前简单字符串比对能处理大部分情况
-      isChanged = finalValue.toString() !== originalValue.toString();
+      // 将两边统一转为字符串再比较，对象/数组使用 JSON.stringify
+      const finalStr = finalValue === null ? '' : (typeof finalValue === 'object' ? JSON.stringify(finalValue) : String(finalValue));
+      const origStr = originalValue === null ? '' : (typeof originalValue === 'object' ? JSON.stringify(originalValue) : String(originalValue));
+      isChanged = finalStr !== origStr;
     }
 
     if (isChanged) {
@@ -1788,7 +1953,11 @@ const App: React.FC = () => {
   const formatSqlValue = (val: any) => {
     if (val === null || val === undefined) return 'NULL';
     if (typeof val === 'number') return val;
-    return `'${val.toString().replace(/'/g, "''")}'`;
+    // 布尔值：PostgreSQL 用 TRUE/FALSE，其他用 1/0
+    if (typeof val === 'boolean') return val ? '1' : '0';
+    // 对象/数组使用 JSON.stringify，避免 toString 返回 "[object Object]"
+    const str = typeof val === 'object' ? JSON.stringify(val) : String(val);
+    return `'${str.replace(/'/g, "''")}'`;
   };
 
   const quoteIdentifier = (name: string) => {
@@ -1806,6 +1975,11 @@ const App: React.FC = () => {
     const raw = input.trim();
     if (raw === '') return null;
     const t = (colType || '').toUpperCase();
+    // 布尔类型："true"/"false" 字符串转对应的数据库值
+    if (isBooleanType(t)) {
+      if (raw === 'true') return t === 'BOOLEAN' || t === 'BOOL' ? true : 1;
+      if (raw === 'false') return t === 'BOOLEAN' || t === 'BOOL' ? false : 0;
+    }
     const isNumeric =
       t.includes('INT') || t.includes('DECIMAL') || t.includes('NUMERIC') || t.includes('FLOAT') ||
       t.includes('DOUBLE') || t.includes('REAL') || t.includes('BIT');
@@ -1834,7 +2008,8 @@ const App: React.FC = () => {
 
   const formatRedisValue = (val: any) => {
     if (val === null || val === undefined) return '""';
-    return `"${val.toString().replace(/"/g, '\\"')}"`;
+    const str = typeof val === 'object' ? JSON.stringify(val) : String(val);
+    return `"${str.replace(/"/g, '\\"')}"`;
   };
 
   // Submit all changes to database
@@ -2983,6 +3158,45 @@ ${JSON.stringify(payload)}
   };
 
   const totalPages = Math.ceil(totalRows / pageSize);
+
+  // ---- Column Filter: compute filtered rows with original index tracking ----
+  const hasActiveFilters = Object.values(columnFilters).some((v) => v && v.trim());
+
+  const filteredData = useMemo(() => {
+    if (!hasActiveFilters) {
+      return data.map((row, idx) => ({ row, originalIdx: idx }));
+    }
+    const filters = Object.entries(columnFilters)
+      .filter(([, v]) => v && v.trim())
+      .map(([col, val]) => ({ col, lower: val.trim().toLowerCase() }));
+    return data
+      .map((row, idx) => ({ row, originalIdx: idx }))
+      .filter(({ row }) =>
+        filters.every(({ col, lower }) => {
+          const cellText = sanitizeDisplayText(row[col]).toLowerCase();
+          return cellText.includes(lower);
+        })
+      );
+  }, [data, columnFilters, hasActiveFilters]);
+
+  // Close filter popover when clicking outside
+  useEffect(() => {
+    if (!activeFilterCol) return;
+    const handler = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest('[data-filter-popover]') && !target.closest('[data-filter-toggle]')) {
+        setActiveFilterCol(null);
+      }
+    };
+    // delay to avoid the same click that opened it
+    const timer = setTimeout(() => document.addEventListener('mousedown', handler), 0);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('mousedown', handler);
+    };
+  }, [activeFilterCol]);
+  // ---------------------------------------------------------------------------
+
   const connectingConnectionName = useMemo(
     () => savedConnections.find((c) => c.id === connectingConnectionId)?.name || '',
     [savedConnections, connectingConnectionId]
@@ -3182,7 +3396,15 @@ ${JSON.stringify(payload)}
                                           transition={{ duration: 0.2, ease: "easeInOut" }}
                                           className="ml-4 pl-2 border-l border-slate-100 py-1 space-y-1 overflow-hidden"
                                         >
-                                          {tables.map((table) => (
+                                          {[...tables].sort((a, b) => {
+                                            // 置顶表排在前，其余按字母序
+                                            const aPinned = pinnedTables.has(a.name) ? 0 : 1;
+                                            const bPinned = pinnedTables.has(b.name) ? 0 : 1;
+                                            if (aPinned !== bPinned) return aPinned - bPinned;
+                                            return a.name.localeCompare(b.name);
+                                          }).map((table) => {
+                                            const isPinned = pinnedTables.has(table.name);
+                                            return (
                                             <motion.button
                                               whileHover={{ boxShadow: '0 4px 12px rgba(0, 0, 0, 0.05)' }}
                                               key={table.name}
@@ -3194,7 +3416,9 @@ ${JSON.stringify(payload)}
                                               className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-left transition-all duration-200 ${
                                                 selectedTable === table.name 
                                                 ? 'bg-blue-600 text-white shadow-md' 
-                                                : 'hover:bg-slate-50 text-slate-500 hover:text-slate-700'
+                                                : isPinned
+                                                  ? 'text-slate-600 border border-slate-200/60'
+                                                  : 'hover:bg-slate-50 text-slate-500 hover:text-slate-700'
                                               }`}
                                             >
                                               {activeConnection?.type === 'redis' ? (
@@ -3202,9 +3426,13 @@ ${JSON.stringify(payload)}
                                               ) : (
                                                 <Table size={16} className={`flex-shrink-0 ${selectedTable === table.name ? 'text-blue-100' : 'text-slate-400'}`} />
                                               )}
-                                              <span className="truncate font-semibold">{table.name}</span>
+                                              <span className={`truncate font-semibold ${isPinned ? 'text-inherit' : ''}`}>{table.name}</span>
+                                              {isPinned && (
+                                                <Star size={12} className={`flex-shrink-0 ml-auto ${selectedTable === table.name ? 'text-blue-200' : 'text-amber-400'}`} fill="currentColor" />
+                                              )}
                                             </motion.button>
-                                          ))}
+                                            );
+                                          })}
                                           {tables.length === 0 && (
                                             <div className="px-3 py-2 text-[10px] text-slate-400 italic">
                                               {activeConnection?.type === 'redis' ? '暂无 Key' : '暂无数据表'}
@@ -3428,7 +3656,20 @@ ${JSON.stringify(payload)}
                   {Object.keys(tableColumnWidths).length > 0 && (
                     <div className="mb-3 flex items-center justify-between">
                       <div />
-                      <div>
+                      <div className="flex items-center gap-2">
+                        {hasActiveFilters && (
+                          <button
+                            onClick={() => setColumnFilters({})}
+                            className="px-3 py-1.5 text-[10px] font-bold rounded-lg bg-blue-50 border border-blue-200 text-blue-600 hover:bg-blue-100 hover:border-blue-300 transition-colors shadow-sm flex items-center gap-1.5"
+                            title="清除所有列筛选"
+                          >
+                            <Filter size={11} />
+                            清除筛选
+                            <span className="bg-blue-200 text-blue-700 rounded-full px-1.5 text-[9px] leading-none py-0.5">
+                              {Object.values(columnFilters).filter((v) => v && v.trim()).length}
+                            </span>
+                          </button>
+                        )}
                         {Object.keys(tableColumnWidths).length > 0 && (
                           <button
                             onClick={resetAllTableColumnWidths}
@@ -3446,10 +3687,12 @@ ${JSON.stringify(payload)}
                       <table className="w-full border-collapse">
                       <thead>
                         <tr className="bg-slate-50/50 border-b border-slate-100">
-                          {columns.map((col) => (
-                            (() => {
-                              const colWidth = tableColumnWidths[col.name];
-                              return (
+                          {columns.map((col) => {
+                            const colWidth = tableColumnWidths[col.name];
+                            const filterVal = columnFilters[col.name] || '';
+                            const isFilterActive = !!filterVal;
+                            const isFilterOpen = activeFilterCol === col.name;
+                            return (
                             <th
                               key={col.name}
                               className="px-6 py-5 text-left cursor-pointer hover:bg-slate-100/50 transition-colors group/th relative"
@@ -3464,37 +3707,148 @@ ${JSON.stringify(payload)}
                               <div className="flex flex-col gap-1">
                                 <div className="flex items-center justify-between">
                                   <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{col.type}</span>
-                                  <div className={`transition-all duration-300 ${sortConfig.column === col.name ? 'opacity-100' : 'opacity-0 group-hover/th:opacity-30'}`}>
-                                    {sortConfig.column === col.name && sortConfig.direction === 'ASC' && <ChevronRight size={12} className="-rotate-90 text-blue-500" />}
-                                    {sortConfig.column === col.name && sortConfig.direction === 'DESC' && <ChevronRight size={12} className="rotate-90 text-blue-500" />}
-                                    {sortConfig.column !== col.name && <RefreshCw size={10} className="text-slate-400" />}
+                                  <div className="flex items-center gap-1">
+                                    {/* Filter toggle button */}
+                                    <button
+                                      data-filter-toggle
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setActiveFilterCol(isFilterOpen ? null : col.name);
+                                      }}
+                                      className={`p-0.5 rounded transition-all ${
+                                        isFilterActive
+                                          ? 'text-blue-500 opacity-100'
+                                          : isFilterOpen
+                                            ? 'text-blue-500 opacity-100'
+                                            : 'text-slate-300 opacity-0 group-hover/th:opacity-100'
+                                      } hover:bg-blue-100/60`}
+                                      title="筛选此列"
+                                    >
+                                      <Filter size={11} fill={isFilterActive ? 'currentColor' : 'none'} />
+                                    </button>
+                                    <div className={`transition-all duration-300 ${sortConfig.column === col.name ? 'opacity-100' : 'opacity-0 group-hover/th:opacity-30'}`}>
+                                      {sortConfig.column === col.name && sortConfig.direction === 'ASC' && <ChevronRight size={12} className="-rotate-90 text-blue-500" />}
+                                      {sortConfig.column === col.name && sortConfig.direction === 'DESC' && <ChevronRight size={12} className="rotate-90 text-blue-500" />}
+                                      {sortConfig.column !== col.name && <RefreshCw size={10} className="text-slate-400" />}
+                                    </div>
                                   </div>
                                 </div>
-                                <span className="text-sm font-bold text-slate-800 tracking-tight">{col.name}</span>
+                                <span className="text-sm font-bold text-slate-800 tracking-tight flex items-center gap-1.5">
+                                  {col.name}
+                                  {col.primaryKey && (
+                                    <span className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-amber-100 text-amber-700 text-[10px] font-extrabold tracking-wide leading-none shadow-sm">PK</span>
+                                  )}
+                                  {isFilterActive && (
+                                    <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-blue-100 text-blue-600 text-[9px] font-bold leading-none">
+                                      <Filter size={8} fill="currentColor" />
+                                      {filterVal.length > 8 ? filterVal.slice(0, 8) + '…' : filterVal}
+                                    </span>
+                                  )}
+                                </span>
                               </div>
+
+                              {/* Filter popover */}
+                              <AnimatePresence>
+                                {isFilterOpen && (
+                                  <motion.div
+                                    data-filter-popover
+                                    initial={{ opacity: 0, y: -4, scale: 0.96 }}
+                                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                                    exit={{ opacity: 0, y: -4, scale: 0.96 }}
+                                    transition={{ duration: 0.15 }}
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="absolute top-full left-0 mt-1 z-30 w-52 bg-white rounded-xl border border-slate-200 shadow-2xl shadow-slate-300/40 p-3"
+                                  >
+                                    <div className="flex items-center gap-2 mb-2">
+                                      <Filter size={12} className="text-blue-500 flex-shrink-0" />
+                                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest truncate">筛选 {col.name}</span>
+                                    </div>
+                                    <div className="relative">
+                                      <input
+                                        autoFocus
+                                        type="text"
+                                        value={filterVal}
+                                        onChange={(e) =>
+                                          setColumnFilters((prev) => {
+                                            const next = { ...prev };
+                                            if (e.target.value) {
+                                              next[col.name] = e.target.value;
+                                            } else {
+                                              delete next[col.name];
+                                            }
+                                            return next;
+                                          })
+                                        }
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Escape') setActiveFilterCol(null);
+                                          if (e.key === 'Enter') setActiveFilterCol(null);
+                                        }}
+                                        placeholder="输入筛选文本…"
+                                        className={`w-full text-xs font-medium pl-3 pr-7 py-2 rounded-lg border outline-none transition-all ${
+                                          isFilterActive
+                                            ? 'border-blue-300 bg-blue-50/50 text-blue-700 focus:ring-2 focus:ring-blue-500/20'
+                                            : 'border-slate-200 bg-white text-slate-600 placeholder:text-slate-300 focus:border-blue-300 focus:ring-2 focus:ring-blue-500/10'
+                                        }`}
+                                      />
+                                      {isFilterActive && (
+                                        <button
+                                          onClick={() => {
+                                            setColumnFilters((prev) => {
+                                              const next = { ...prev };
+                                              delete next[col.name];
+                                              return next;
+                                            });
+                                          }}
+                                          className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-red-500 transition-colors"
+                                        >
+                                          <X size={13} />
+                                        </button>
+                                      )}
+                                    </div>
+                                    {isFilterActive && (
+                                      <div className="flex items-center justify-between mt-2">
+                                        <span className="text-[10px] text-slate-400">匹配 {filteredData.length} 条</span>
+                                        <button
+                                          onClick={() => {
+                                            setColumnFilters((prev) => {
+                                              const next = { ...prev };
+                                              delete next[col.name];
+                                              return next;
+                                            });
+                                            setActiveFilterCol(null);
+                                          }}
+                                          className="text-[10px] font-bold text-blue-500 hover:text-blue-600 transition-colors"
+                                        >
+                                          清除
+                                        </button>
+                                      </div>
+                                    )}
+                                  </motion.div>
+                                )}
+                              </AnimatePresence>
+
                               <span
                                 className="absolute top-0 right-0 h-full w-2 cursor-col-resize group-hover/th:bg-blue-200/70"
                                 onMouseDown={(e) => startColumnResize(e, 'table', col.name, colWidth)}
                                 title="拖拽调整列宽"
                               />
                             </th>
-                              );
-                            })()
-                          ))}
+                            );
+                          })}
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-50">
                         {(() => {
-                          const shouldVirtualize = useVirtualScroll && data.length > 80;
+                          const shouldVirtualize = useVirtualScroll && filteredData.length > 80;
                           const visibleRowsCount = Math.max(1, Math.ceil((tableViewportHeight || ROW_HEIGHT * 10) / ROW_HEIGHT));
                           const overscanRows = visibleRowsCount; // 默认上下各预渲染 1 屏
                           const startIdx = shouldVirtualize ? Math.max(0, Math.floor(tableScrollTop / ROW_HEIGHT) - overscanRows) : 0;
                           const endIdx = shouldVirtualize
-                            ? Math.min(data.length, Math.floor((tableScrollTop + (tableViewportHeight || 0)) / ROW_HEIGHT) + overscanRows)
-                            : data.length;
-                          const visibleRows = data.slice(startIdx, endIdx);
+                            ? Math.min(filteredData.length, Math.floor((tableScrollTop + (tableViewportHeight || 0)) / ROW_HEIGHT) + overscanRows)
+                            : filteredData.length;
+                          const visibleRows = filteredData.slice(startIdx, endIdx);
                           const paddingTop = shouldVirtualize ? startIdx * ROW_HEIGHT : 0;
-                          const paddingBottom = shouldVirtualize ? Math.max(0, (data.length - endIdx) * ROW_HEIGHT) : 0;
+                          const paddingBottom = shouldVirtualize ? Math.max(0, (filteredData.length - endIdx) * ROW_HEIGHT) : 0;
 
                           return (
                             <>
@@ -3512,6 +3866,18 @@ ${JSON.stringify(payload)}
                                     >
                                       {col.autoIncrement ? (
                                         <span className="text-[11px] text-slate-400 italic">AUTO</span>
+                                      ) : isBooleanType(col.type) ? (
+                                        <select
+                                          className="w-full bg-white border border-emerald-200 rounded-lg px-2.5 py-1.5 text-[13px] font-mono text-slate-700 outline-none focus:ring-2 focus:ring-emerald-500/20"
+                                          value={insertingRow[col.name] ?? ''}
+                                          onChange={(e) =>
+                                            setInsertingRow((prev) => ({ ...(prev || {}), [col.name]: e.target.value }))
+                                          }
+                                        >
+                                          <option value="">{col.nullable ? 'NULL' : '—'}</option>
+                                          <option value="true">true</option>
+                                          <option value="false">false</option>
+                                        </select>
                                       ) : (
                                         <input
                                           type={getTimeInputType(col.type) || 'text'}
@@ -3528,8 +3894,9 @@ ${JSON.stringify(payload)}
                                 </tr>
                               )}
                               {paddingTop > 0 && <tr><td colSpan={columns.length} style={{ height: paddingTop }}></td></tr>}
-                              {visibleRows.map((row, i) => {
-                                const rowIdx = startIdx + i;
+                              {visibleRows.map((item, i) => {
+                                const rowIdx = item.originalIdx;
+                                const row = item.row;
                                 const isDeleted = deletedRows.has(rowIdx);
                                 return (
                                   <tr
@@ -3567,18 +3934,36 @@ ${JSON.stringify(payload)}
                                           }
                                         >
                                           {isEditing ? (
-                                            <input
-                                              type={getTimeInputType(col.type) || 'text'}
-                                              autoFocus
-                                              className="w-full bg-transparent outline-none font-mono text-[13px] text-blue-600"
-                                              value={editValue}
-                                              onChange={(e) => setEditValue(e.target.value)}
-                                              onBlur={handleCellEditCommit}
-                                              onKeyDown={(e) => {
-                                                if (e.key === 'Enter') handleCellEditCommit();
-                                                if (e.key === 'Escape') setEditingCellCoord(null);
-                                              }}
-                                            />
+                                            isBooleanType(col.type) ? (
+                                              <select
+                                                autoFocus
+                                                className="w-full bg-transparent outline-none font-mono text-[13px] text-blue-600"
+                                                value={editValue}
+                                                onChange={(e) => setEditValue(e.target.value)}
+                                                onBlur={handleCellEditCommit}
+                                                onKeyDown={(e) => {
+                                                  if (e.key === 'Enter') handleCellEditCommit();
+                                                  if (e.key === 'Escape') setEditingCellCoord(null);
+                                                }}
+                                              >
+                                                <option value="">{col.nullable ? 'NULL' : '—'}</option>
+                                                <option value="true">true</option>
+                                                <option value="false">false</option>
+                                              </select>
+                                            ) : (
+                                              <input
+                                                type={getTimeInputType(col.type) || 'text'}
+                                                autoFocus
+                                                className="w-full bg-transparent outline-none font-mono text-[13px] text-blue-600"
+                                                value={editValue}
+                                                onChange={(e) => setEditValue(e.target.value)}
+                                                onBlur={handleCellEditCommit}
+                                                onKeyDown={(e) => {
+                                                  if (e.key === 'Enter') handleCellEditCommit();
+                                                  if (e.key === 'Escape') setEditingCellCoord(null);
+                                                }}
+                                              />
+                                            )
                                           ) : (
                                             <>
                                               {value === null ? (
@@ -3592,9 +3977,9 @@ ${JSON.stringify(payload)}
                                                   buttonTitle="查看完整内容"
                                                   buttonSize={10}
                                                   onPreview={() => {
-                                                    setTextDetail({ content: value, fieldName: col.name });
-                                                    setIsJsonFormatted(false);
-                                                  }}
+                                                      setTextDetail({ content: value, fieldName: col.name });
+                                                      setIsJsonFormatted(true); // JSON 默认格式化
+                                                    }}
                                                 >
                                                     {activeSearchTerm && activeSearchRegex ? (
                                                       (() => {
@@ -3624,12 +4009,40 @@ ${JSON.stringify(payload)}
                     </table>
                   </div>
 
+                  {/* No results after filter */}
+                  {data.length > 0 && filteredData.length === 0 && (
+                    <div className="p-16 text-center">
+                      <motion.div
+                        initial={{ scale: 0.9, opacity: 0 }}
+                        animate={{ scale: 1, opacity: 1 }}
+                        className="inline-flex flex-col items-center"
+                      >
+                        <div className="w-16 h-16 bg-blue-50 rounded-2xl flex items-center justify-center mb-4 border border-blue-100">
+                          <Filter size={24} className="text-blue-300" />
+                        </div>
+                        <h4 className="text-base font-bold text-slate-400 tracking-tight">未匹配到数据</h4>
+                        <p className="text-sm text-slate-400 mt-1.5">当前筛选条件下没有数据，请调整或清除筛选</p>
+                        <button
+                          onClick={() => setColumnFilters({})}
+                          className="mt-4 px-4 py-2 text-xs font-bold rounded-lg bg-blue-50 border border-blue-200 text-blue-600 hover:bg-blue-100 hover:border-blue-300 transition-colors"
+                        >
+                          清除所有筛选
+                        </button>
+                      </motion.div>
+                    </div>
+                  )}
+
                   {/* Pagination Controls */}
                   {data.length > 0 && (
                     <div className="px-6 py-4 border-t border-slate-100 bg-slate-50/50 flex items-center justify-between">
                       <div className="flex items-center gap-4">
                         <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">
                           共 {totalRows} 条数据
+                          {hasActiveFilters && (
+                            <span className="ml-1 text-blue-500 normal-case font-bold tracking-normal">
+                              · 筛选后 {filteredData.length} 条
+                            </span>
+                          )}
                         </span>
                         {tableExecutionTime !== null && (
                           <>
@@ -4374,7 +4787,7 @@ ${JSON.stringify(payload)}
                                                 onDoubleClick={() => {
                                                   if (rawValue === null || rawValue === undefined) return;
                                                   setTextDetail({ content: rawValue, fieldName: col });
-                                                  setIsJsonFormatted(false);
+                                                  setIsJsonFormatted(true); // JSON 默认格式化
                                                 }}
                                                 style={
                                                   resultColumnWidths[`${activeConsoleId ?? 'console'}::${col}`]
@@ -4398,7 +4811,7 @@ ${JSON.stringify(payload)}
                                                     buttonSize={8}
                                                     onPreview={() => {
                                                       setTextDetail({ content: rawValue, fieldName: col });
-                                                      setIsJsonFormatted(false);
+                                                      setIsJsonFormatted(true); // JSON 默认格式化
                                                     }}
                                                   >
                                                       {activeSearchTerm && activeSearchRegex ? (
@@ -4610,7 +5023,7 @@ ${JSON.stringify(payload)}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setShowConsoleRenameModal(false)}
-              className="absolute inset-0 bg-slate-900/20 backdrop-blur-md"
+              className="absolute inset-0 bg-slate-900/20"
             />
             <motion.div
               initial={{ scale: 0.9, opacity: 0, y: 20 }}
@@ -4684,7 +5097,7 @@ ${JSON.stringify(payload)}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setShowAddModal(false)}
-              className="absolute inset-0 bg-slate-900/20 backdrop-blur-md"
+              className="absolute inset-0 bg-slate-900/20"
             />
             <motion.div
               initial={{ scale: 0.9, opacity: 0, y: 20 }}
@@ -4873,7 +5286,7 @@ ${JSON.stringify(payload)}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setShowSchemaFilterModal(false)}
-              className="absolute inset-0 bg-slate-900/25 backdrop-blur-sm"
+              className="absolute inset-0 bg-slate-900/25"
             />
             <motion.div
               initial={{ scale: 0.95, opacity: 0, y: 20 }}
@@ -4973,7 +5386,7 @@ ${JSON.stringify(payload)}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setTextDetail(null)}
-              className="absolute inset-0 bg-slate-900/40 backdrop-blur-xl"
+              className="absolute inset-0 bg-slate-900/40"
             />
             <motion.div
               initial={{ scale: 0.9, opacity: 0, y: 30 }}
@@ -5067,33 +5480,36 @@ ${JSON.stringify(payload)}
                 </div>
               </div>
               <div className="p-10 overflow-y-auto custom-scrollbar flex-1">
-                <div className="bg-slate-50 rounded-3xl p-8 border border-slate-200 shadow-inner">
-                  <pre className="whitespace-pre-wrap break-all text-[15px] leading-relaxed text-slate-700 font-mono selection:bg-blue-100">
-                    {(() => {
-                      const keyword = textDetailSearchTerm.trim();
-                      if (!keyword) return textDetailDisplayText;
-                      const regex = new RegExp(`(${escapeRegExp(keyword)})`, 'gi');
-                      const parts = textDetailDisplayText.split(regex);
-                      let hitIndex = -1;
-                      textDetailMatchRefs.current = [];
-                      return parts.map((part, index) => {
-                        if (part.toLowerCase() !== keyword.toLowerCase()) return part;
-                        hitIndex += 1;
-                        const isActive = hitIndex === textDetailMatchIndex;
-                        const currentHit = hitIndex;
-                        return (
-                          <mark
-                            key={`hit-${index}`}
-                            ref={(el) => {
-                              textDetailMatchRefs.current[currentHit] = el;
-                            }}
-                            className={isActive ? 'bg-amber-300 text-slate-900 rounded px-0.5' : 'bg-yellow-200 text-slate-900 rounded px-0.5'}
-                          >
-                            {part}
-                          </mark>
-                        );
-                      });
-                    })()}
+                <div className="bg-slate-50 rounded-3xl p-8 border border-slate-200 shadow-inner relative">
+                  {/* Copy button */}
+                  <button
+                    onClick={async () => {
+                      try {
+                        if (navigator.clipboard?.writeText) {
+                          await navigator.clipboard.writeText(textDetailDisplayText);
+                        } else {
+                          const textarea = document.createElement('textarea');
+                          textarea.value = textDetailDisplayText;
+                          textarea.style.position = 'fixed';
+                          textarea.style.opacity = '0';
+                          document.body.appendChild(textarea);
+                          textarea.focus();
+                          textarea.select();
+                          document.execCommand('copy');
+                          document.body.removeChild(textarea);
+                        }
+                        setToast({ message: '已复制到剪贴板', type: 'success' });
+                      } catch (err: any) {
+                        setToast({ message: err?.message || '复制失败', type: 'error' });
+                      }
+                    }}
+                    className="absolute top-4 right-4 z-10 w-9 h-9 flex items-center justify-center rounded-xl bg-white border border-slate-200 text-slate-400 hover:text-blue-600 hover:border-blue-200 hover:bg-blue-50 shadow-sm transition-all"
+                    title="一键复制"
+                  >
+                    <Copy size={15} />
+                  </button>
+                  <pre className="whitespace-pre-wrap break-all text-[15px] leading-relaxed text-slate-700 font-mono selection:bg-blue-100 text-detail-modal">
+                    {textDetailHighlightedContent}
                   </pre>
                 </div>
               </div>
@@ -5269,6 +5685,12 @@ ${JSON.stringify(payload)}
                   icon: <Layout size={14} className="text-blue-600" />,
                   onClick: () => setErLanguagePickTable(contextMenu.target)
                 },
+                // 表置顶切换
+                {
+                  label: pinnedTables.has(contextMenu.target) ? '取消置顶' : '置顶',
+                  icon: <Star size={14} className={pinnedTables.has(contextMenu.target) ? 'text-amber-400' : 'text-slate-400'} fill={pinnedTables.has(contextMenu.target) ? 'currentColor' : 'none'} />,
+                  onClick: () => togglePinTable(contextMenu.target),
+                },
                 {
                   label: '刷新列表',
                   icon: <RefreshCw size={14} />,
@@ -5328,7 +5750,7 @@ ${JSON.stringify(payload)}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setShowSettings(false)}
-              className="absolute inset-0 bg-slate-900/20 backdrop-blur-md"
+              className="absolute inset-0 bg-slate-900/20"
             />
             <motion.div
               initial={{ scale: 0.9, opacity: 0, y: 20 }}
@@ -5643,7 +6065,7 @@ ${JSON.stringify(payload)}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setShowUpdateModal(false)}
-              className="absolute inset-0 bg-slate-900/40 backdrop-blur-md"
+              className="absolute inset-0 bg-slate-900/40"
             />
             <motion.div
               initial={{ scale: 0.9, opacity: 0, y: 20 }}
@@ -5802,7 +6224,7 @@ ${JSON.stringify(payload)}
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="absolute inset-0 bg-slate-900/30 backdrop-blur-sm"
+              className="absolute inset-0 bg-slate-900/30"
               onClick={() => setErLanguagePickTable(null)}
             />
             <motion.div
@@ -5859,7 +6281,7 @@ ${JSON.stringify(payload)}
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="absolute inset-0 bg-slate-900/30 backdrop-blur-sm"
+              className="absolute inset-0 bg-slate-900/30"
               onClick={() => setErSchemaLanguagePickDb(null)}
             />
             <motion.div
@@ -5920,7 +6342,7 @@ ${JSON.stringify(payload)}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setShowRenameModal(false)}
-              className="absolute inset-0 bg-slate-900/20 backdrop-blur-md"
+              className="absolute inset-0 bg-slate-900/20"
             />
             <motion.div
               initial={{ scale: 0.9, opacity: 0, y: 20 }}
@@ -5991,7 +6413,7 @@ ${JSON.stringify(payload)}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setShowSchemaModal(false)}
-              className="absolute inset-0 bg-slate-900/20 backdrop-blur-md"
+              className="absolute inset-0 bg-slate-900/20"
             />
             <motion.div
               initial={{ scale: 0.95, opacity: 0, y: 20 }}
@@ -6359,7 +6781,7 @@ ${JSON.stringify(payload)}
       {/* Load Console Modal */}
       <AnimatePresence>
         {showLoadConsoleModal && (
-          <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-md z-[100] flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-slate-900/40 z-[100] flex items-center justify-center p-4">
             <motion.div
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}

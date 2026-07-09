@@ -27,8 +27,10 @@ export const AI_VENDOR_LIST: { id: AiVendorId; label: string; baseUrl: string }[
 
 export const AI_VENDOR_MODELS: Record<AiVendorId, AiModelOption[]> = {
   deepseek: [
-    { value: 'deepseek-chat', label: 'deepseek-chat' },
-    { value: 'deepseek-reasoner', label: 'deepseek-reasoner' },
+    { value: 'deepseek-v4-pro', label: 'DeepSeek-V4-Pro（旗舰版）' },
+    { value: 'deepseek-v4-flash', label: 'DeepSeek-V4-Flash（高效版）' },
+    { value: 'deepseek-chat', label: 'deepseek-chat（即将弃用 → V4-Flash）' },
+    { value: 'deepseek-reasoner', label: 'deepseek-reasoner（即将弃用 → V4-Flash 思考模式）' },
   ],
   qwen: [
     { value: 'qwen-plus', label: 'qwen-plus' },

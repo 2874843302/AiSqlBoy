@@ -39,7 +39,7 @@ const ConfirmModal: React.FC<ConfirmModalProps> = ({
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={onCancel}
-            className="absolute inset-0 bg-slate-900/20 backdrop-blur-sm"
+            className="absolute inset-0 bg-slate-900/20"
           />
           <motion.div
             initial={{ scale: 0.9, opacity: 0, y: 20 }}

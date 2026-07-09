@@ -1,0 +1,30 @@
+import type { ConnectionConfig, TableInfo, ColumnInfo, IndexInfo } from '../../../shared/types';
+
+export interface IDatabaseDriver {
+  connect(): Promise<void>;
+  disconnect(): Promise<void>;
+  getDatabases(): Promise<string[]>;
+  useDatabase(dbName: string): Promise<void>;
+  getTables(): Promise<TableInfo[]>;
+  getTableColumns(tableName: string): Promise<ColumnInfo[]>;
+  getTableIndexes(tableName: string): Promise<IndexInfo[]>;
+  getTableData(tableName: string, limit?: number, offset?: number, orderBy?: string, orderDir?: 'ASC' | 'DESC'): Promise<{ data: any[], total: number }>;
+  renameTable(oldName: string, newName: string): Promise<void>;
+  deleteTable(tableName: string): Promise<void>;
+  createTable(tableName: string, columns: ColumnInfo[], indexes?: IndexInfo[]): Promise<void>;
+  updateTableSchema(tableName: string, changes: {
+    added: ColumnInfo[];
+    modified: { oldName: string; column: ColumnInfo }[];
+    removed: string[];
+    indexes?: {
+      added: IndexInfo[];
+      removed: string[];
+    };
+  }): Promise<void>;
+  exportDatabase(includeData: boolean): Promise<string>;
+  deleteDatabase(dbName: string): Promise<void>;
+  executeQuery(sql: string): Promise<{ data: any[], columns: string[] }>;
+  ping(): Promise<void>;
+}
+
+export type { ConnectionConfig, TableInfo, ColumnInfo, IndexInfo };

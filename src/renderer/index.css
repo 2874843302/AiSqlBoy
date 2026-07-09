@@ -179,3 +179,142 @@ body[data-theme='dark'] .search-hit-mark {
   background-color: #f59e0b;
   color: #0b1220;
 }
+
+/* --------- Dark theme: sidebar & table list polish --------- */
+/* 侧边栏及主内容区背景 */
+body[data-theme='dark'] [class*='h-screen'][class*='bg-\\[\\#f8fafc\\]'] {
+  background-color: #020617 !important;
+}
+/* 侧边栏所有浅色背景元素统一样式 */
+body[data-theme='dark'] [class*='border-r'][class*='border-slate-200'] {
+  background-color: #0c1222 !important;
+}
+/* 侧边栏头部渐变去掉浅色 */
+body[data-theme='dark'] [class*='border-b'][class*='border-slate-100'] {
+  border-bottom-color: rgba(148, 163, 184, 0.08) !important;
+}
+body[data-theme='dark'] [class*='bg-gradient-to-b'] {
+  background-image: linear-gradient(to bottom, rgba(15, 23, 42, 0.6), transparent) !important;
+}
+/* 连接卡片 — 未选中 */
+body[data-theme='dark'] [class*='rounded-xl']:not([class*='bg-blue-50']) {
+  border-color: rgba(148, 163, 184, 0.08) !important;
+}
+body[data-theme='dark'] [class*='rounded-xl']:not([class*='bg-blue-50']):hover {
+  background-color: #172033 !important;
+  border-color: rgba(148, 163, 184, 0.16) !important;
+}
+/* 连接卡片 — 已连接展开态 */
+body[data-theme='dark'] [class*='bg-blue-50'] {
+  background-color: rgba(59, 130, 246, 0.12) !important;
+  border-color: rgba(59, 130, 246, 0.2) !important;
+}
+body[data-theme='dark'] [class*='bg-blue-50'] [class*='text-blue'] {
+  color: #60a5fa !important;
+}
+/* 数据库图标圆点 — 未连接 */
+body[data-theme='dark'] [class*='bg-slate-400'] {
+  background-color: #475569 !important;
+}
+/* 表列表左侧竖线 */
+body[data-theme='dark'] [class*='border-l'][class*='border-slate-100'] {
+  border-left-color: rgba(148, 163, 184, 0.10) !important;
+}
+/* 数据库名称 */
+body[data-theme='dark'] [class*='text-slate-700'] {
+  color: #e2e8f0 !important;
+}
+/* 表按钮 — 普通未选中：增加默认底色与 sidebar 区分 */
+body[data-theme='dark'] [class*='ml-4'] [class*='rounded-lg']:not([class*='bg-blue-600']):not([class*='border-slate-200']) {
+  color: #94a3b8 !important;
+  background-color: rgba(255, 255, 255, 0.02) !important;
+}
+body[data-theme='dark'] [class*='ml-4'] [class*='rounded-lg']:not([class*='bg-blue-600']):not([class*='border-slate-200']):hover {
+  background-color: rgba(59, 130, 246, 0.08) !important;
+  color: #e2e8f0 !important;
+}
+/* 表按钮 — 置顶态 hover 统一使用蓝色底 */
+body[data-theme='dark'] [class*='ml-4'] [class*='rounded-lg'][class*='border-slate-200']:hover {
+  background-color: rgba(59, 130, 246, 0.08) !important;
+  border-color: rgba(59, 130, 246, 0.2) !important;
+}
+/* 表按钮 — 选中态 (bg-blue-600) */
+body[data-theme='dark'] [class*='rounded-lg'][class*='bg-blue-600'] {
+  background-color: #2563eb !important;
+  box-shadow: 0 2px 12px rgba(37, 99, 235, 0.25) !important;
+}
+/* 表按钮 — 置顶态（有边框） */
+body[data-theme='dark'] [class*='rounded-lg'][class*='border-slate-200'] {
+  border-color: rgba(148, 163, 184, 0.16) !important;
+  background-color: rgba(255, 255, 255, 0.03) !important;
+}
+body[data-theme='dark'] [class*='rounded-lg'][class*='border-slate-200']:hover {
+  background-color: #172033 !important;
+}
+/* 置顶星标 */
+body[data-theme='dark'] [class*='text-amber-400'] {
+  color: #fbbf24 !important;
+}
+/* 数据表图标颜色 */
+body[data-theme='dark'] [class*='text-slate-400'] {
+  color: #64748b !important;
+}
+
+/* --------- Dark theme: Toast notification polish --------- */
+body[data-theme='dark'] .toast-glass[class*='bg-red-50/'] {
+  background-color: rgba(69, 10, 10, 0.6) !important;
+  border-color: rgba(239, 68, 68, 0.15) !important;
+}
+body[data-theme='dark'] .toast-glass[class*='bg-emerald-50/'] {
+  background-color: rgba(2, 44, 34, 0.6) !important;
+  border-color: rgba(16, 185, 129, 0.15) !important;
+}
+body[data-theme='dark'] .toast-glass[class*='bg-blue-50/'] {
+  background-color: rgba(23, 37, 84, 0.6) !important;
+  border-color: rgba(59, 130, 246, 0.15) !important;
+}
+body[data-theme='dark'] .toast-glass .text-red-900 {
+  color: #fca5a5 !important;
+}
+body[data-theme='dark'] .toast-glass .text-emerald-900 {
+  color: #6ee7b7 !important;
+}
+body[data-theme='dark'] .toast-glass .text-blue-900 {
+  color: #93c5fd !important;
+}
+
+/* --------- Dark theme: column filter popover --------- */
+body[data-theme='dark'] [data-filter-popover] {
+  background-color: #0f172a !important;
+  border-color: rgba(148, 163, 184, 0.15) !important;
+}
+body[data-theme='dark'] [data-filter-popover] input[type="text"] {
+  background-color: rgba(15, 23, 42, 0.6) !important;
+  border-color: rgba(148, 163, 184, 0.12) !important;
+  color: #e2e8f0 !important;
+}
+body[data-theme='dark'] [data-filter-popover] input[type="text"]::placeholder {
+  color: #475569 !important;
+}
+body[data-theme='dark'] [data-filter-popover] input[type="text"]:focus {
+  border-color: rgba(59, 130, 246, 0.4) !important;
+}
+body[data-theme='dark'] [data-filter-popover] input[type="text"].border-blue-300 {
+  background-color: rgba(30, 58, 138, 0.3) !important;
+  border-color: rgba(59, 130, 246, 0.3) !important;
+  color: #93c5fd !important;
+}
+
+/* --------- JSON syntax highlighting (light mode) --------- */
+.json-key { color: #6366f1; font-weight: 600; }       /* indigo-500 */
+.json-string { color: #059669; }                        /* emerald-600 */
+.json-number { color: #d97706; }                        /* amber-600 */
+.json-boolean { color: #dc2626; font-weight: 600; }    /* red-600 */
+.json-null { color: #6b7280; font-style: italic; }     /* gray-500 */
+
+/* --------- JSON syntax highlighting (dark mode) --------- */
+body[data-theme='dark'] .json-key { color: #818cf8; }        /* indigo-400 */
+body[data-theme='dark'] .json-string { color: #34d399; }     /* emerald-400 */
+body[data-theme='dark'] .json-number { color: #fbbf24; }     /* amber-400 */
+body[data-theme='dark'] .json-boolean { color: #f87171; }    /* red-400 */
+body[data-theme='dark'] .json-null { color: #9ca3af; }       /* gray-400 */

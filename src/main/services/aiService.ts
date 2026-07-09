@@ -3,7 +3,7 @@ import { defaultModelForVendor, getVendorBaseUrl, type AiVendorId } from '../../
 import { internalDB } from './internalDB';
 
 const LEGACY_CHAT_URL = 'https://api.deepseek.com/chat/completions';
-const LEGACY_MODEL = 'deepseek-chat';
+const LEGACY_MODEL = 'deepseek-v4-pro';
 
 /** 将用户填写的 Base URL 规范为 …/chat/completions */
 export function resolveOpenAiCompatibleChatUrl(baseUrlRaw: string): string {
