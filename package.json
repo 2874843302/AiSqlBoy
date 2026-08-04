@@ -1,13 +1,18 @@
 {
   "name": "aisqlboy",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "",
   "main": "dist-electron/main/index.js",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build && electron-builder",
+    "build:win": "tsc && vite build && electron-builder --win",
+    "build:mac": "tsc && vite build && electron-builder --mac",
     "publish": "tsc && vite build && electron-builder --publish always",
-    "preview": "vite preview"
+    "publish:win": "tsc && vite build && electron-builder --win --publish always",
+    "publish:mac": "tsc && vite build && electron-builder --mac --publish always",
+    "preview": "vite preview",
+    "postinstall": "electron-builder install-app-deps"
   },
   "repository": {
     "type": "git",
@@ -38,6 +43,13 @@
       "icon": "src/assets/app.ico",
       "target": [
         "nsis"
+      ]
+    },
+    "mac": {
+      "icon": "src/assets/app.icns",
+      "target": [
+        "dmg",
+        "zip"
       ]
     },
     "nsis": {

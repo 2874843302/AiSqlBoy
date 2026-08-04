@@ -1,2 +1,15 @@
 /node_modules/
 /.idea/
+
+# Build output
+/dist/
+/dist-electron/
+
+# Release output
+/release1.0/
+
+# Cursor skills & novel data
+/.cursor/
+
+# Dev config
+/dev-app-update.yml
