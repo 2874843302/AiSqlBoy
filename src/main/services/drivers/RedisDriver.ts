@@ -114,7 +114,7 @@ export class RedisDriver implements IDatabaseDriver {
     await this.client.flushDb();
   }
 
-  async executeQuery(sql: string): Promise<{ data: any[], columns: string[] }> {
+  async executeQuery(sql: string): Promise<{ data: any[], columns: string[], affectedRows?: number }> {
     if (!this.client) throw new Error('Not connected');
     
     // 解析 Redis 命令，支持引号包裹的参数

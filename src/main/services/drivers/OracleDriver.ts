@@ -291,7 +291,7 @@ export class OracleDriver implements IDatabaseDriver {
     throw new Error('Oracle 不支持在此删除整个 schema，请在数据库中手动操作');
   }
 
-  async executeQuery(sql: string): Promise<{ data: any[]; columns: string[] }> {
+  async executeQuery(sql: string): Promise<{ data: any[]; columns: string[]; affectedRows?: number }> {
     if (!this.connection) throw new Error('Not connected');
     try {
       const result = await this.connection.execute(sql, [], { autoCommit: true });
@@ -307,6 +307,7 @@ export class OracleDriver implements IDatabaseDriver {
           },
         ],
         columns: ['结果', '影响行数'],
+        affectedRows: result.rowsAffected ?? 0,
       };
     } catch (error: any) {
       const isConn =
@@ -324,6 +325,7 @@ export class OracleDriver implements IDatabaseDriver {
           return {
             data: [{ 结果: '执行成功', 影响行数: result.rowsAffected ?? 0 }],
             columns: ['结果', '影响行数'],
+            affectedRows: result.rowsAffected ?? 0,
           };
         } catch (reconnectError: any) {
           throw new Error(`连接已断开且重连失败: ${reconnectError.message}`);

@@ -241,7 +241,7 @@ export class MySQLDriver implements IDatabaseDriver {
     await this.connection.query(`DROP DATABASE ${dbName}`);
   }
 
-  private processResults(results: any, fields: any): { data: any[], columns: string[] } {
+  private processResults(results: any, fields: any): { data: any[], columns: string[], affectedRows?: number } {
     // 1. 处理多语句执行的情况
     // 在多语句模式下，如果执行的是多条非查询语句，fields 可能是 undefined 或者一个包含多个 undefined 的数组
     if (Array.isArray(results) && (fields === undefined || Array.isArray(fields))) {
@@ -280,7 +280,8 @@ export class MySQLDriver implements IDatabaseDriver {
 
         return {
           data: allData,
-          columns: allData.length > 0 ? Object.keys(allData[0]) : ['结果']
+          columns: allData.length > 0 ? Object.keys(allData[0]) : ['结果'],
+          affectedRows: (multiResults as any[]).reduce((sum, res) => sum + (res.affectedRows !== undefined ? res.affectedRows : 0), 0)
         };
       }
     }
@@ -296,7 +297,8 @@ export class MySQLDriver implements IDatabaseDriver {
           插入ID: header.insertId || 0,
           信息: header.info || header.message || ''
         }], 
-        columns: ['结果', '影响行数', '插入ID', '信息'] 
+        columns: ['结果', '影响行数', '插入ID', '信息'],
+        affectedRows: header.affectedRows || 0
       };
     }
     
@@ -306,7 +308,7 @@ export class MySQLDriver implements IDatabaseDriver {
     return { data: Array.isArray(results) ? results : [], columns };
   }
 
-  async executeQuery(sql: string): Promise<{ data: any[], columns: string[] }> {
+  async executeQuery(sql: string): Promise<{ data: any[], columns: string[], affectedRows?: number }> {
     if (!this.connection) throw new Error('Not connected');
     try {
       const [results, fields] = await this.connection.query(sql);

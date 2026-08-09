@@ -53,6 +53,26 @@ export class InternalDBService {
           createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
         )
       `);
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS agent_conversations (
+          id TEXT PRIMARY KEY,
+          connection_id INTEGER NOT NULL,
+          title TEXT NOT NULL DEFAULT '新会话',
+          messages TEXT NOT NULL DEFAULT '[]',
+          selected_db TEXT,
+          selected_table TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_agent_conv_conn ON agent_conversations(connection_id)');
+      // 迁移：为旧表添加新列
+      this.db.run('ALTER TABLE agent_conversations ADD COLUMN selected_db TEXT', (err: any) => {
+        if (err && !String(err.message || '').includes('duplicate column name')) console.error(err);
+      });
+      this.db.run('ALTER TABLE agent_conversations ADD COLUMN selected_table TEXT', (err: any) => {
+        if (err && !String(err.message || '').includes('duplicate column name')) console.error(err);
+      });
     });
   }
 
@@ -192,6 +212,71 @@ export class InternalDBService {
       this.db.run('DELETE FROM connections WHERE id = ?', id, (err) => {
         if (err) reject(err);
         else resolve();
+      });
+    });
+  }
+
+  // ============================================================
+  //  Agent 会话持久化
+  // ============================================================
+
+  /** 保存/更新 Agent 会话 */
+  saveAgentConversation(conv: {
+    id: string;
+    connection_id: number;
+    title: string;
+    messages: string;
+    selected_db?: string | null;
+    selected_table?: string | null;
+  }): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.db.run(
+        `INSERT OR REPLACE INTO agent_conversations (id, connection_id, title, messages, selected_db, selected_table, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+        [conv.id, conv.connection_id, conv.title, conv.messages, conv.selected_db ?? null, conv.selected_table ?? null],
+        (err) => { if (err) reject(err); else resolve(); }
+      );
+    });
+  }
+
+  /** 获取指定连接下的所有 Agent 会话 */
+  getAgentConversations(connectionId: number): Promise<any[]> {
+    return new Promise((resolve, reject) => {
+      this.db.all(
+        'SELECT id, connection_id, title, selected_db, selected_table, created_at, updated_at FROM agent_conversations WHERE connection_id = ? ORDER BY updated_at DESC',
+        [connectionId],
+        (err, rows) => { if (err) reject(err); else resolve(rows); }
+      );
+    });
+  }
+
+  /** 获取单个 Agent 会话（含消息内容） */
+  getAgentConversation(id: string): Promise<any> {
+    return new Promise((resolve, reject) => {
+      this.db.get(
+        'SELECT * FROM agent_conversations WHERE id = ?',
+        [id],
+        (err, row) => { if (err) reject(err); else resolve(row); }
+      );
+    });
+  }
+
+  /** 重命名 Agent 会话 */
+  renameAgentConversation(id: string, title: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.db.run(
+        'UPDATE agent_conversations SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        [title, id],
+        (err) => { if (err) reject(err); else resolve(); }
+      );
+    });
+  }
+
+  /** 删除 Agent 会话 */
+  deleteAgentConversation(id: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.db.run('DELETE FROM agent_conversations WHERE id = ?', [id], (err) => {
+        if (err) reject(err); else resolve();
       });
     });
   }

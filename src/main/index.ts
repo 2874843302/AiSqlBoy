@@ -4,6 +4,7 @@ import { autoUpdater } from 'electron-updater'
 import { internalDB } from './services/internalDB'
 import { SQLiteDriver, MySQLDriver, PostgreSQLDriver, OracleDriver, RedisDriver, IDatabaseDriver } from './services/drivers'
 import { aiService } from './services/aiService'
+import { agentService } from './services/agentService'
 import fs from 'fs'
 import { ConnectionConfig } from '../shared/types'
 
@@ -218,10 +219,12 @@ ipcMain.handle('connect-db', async (_, config: ConnectionConfig) => {
     currentDriver = createDriver(config)
 
     await currentDriver.connect()
+    agentService.setDriver(currentDriver)
     startHeartbeat()
     return { success: true }
   } catch (error: any) {
     currentDriver = null
+    agentService.setDriver(null)
     stopHeartbeat()
     return { success: false, error: mapConnectError(error, config) }
   }
@@ -434,4 +437,89 @@ ipcMain.handle('show-confirm-dialog', async (_, options: { message: string, titl
     return result.response
   }
   return result.response === 0
+})
+
+// Agent IPC
+
+// 设置流式 token 推送：AI 每生成一个 token 片段就推送给前端
+agentService.setStreamCallback((sessionId: string, delta: string) => {
+  mainWindow?.webContents.send('agent:stream-token', { sessionId, delta })
+})
+
+ipcMain.handle('agent:create-session', async (_, params: { connectionId: number; dbType: string; dbName: string; permissionLevel: 'readonly' | 'write-confirm' | 'full-control' }) => {
+  try {
+    const sessionId = await agentService.createSession(params)
+    return { success: true, sessionId }
+  } catch (error: any) {
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('agent:chat', async (_, { sessionId, message }: { sessionId: string; message: string }) => {
+  try {
+    return await agentService.handleMessage(sessionId, message)
+  } catch (error: any) {
+    return { type: 'error', error: error.message, status: 'error' }
+  }
+})
+
+ipcMain.handle('agent:approve', async (_, { sessionId, actionId, approved }: { sessionId: string; actionId: string; approved: boolean }) => {
+  try {
+    return await agentService.handleApproval(sessionId, actionId, approved)
+  } catch (error: any) {
+    return { type: 'error', error: error.message, status: 'error' }
+  }
+})
+
+ipcMain.handle('agent:destroy-session', async (_, sessionId: string) => {
+  agentService.destroySession(sessionId)
+  return { success: true }
+})
+
+ipcMain.handle('agent:update-permission', async (_, { sessionId, permissionLevel }: { sessionId: string; permissionLevel: 'readonly' | 'write-confirm' | 'full-control' }) => {
+  return agentService.updatePermission(sessionId, permissionLevel)
+})
+
+// Agent 会话持久化
+ipcMain.handle('agent:save-conversation', async (_, conv: { id: string; connection_id: number; title: string; messages: string; selected_db?: string | null; selected_table?: string | null }) => {
+  try {
+    await internalDB.saveAgentConversation(conv)
+    return { success: true }
+  } catch (error: any) {
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('agent:get-conversations', async (_, connectionId: number) => {
+  try {
+    return await internalDB.getAgentConversations(connectionId)
+  } catch (error: any) {
+    return []
+  }
+})
+
+ipcMain.handle('agent:get-conversation', async (_, id: string) => {
+  try {
+    return await internalDB.getAgentConversation(id)
+  } catch (error: any) {
+    return null
+  }
+})
+
+ipcMain.handle('agent:rename-conversation', async (_, { id, title }: { id: string; title: string }) => {
+  try {
+    await internalDB.renameAgentConversation(id, title)
+    return { success: true }
+  } catch (error: any) {
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('agent:delete-conversation', async (_, id: string) => {
+  try {
+    await internalDB.deleteAgentConversation(id)
+    return { success: true }
+  } catch (error: any) {
+    return { success: false, error: error.message }
+  }
 })

@@ -33,6 +33,33 @@ contextBridge.exposeInMainWorld('electronAPI', {
     aiChat: (messages: any[]) => ipcRenderer.invoke('ai-chat', messages),
     saveSetting: (key: string, value: string) => ipcRenderer.invoke('save-setting', key, value),
     getSetting: (key: string) => ipcRenderer.invoke('get-setting', key),
+
+    // Agent
+    agentCreateSession: (params: { connectionId: number; dbType: string; dbName: string; permissionLevel: 'readonly' | 'write-confirm' | 'full-control' }) =>
+        ipcRenderer.invoke('agent:create-session', params),
+    agentChat: (sessionId: string, message: string) =>
+        ipcRenderer.invoke('agent:chat', { sessionId, message }),
+    agentApprove: (sessionId: string, actionId: string, approved: boolean) =>
+        ipcRenderer.invoke('agent:approve', { sessionId, actionId, approved }),
+    agentDestroySession: (sessionId: string) =>
+        ipcRenderer.invoke('agent:destroy-session', sessionId),
+    agentUpdatePermission: (sessionId: string, permissionLevel: 'readonly' | 'write-confirm' | 'full-control') =>
+        ipcRenderer.invoke('agent:update-permission', { sessionId, permissionLevel }),
+    onAgentStreamToken: (callback: (data: { sessionId: string; delta: string }) => void) =>
+        ipcRenderer.on('agent:stream-token', (_, data) => callback(data)),
+    offAgentStreamToken: () => {
+        ipcRenderer.removeAllListeners('agent:stream-token')
+    },
+    agentSaveConversation: (conv: { id: string; connection_id: number; title: string; messages: string; selected_db?: string | null; selected_table?: string | null }) =>
+        ipcRenderer.invoke('agent:save-conversation', conv),
+    agentGetConversations: (connectionId: number) =>
+        ipcRenderer.invoke('agent:get-conversations', connectionId),
+    agentGetConversation: (id: string) =>
+        ipcRenderer.invoke('agent:get-conversation', id),
+    agentRenameConversation: (id: string, title: string) =>
+        ipcRenderer.invoke('agent:rename-conversation', { id, title }),
+    agentDeleteConversation: (id: string) =>
+        ipcRenderer.invoke('agent:delete-conversation', id),
     
     // Dialogs
     showConfirmDialog: (options: { message: string, title?: string, type?: 'question' | 'warning' | 'error' | 'info' }) => 

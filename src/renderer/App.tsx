@@ -28,7 +28,9 @@ import { useAutoUpdate } from './hooks/useAutoUpdate';
 import { useAIAssistant } from './hooks/useAIAssistant';
 import { useConsoles } from './hooks/useConsoles';
 import { useSqlSelectionAI } from './hooks/useSqlSelectionAI';
+import { useAgent } from './hooks/useAgent';
 import AIAssistantModal from './components/ai/AIAssistantModal';
+import AgentPanel from './components/agent/AgentPanel';
 import ERDiagramModal, { ERAttribute, ERLabelLanguage } from './components/er/ERDiagramModal';
 import ERSchemaDiagramModal, {
   ERSchemaRelationship,
@@ -611,6 +613,43 @@ const App: React.FC = () => {
     setShowAISelectionInput,
     setToast,
     aiPopupRef
+  });
+
+  const {
+    showAgentPanel,
+    agentLoading,
+    agentInput,
+    setAgentInput,
+    agentMessages,
+    permissionLevel,
+    agentError,
+    agentIteration,
+    conversationsByConn,
+    currentConversationId,
+    currentConvConnectionId,
+    handleOpenAgent,
+    handleCloseAgent,
+    handleNewConversation,
+    handleSelectConversation,
+    handleDeleteConversation,
+    handleRenameConversation,
+    handleAgentSubmit,
+    handleApproveAction,
+    handleRejectAction,
+    handleClearSession,
+    handlePermissionChange,
+  } = useAgent({
+    savedConnections,
+    activeConnection,
+    selectedDatabase,
+    selectedTable,
+    setToast,
+    onRestoreDbTable: (db, table) => {
+      if (db) handleSelectDatabase(db);
+      else setSelectedDatabase(null);
+      if (table) handleSelectTable(table);
+      else setSelectedTable(null);
+    }
   });
 
   const {
@@ -3224,6 +3263,15 @@ ${JSON.stringify(payload)}
             <span className="font-bold text-xl tracking-tight text-slate-900 truncate">AiSqlBoy</span>
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            <motion.button
+              whileHover={{ scale: 1.1 }}
+              whileTap={{ scale: 0.9 }}
+              onClick={handleOpenAgent}
+              className="w-8 h-8 flex items-center justify-center rounded-full transition-colors border bg-indigo-50 hover:bg-indigo-100 border-indigo-200 text-indigo-600"
+              title="Agent 模式"
+            >
+              <Bot size={16} />
+            </motion.button>
             <motion.button
               whileHover={{ scale: 1.1 }}
               whileTap={{ scale: 0.9 }}
@@ -6194,6 +6242,40 @@ ${JSON.stringify(payload)}
         onSubmit={handleAIChat}
         onApplySQL={handleApplyAISQL}
       />
+
+<AgentPanel
+show={showAgentPanel}
+onClose={handleCloseAgent}
+messages={agentMessages}
+loading={agentLoading}
+input={agentInput}
+setInput={setAgentInput}
+onSubmit={handleAgentSubmit}
+permissionLevel={permissionLevel}
+onPermissionChange={handlePermissionChange}
+onApproveAction={handleApproveAction}
+onRejectAction={handleRejectAction}
+onClearSession={handleClearSession}
+errorMessage={agentError}
+iteration={agentIteration}
+databases={databases}
+selectedDatabase={selectedDatabase}
+onSelectDatabase={(db) => { handleSelectDatabase(db); }}
+tables={tables}
+selectedTable={selectedTable}
+onSelectTable={(table) => { if (table) handleSelectTable(table); else setSelectedTable(null); }}
+conversationsByConn={conversationsByConn}
+currentConversationId={currentConversationId}
+currentConvConnectionId={currentConvConnectionId}
+onNewConversation={handleNewConversation}
+onSelectConversation={handleSelectConversation}
+onDeleteConversation={handleDeleteConversation}
+onRenameConversation={handleRenameConversation}
+onConnect={handleConnect}
+savedConnections={savedConnections}
+activeConnectionId={activeConnection?.id}
+activeConnectionName={activeConnection?.name}
+/>
 
       <ERDiagramModal
         show={erDiagram.show}

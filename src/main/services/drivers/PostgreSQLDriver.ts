@@ -230,7 +230,7 @@ export class PostgreSQLDriver implements IDatabaseDriver {
     await this.client.query(`DROP DATABASE "${dbName}"`);
   }
 
-  async executeQuery(sql: string): Promise<{ data: any[], columns: string[] }> {
+  async executeQuery(sql: string): Promise<{ data: any[], columns: string[], affectedRows?: number }> {
     if (!this.client) throw new Error('Not connected');
     try {
       const res = await this.client.query(sql);
@@ -240,7 +240,8 @@ export class PostgreSQLDriver implements IDatabaseDriver {
         const lastRes = res[res.length - 1];
         return { 
           data: lastRes.rows, 
-          columns: lastRes.fields?.map(f => f.name) || [] 
+          columns: lastRes.fields?.map(f => f.name) || [],
+          affectedRows: lastRes.rowCount ?? undefined
         };
       }
 
@@ -251,7 +252,8 @@ export class PostgreSQLDriver implements IDatabaseDriver {
             命令: res.command,
             影响行数: res.rowCount || 0
           }],
-          columns: ['结果', '命令', '影响行数']
+          columns: ['结果', '命令', '影响行数'],
+          affectedRows: res.rowCount || 0
         };
       }
 
@@ -275,7 +277,8 @@ export class PostgreSQLDriver implements IDatabaseDriver {
           if (finalRes.command !== 'SELECT' && finalRes.command !== 'SHOW') {
             return {
               data: [{ 结果: '执行成功', 命令: finalRes.command, 影响行数: finalRes.rowCount || 0 }],
-              columns: ['结果', '命令', '影响行数']
+              columns: ['结果', '命令', '影响行数'],
+              affectedRows: finalRes.rowCount || 0
             };
           }
           return { data: finalRes.rows, columns: finalRes.fields?.map(f => f.name) || [] };

@@ -261,7 +261,7 @@ export class SQLiteDriver implements IDatabaseDriver {
     throw new Error('SQLite 不支持直接删除数据库命令，请手动删除文件。');
   }
 
-  async executeQuery(sql: string): Promise<{ data: any[], columns: string[] }> {
+  async executeQuery(sql: string): Promise<{ data: any[], columns: string[], affectedRows?: number }> {
     if (!this.db) throw new Error('Not connected');
     return new Promise((resolve, reject) => {
       const isSelect = sql.trim().toUpperCase().startsWith('SELECT') || 
@@ -287,7 +287,8 @@ export class SQLiteDriver implements IDatabaseDriver {
                 影响行数: this.changes,
                 最后插入ID: this.lastID
               }], 
-              columns: ['结果', '影响行数', '最后插入ID'] 
+              columns: ['结果', '影响行数', '最后插入ID'],
+              affectedRows: this.changes
             });
           }
         });

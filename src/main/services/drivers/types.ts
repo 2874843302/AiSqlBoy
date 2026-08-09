@@ -23,7 +23,7 @@ export interface IDatabaseDriver {
   }): Promise<void>;
   exportDatabase(includeData: boolean): Promise<string>;
   deleteDatabase(dbName: string): Promise<void>;
-  executeQuery(sql: string): Promise<{ data: any[], columns: string[] }>;
+  executeQuery(sql: string): Promise<{ data: any[], columns: string[], affectedRows?: number }>;
   ping(): Promise<void>;
 }
 
