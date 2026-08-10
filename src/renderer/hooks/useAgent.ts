@@ -219,9 +219,10 @@ export const useAgent = ({ savedConnections, activeConnection, selectedDatabase,
   // ============ 处理 Agent 响应 ============
   const processAgentResponse = useCallback(async (response: AgentResponse): Promise<void> => {
     setStreamingContent('');
+    const newMessages = response.type === 'error' ? [] : response.messages;
     const append = (prev: AgentMessage[]) => {
       const withoutStreaming = prev.filter((m) => m.timestamp !== STREAMING_TIMESTAMP);
-      return [...withoutStreaming, ...response.messages];
+      return [...withoutStreaming, ...newMessages];
     };
     switch (response.type) {
       case 'messages':

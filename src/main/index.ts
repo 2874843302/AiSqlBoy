@@ -95,9 +95,11 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
-    icon: isDev 
-      ? join(__dirname, '../../src/assets/app.ico')
-      : join(DIST_PATH, 'dist/app.ico'),
+    icon: process.platform === 'darwin'
+      ? undefined  // Mac 由 .app 包管理图标，无需设置窗口图标
+      : isDev
+        ? join(__dirname, '../../src/assets/app.ico')
+        : join(DIST_PATH, 'dist/app.ico'),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       nodeIntegration: true,
@@ -260,14 +262,14 @@ ipcMain.handle('get-tables', async () => {
   }
 })
 
-ipcMain.handle('get-table-data', async (_, tableName: string, limit?: number, offset?: number, orderBy?: string, orderDir?: 'ASC' | 'DESC') => {
-  if (!currentDriver) return { data: [], total: 0 }
-  try {
-    return await currentDriver.getTableData(tableName, limit, offset, orderBy, orderDir)
-  } catch (error) {
-    console.error(`Error fetching data from ${tableName}:`, error)
-    return { data: [], total: 0 }
-  }
+ipcMain.handle('get-table-data', async (_, tableName: string, limit?: number, offset?: number, orderBy?: string, orderDir?: 'ASC' | 'DESC', filters?: Record<string, string>) => {
+if (!currentDriver) return { data: [], total: 0 }
+try {
+return await currentDriver.getTableData(tableName, limit, offset, orderBy, orderDir, filters)
+} catch (error) {
+console.error(`Error fetching data from ${tableName}:`, error)
+return { data: [], total: 0 }
+}
 })
 
 ipcMain.handle('get-table-columns', async (_, tableName: string) => {

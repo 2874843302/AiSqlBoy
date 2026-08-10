@@ -186,7 +186,7 @@ const AgentPanel: React.FC<AgentPanelProps> = ({
                     <div key={conn.id} className="mb-0.5">
                       {/* 连接行 */}
                       <div
-                        onClick={() => { onConnect(conn); toggleConn(conn.id); }}
+                        onClick={() => { onConnect(conn); toggleConn(conn.id!); }}
                         className={`group flex items-center gap-2 px-2.5 py-2 cursor-pointer transition-colors ${
                           hasCurrentConv ? 'bg-indigo-50/50' : 'hover:bg-slate-100'
                         }`}
@@ -204,7 +204,7 @@ const AgentPanel: React.FC<AgentPanelProps> = ({
                         </span>
                         {/* 新建会话按钮 */}
                         <button
-                          onClick={(e) => { e.stopPropagation(); onNewConversation(conn.id); }}
+                          onClick={(e) => { e.stopPropagation(); onNewConversation(conn.id!); }}
                           className="w-5 h-5 flex items-center justify-center hover:bg-indigo-100 hover:text-indigo-600 rounded text-slate-400 transition-colors shrink-0"
                           title="在此连接下新建会话"
                         >
@@ -394,7 +394,7 @@ const AgentPanel: React.FC<AgentPanelProps> = ({
                   </div>
                 ))}
 
-                {loading && !(mergedMessages.length > 0 && mergedMessages[mergedMessages.length - 1].role === 'assistant' && mergedMessages[mergedMessages.length - 1].content) && (
+                {(() => { const lastMsg = mergedMessages[mergedMessages.length - 1]; return loading && !(mergedMessages.length > 0 && lastMsg?.role === 'assistant' && lastMsg.content); })() && (
                   <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex gap-3">
                     <div className="w-9 h-9 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center shrink-0">
                       <Bot size={18} />

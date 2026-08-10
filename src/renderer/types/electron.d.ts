@@ -23,7 +23,8 @@ declare global {
         limit?: number,
         offset?: number,
         orderBy?: string,
-        orderDir?: 'ASC' | 'DESC'
+        orderDir?: 'ASC' | 'DESC',
+        filters?: Record<string, string>
       ) => Promise<{ data: any[]; total: number }>;
       getTableColumns: (tableName: string) => Promise<any[]>;
       renameTable: (oldName: string, newName: string) => Promise<{ success: boolean; error?: string }>;

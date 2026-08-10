@@ -18,7 +18,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getDatabases: () => ipcRenderer.invoke('get-databases'),
   useDatabase: (dbName: string) => ipcRenderer.invoke('use-database', dbName),
   getTables: () => ipcRenderer.invoke('get-tables'),
-  getTableData: (tableName: string, limit?: number, offset?: number, orderBy?: string, orderDir?: 'ASC' | 'DESC') => ipcRenderer.invoke('get-table-data', tableName, limit, offset, orderBy, orderDir),
+  getTableData: (tableName: string, limit?: number, offset?: number, orderBy?: string, orderDir?: 'ASC' | 'DESC', filters?: Record<string, string>) => ipcRenderer.invoke('get-table-data', tableName, limit, offset, orderBy, orderDir, filters),
   getTableColumns: (tableName: string) => ipcRenderer.invoke('get-table-columns', tableName),
   getTableIndexes: (tableName: string) => ipcRenderer.invoke('get-table-indexes', tableName),
   renameTable: (oldName: string, newName: string) => ipcRenderer.invoke('rename-table', oldName, newName),

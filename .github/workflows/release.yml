@@ -9,7 +9,16 @@ on:
 
 jobs:
   release:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win
+          - os: macos-latest
+            platform: mac
+
+    runs-on: ${{ matrix.os }}
 
     permissions:
       contents: write
@@ -30,4 +39,4 @@ jobs:
       - name: Build and Publish
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: npm run publish
+        run: npm run publish:${{ matrix.platform }}

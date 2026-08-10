@@ -102,19 +102,27 @@ export class MySQLDriver implements IDatabaseDriver {
     return Array.from(indexMap.values());
   }
 
-  async getTableData(tableName: string, limit = 100, offset = 0, orderBy?: string, orderDir: 'ASC' | 'DESC' = 'ASC'): Promise<{ data: any[], total: number }> {
-    if (!this.connection) throw new Error('Not connected');
-    const [[{ total }]] = await this.connection.query(`SELECT COUNT(*) as total FROM ${tableName}`) as any;
-    
-    let sql = `SELECT * FROM ${tableName}`;
-    if (orderBy) {
-      sql += ` ORDER BY ${orderBy} ${orderDir}`;
-    }
-    sql += ` LIMIT ${limit} OFFSET ${offset}`;
-    
-    const [rows] = await this.connection.query(sql);
-    return { data: rows as any[], total };
-  }
+async getTableData(tableName: string, limit = 100, offset = 0, orderBy?: string, orderDir: 'ASC' | 'DESC' = 'ASC', filters?: Record<string, string>): Promise<{ data: any[], total: number }> {
+if (!this.connection) throw new Error('Not connected');
+const filterEntries = filters ? Object.entries(filters).filter(([, v]) => v && v.trim()) : [];
+const whereClause = filterEntries.length > 0
+? ' WHERE ' + filterEntries.map(([col, val]) => {
+const escapedCol = col.replace(/`/g, '``');
+const escapedVal = val.replace(/'/g, "''");
+return `\`${escapedCol}\` LIKE '%${escapedVal}%'`;
+}).join(' AND ')
+: '';
+const [[{ total }]] = await this.connection.query(`SELECT COUNT(*) as total FROM ${tableName}${whereClause}`) as any;
+
+let sql = `SELECT * FROM ${tableName}${whereClause}`;
+if (orderBy) {
+sql += ` ORDER BY ${orderBy} ${orderDir}`;
+}
+sql += ` LIMIT ${limit} OFFSET ${offset}`;
+
+const [rows] = await this.connection.query(sql);
+return { data: rows as any[], total };
+}
 
   async renameTable(oldName: string, newName: string): Promise<void> {
     if (!this.connection) throw new Error('Not connected');

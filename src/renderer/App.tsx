@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react'
+import React, { useState, useEffect, useMemo, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { Database, Table, Play, Plus, Trash2, X, Server, HardDrive, RefreshCw, ChevronRight, Layout, Settings, Activity, AlignLeft, Bot, Sparkles, Send, Loader2, Key, Search, ArrowUp, ArrowDown, FileJson, Save, Terminal, Download, CheckCircle2, Filter, Star, Copy } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ConnectionConfig } from '../shared/types'
@@ -91,7 +92,7 @@ type OverflowPreviewTextProps = {
   children: React.ReactNode;
 };
 
-const OverflowPreviewText: React.FC<OverflowPreviewTextProps> = ({
+const OverflowPreviewText = React.memo(({
   text,
   textClassName,
   containerClassName = 'flex items-center gap-3 overflow-hidden min-w-0',
@@ -100,27 +101,17 @@ const OverflowPreviewText: React.FC<OverflowPreviewTextProps> = ({
   buttonSize,
   onPreview,
   children
-}) => {
+}: OverflowPreviewTextProps) => {
   const textRef = React.useRef<HTMLSpanElement>(null);
   const [isOverflowing, setIsOverflowing] = useState(false);
 
   useEffect(() => {
     const el = textRef.current;
     if (!el) return;
-
-    const checkOverflow = () => {
-      setIsOverflowing(el.scrollWidth > el.clientWidth + 1);
-    };
-
-    checkOverflow();
-    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(checkOverflow) : null;
-    ro?.observe(el);
-    window.addEventListener('resize', checkOverflow);
-    return () => {
-      ro?.disconnect();
-      window.removeEventListener('resize', checkOverflow);
-    };
-  }, [text]);
+    // 每次渲染后检查溢出，但只在状态变化时触发重渲染
+    const overflow = el.scrollWidth > el.clientWidth + 1;
+    setIsOverflowing(prev => prev !== overflow ? overflow : prev);
+  });
 
   return (
     <div className={containerClassName}>
@@ -128,9 +119,7 @@ const OverflowPreviewText: React.FC<OverflowPreviewTextProps> = ({
         {children}
       </span>
       {isOverflowing && (
-        <motion.button
-          whileHover={{ scale: 1.1 }}
-          whileTap={{ scale: 0.9 }}
+        <button
           onClick={(e) => {
             e.stopPropagation();
             onPreview();
@@ -139,11 +128,11 @@ const OverflowPreviewText: React.FC<OverflowPreviewTextProps> = ({
           title={buttonTitle}
         >
           <Plus size={buttonSize} />
-        </motion.button>
+        </button>
       )}
     </div>
   );
-};
+});
 
 const App: React.FC = () => {
   // State for connections
@@ -499,6 +488,8 @@ const App: React.FC = () => {
   // Column Filter State (per-column text filter for the data table)
   const [columnFilters, setColumnFilters] = useState<Record<string, string>>({});
   const [activeFilterCol, setActiveFilterCol] = useState<string | null>(null);
+  const [filterPopoverPos, setFilterPopoverPos] = useState<{ top: number; left: number } | null>(null);
+  const skipFilterReloadRef = useRef(false);
 
   // Layout State
   const [sidebarWidth, setSidebarWidth] = useState(320);
@@ -1563,6 +1554,7 @@ const App: React.FC = () => {
     setCurrentPage(page);
     setLoading(true)
     setTableExecutionTime(null);
+    skipFilterReloadRef.current = true;
     setColumnFilters({});
     setActiveFilterCol(null);
     try {
@@ -1584,7 +1576,8 @@ const App: React.FC = () => {
         size,
         offset,
         effectiveSortColumn || undefined,
-        effectiveSortDir || undefined
+        effectiveSortDir || undefined,
+        {}
       );
       const endTime = Date.now();
       setTableExecutionTime(endTime - startTime);
@@ -1989,15 +1982,20 @@ const App: React.FC = () => {
     setInsertingRow(null);
   };
 
-  const formatSqlValue = (val: any) => {
-    if (val === null || val === undefined) return 'NULL';
-    if (typeof val === 'number') return val;
-    // 布尔值：PostgreSQL 用 TRUE/FALSE，其他用 1/0
-    if (typeof val === 'boolean') return val ? '1' : '0';
-    // 对象/数组使用 JSON.stringify，避免 toString 返回 "[object Object]"
-    const str = typeof val === 'object' ? JSON.stringify(val) : String(val);
-    return `'${str.replace(/'/g, "''")}'`;
-  };
+const formatSqlValue = (val: any) => {
+if (val === null || val === undefined) return 'NULL';
+if (typeof val === 'number') return val;
+// 布尔值：PostgreSQL 用 TRUE/FALSE，其他用 1/0
+if (typeof val === 'boolean') {
+if (activeConnection?.type === 'postgresql') {
+return val ? 'TRUE' : 'FALSE';
+}
+return val ? '1' : '0';
+}
+// 对象/数组使用 JSON.stringify，避免 toString 返回 "[object Object]"
+const str = typeof val === 'object' ? JSON.stringify(val) : String(val);
+return `'${str.replace(/'/g, "''")}'`;
+};
 
   const quoteIdentifier = (name: string) => {
     if (activeConnection?.type === 'mysql') {
@@ -3198,25 +3196,48 @@ ${JSON.stringify(payload)}
 
   const totalPages = Math.ceil(totalRows / pageSize);
 
-  // ---- Column Filter: compute filtered rows with original index tracking ----
+  // ---- Column Filter: now handled by backend WHERE clause ----
   const hasActiveFilters = Object.values(columnFilters).some((v) => v && v.trim());
 
-  const filteredData = useMemo(() => {
-    if (!hasActiveFilters) {
-      return data.map((row, idx) => ({ row, originalIdx: idx }));
+  // 当筛选条件变化时，重新从后端加载数据（带 WHERE 子句）
+  useEffect(() => {
+    if (!selectedTable) return;
+    if (skipFilterReloadRef.current) {
+      skipFilterReloadRef.current = false;
+      return;
     }
-    const filters = Object.entries(columnFilters)
-      .filter(([, v]) => v && v.trim())
-      .map(([col, val]) => ({ col, lower: val.trim().toLowerCase() }));
-    return data
-      .map((row, idx) => ({ row, originalIdx: idx }))
-      .filter(({ row }) =>
-        filters.every(({ col, lower }) => {
-          const cellText = sanitizeDisplayText(row[col]).toLowerCase();
-          return cellText.includes(lower);
-        })
-      );
-  }, [data, columnFilters, hasActiveFilters]);
+    const timer = setTimeout(async () => {
+      try {
+        setLoading(true);
+        const offset = 0; // 筛选后回到第一页
+        const dataRes = await window.electronAPI.getTableData(
+          selectedTable,
+          pageSize,
+          offset,
+          sortConfig.column || undefined,
+          sortConfig.direction || undefined,
+          columnFilters
+        );
+        setData(dataRes.data);
+        setEditOriginalData(JSON.parse(JSON.stringify(dataRes.data)));
+        setEditingCells({});
+        setDeletedRows(new Set());
+        setTotalRows(dataRes.total);
+        setCurrentPage(1);
+      } catch (err: any) {
+        setToast({ message: err.message, type: 'error' });
+      } finally {
+        setLoading(false);
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [columnFilters]);
+
+  // 后端已筛选，前端直接使用 data
+  const filteredData = useMemo(() => {
+    return data.map((row, idx) => ({ row, originalIdx: idx }));
+  }, [data]);
 
   // Close filter popover when clicking outside
   useEffect(() => {
@@ -3761,7 +3782,13 @@ ${JSON.stringify(payload)}
                                       data-filter-toggle
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        setActiveFilterCol(isFilterOpen ? null : col.name);
+                                        if (isFilterOpen) {
+                                          setActiveFilterCol(null);
+                                        } else {
+                                          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                          setFilterPopoverPos({ top: rect.bottom + 4, left: rect.left });
+                                          setActiveFilterCol(col.name);
+                                        }
                                       }}
                                       className={`p-0.5 rounded transition-all ${
                                         isFilterActive
@@ -3796,17 +3823,21 @@ ${JSON.stringify(payload)}
                               </div>
 
                               {/* Filter popover */}
-                              <AnimatePresence>
-                                {isFilterOpen && (
-                                  <motion.div
-                                    data-filter-popover
-                                    initial={{ opacity: 0, y: -4, scale: 0.96 }}
-                                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                                    exit={{ opacity: 0, y: -4, scale: 0.96 }}
-                                    transition={{ duration: 0.15 }}
-                                    onClick={(e) => e.stopPropagation()}
-                                    className="absolute top-full left-0 mt-1 z-30 w-52 bg-white rounded-xl border border-slate-200 shadow-2xl shadow-slate-300/40 p-3"
-                                  >
+                              {isFilterOpen && createPortal(
+                                <motion.div
+                                  data-filter-popover
+                                  initial={{ opacity: 0, y: -4, scale: 0.96 }}
+                                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                                  transition={{ duration: 0.15 }}
+                                  onClick={(e) => e.stopPropagation()}
+                                  style={{
+                                    position: 'fixed',
+                                    top: `${filterPopoverPos?.top ?? 0}px`,
+                                    left: `${filterPopoverPos?.left ?? 0}px`,
+                                    zIndex: 9999,
+                                  }}
+                                  className="w-52 bg-white rounded-xl border border-slate-200 shadow-2xl shadow-slate-300/40 p-3"
+                                >
                                     <div className="flex items-center gap-2 mb-2">
                                       <Filter size={12} className="text-blue-500 flex-shrink-0" />
                                       <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest truncate">筛选 {col.name}</span>
@@ -3871,9 +3902,8 @@ ${JSON.stringify(payload)}
                                         </button>
                                       </div>
                                     )}
-                                  </motion.div>
-                                )}
-                              </AnimatePresence>
+                                </motion.div>
+                              , document.body)}
 
                               <span
                                 className="absolute top-0 right-0 h-full w-2 cursor-col-resize group-hover/th:bg-blue-200/70"
@@ -3889,7 +3919,7 @@ ${JSON.stringify(payload)}
                         {(() => {
                           const shouldVirtualize = useVirtualScroll && filteredData.length > 80;
                           const visibleRowsCount = Math.max(1, Math.ceil((tableViewportHeight || ROW_HEIGHT * 10) / ROW_HEIGHT));
-                          const overscanRows = visibleRowsCount; // 默认上下各预渲染 1 屏
+                          const overscanRows = 5; // 上下各预渲染 5 行
                           const startIdx = shouldVirtualize ? Math.max(0, Math.floor(tableScrollTop / ROW_HEIGHT) - overscanRows) : 0;
                           const endIdx = shouldVirtualize
                             ? Math.min(filteredData.length, Math.floor((tableScrollTop + (tableViewportHeight || 0)) / ROW_HEIGHT) + overscanRows)
@@ -4781,7 +4811,7 @@ ${JSON.stringify(payload)}
 
                             // 虚拟列表计算
                             const visibleRowsCount = Math.max(1, Math.ceil((resultsViewportHeight || ROW_HEIGHT * 10) / ROW_HEIGHT));
-                            const overscanRows = visibleRowsCount; // 默认上下各预渲染 1 屏
+                            const overscanRows = 5; // 上下各预渲染 5 行
                             const startIdx = Math.max(0, Math.floor(resultsScrollTop / ROW_HEIGHT) - overscanRows);
                             const endIdx = Math.min(results.length, Math.floor((resultsScrollTop + (resultsViewportHeight || 0)) / ROW_HEIGHT) + overscanRows);
                             const visibleResults = results.slice(startIdx, endIdx);

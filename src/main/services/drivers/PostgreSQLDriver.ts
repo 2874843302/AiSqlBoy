@@ -112,14 +112,22 @@ export class PostgreSQLDriver implements IDatabaseDriver {
     return Array.from(indexMap.values());
   }
 
-  async getTableData(tableName: string, limit = 100, offset = 0, orderBy?: string, orderDir: 'ASC' | 'DESC' = 'ASC'): Promise<{ data: any[], total: number }> {
+  async getTableData(tableName: string, limit = 100, offset = 0, orderBy?: string, orderDir: 'ASC' | 'DESC' = 'ASC', filters?: Record<string, string>): Promise<{ data: any[], total: number }> {
     if (!this.client) throw new Error('Not connected');
-    const countRes = await this.client.query(`SELECT COUNT(*) as total FROM "${tableName}"`);
+    const filterEntries = filters ? Object.entries(filters).filter(([, v]) => v && v.trim()) : [];
+    const whereClause = filterEntries.length > 0
+      ? ' WHERE ' + filterEntries.map(([col, val]) => {
+          const escapedCol = col.replace(/"/g, '""');
+          const escapedVal = val.replace(/'/g, "''");
+          return `CAST("${escapedCol}" AS TEXT) ILIKE '%${escapedVal}%'`;
+        }).join(' AND ')
+      : '';
+    const countRes = await this.client.query(`SELECT COUNT(*) as total FROM "${tableName}"${whereClause}`);
     const total = parseInt(countRes.rows[0].total);
 
-    let sql = `SELECT * FROM "${tableName}"`;
+    let sql = `SELECT * FROM "${tableName}"${whereClause}`;
     if (orderBy) {
-      sql += ` ORDER BY "${orderBy}" ${orderDir}`;
+      sql += ` ORDER BY "${orderBy.replace(/"/g, '""')}" ${orderDir}`;
     }
     sql += ` LIMIT ${limit} OFFSET ${offset}`;
     
@@ -177,9 +185,27 @@ export class PostgreSQLDriver implements IDatabaseDriver {
 
     for (const mod of changes.modified) {
       const targetColumnName = mod.column.name;
+      // 1. 重命名列（如果名称变了）
       if (mod.oldName !== mod.column.name) {
         await this.client.query(`ALTER TABLE "${tableName}" RENAME COLUMN "${mod.oldName}" TO "${mod.column.name}"`);
       }
+      // 2. 修改字段类型
+      if (mod.column.type) {
+        await this.client.query(`ALTER TABLE "${tableName}" ALTER COLUMN "${targetColumnName}" TYPE ${mod.column.type}`);
+      }
+      // 3. 修改可空性（NOT NULL 约束）
+      if (mod.column.nullable) {
+        await this.client.query(`ALTER TABLE "${tableName}" ALTER COLUMN "${targetColumnName}" DROP NOT NULL`);
+      } else {
+        await this.client.query(`ALTER TABLE "${tableName}" ALTER COLUMN "${targetColumnName}" SET NOT NULL`);
+      }
+      // 4. 修改默认值
+      if (mod.column.defaultValue !== undefined && mod.column.defaultValue !== null && mod.column.defaultValue !== '') {
+        await this.client.query(`ALTER TABLE "${tableName}" ALTER COLUMN "${targetColumnName}" SET DEFAULT ${mod.column.defaultValue}`);
+      } else {
+        await this.client.query(`ALTER TABLE "${tableName}" ALTER COLUMN "${targetColumnName}" DROP DEFAULT`);
+      }
+      // 5. 修改注释
       if (Object.prototype.hasOwnProperty.call(mod.column, 'comment')) {
         const escapedComment = mod.column.comment ? String(mod.column.comment).replace(/'/g, "''") : null;
         if (escapedComment === null) {
@@ -188,7 +214,6 @@ export class PostgreSQLDriver implements IDatabaseDriver {
           await this.client.query(`COMMENT ON COLUMN "${tableName}"."${targetColumnName}" IS '${escapedComment}'`);
         }
       }
-      // 这里可以扩展修改类型、可空性等
     }
 
     for (const col of changes.added) {

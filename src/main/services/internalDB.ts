@@ -3,9 +3,45 @@ const require = createRequire(import.meta.url);
 const sqlite3 = require('sqlite3');
 import type { Database } from 'sqlite3';
 
-import { app } from 'electron';
+import { app, safeStorage } from 'electron';
 import { join } from 'path';
 import { ConnectionConfig } from '../../shared/types';
+
+/**
+ * 使用系统级加密（Windows DPAPI / macOS Keychain）加密密码
+ */
+function encryptPassword(password: string | null | undefined): string | null {
+  if (!password) return null;
+  if (safeStorage.isEncryptionAvailable()) {
+    const encrypted = safeStorage.encryptString(password);
+    return `enc:${encrypted.toString('base64')}`;
+  }
+  // 加密不可用时 fallback 到明文（带前缀标识）
+  return `plain:${password}`;
+}
+
+/**
+ * 解密密码，兼容旧的明文数据
+ */
+function decryptPassword(stored: string | null | undefined): string | null {
+  if (!stored) return null;
+  if (stored.startsWith('enc:')) {
+    const buffer = Buffer.from(stored.slice(4), 'base64');
+    if (safeStorage.isEncryptionAvailable()) {
+      try {
+        return safeStorage.decryptString(buffer);
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+  if (stored.startsWith('plain:')) {
+    return stored.slice(6);
+  }
+  // 旧数据（明文，无前缀）— 向后兼容
+  return stored;
+}
 
 export class InternalDBService {
   private db: Database;
@@ -144,7 +180,7 @@ export class InternalDBService {
           config.host || null,
           config.port || null,
           config.user || null,
-          config.password || null,
+          encryptPassword(config.password),
           config.database || null,
           config.selectedSchemas && config.selectedSchemas.length > 0 ? JSON.stringify(config.selectedSchemas) : null,
           config.id,
@@ -166,7 +202,7 @@ export class InternalDBService {
           config.host || null,
           config.port || null,
           config.user || null,
-          config.password || null,
+          encryptPassword(config.password),
           config.database || null,
           config.selectedSchemas && config.selectedSchemas.length > 0 ? JSON.stringify(config.selectedSchemas) : null,
           (err: Error | null) => {
@@ -198,6 +234,7 @@ export class InternalDBService {
             }
             return {
               ...row,
+              password: decryptPassword(row.password),
               selectedSchemas
             } as ConnectionConfig;
           });

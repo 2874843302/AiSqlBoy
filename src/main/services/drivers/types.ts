@@ -8,7 +8,7 @@ export interface IDatabaseDriver {
   getTables(): Promise<TableInfo[]>;
   getTableColumns(tableName: string): Promise<ColumnInfo[]>;
   getTableIndexes(tableName: string): Promise<IndexInfo[]>;
-  getTableData(tableName: string, limit?: number, offset?: number, orderBy?: string, orderDir?: 'ASC' | 'DESC'): Promise<{ data: any[], total: number }>;
+  getTableData(tableName: string, limit?: number, offset?: number, orderBy?: string, orderDir?: 'ASC' | 'DESC', filters?: Record<string, string>): Promise<{ data: any[], total: number }>;
   renameTable(oldName: string, newName: string): Promise<void>;
   deleteTable(tableName: string): Promise<void>;
   createTable(tableName: string, columns: ColumnInfo[], indexes?: IndexInfo[]): Promise<void>;

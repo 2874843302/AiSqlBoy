@@ -179,15 +179,24 @@ export class OracleDriver implements IDatabaseDriver {
     limit = 100,
     offset = 0,
     orderBy?: string,
-    orderDir: 'ASC' | 'DESC' = 'ASC'
+    orderDir: 'ASC' | 'DESC' = 'ASC',
+    filters?: Record<string, string>
   ): Promise<{ data: any[]; total: number }> {
     if (!this.connection) throw new Error('Not connected');
     const fq = this.fqTable(tableName);
-    const countRes = await this.connection.execute(`SELECT COUNT(*) AS cnt FROM ${fq}`, [], { autoCommit: true });
+    const filterEntries = filters ? Object.entries(filters).filter(([, v]) => v && v.trim()) : [];
+    const whereClause = filterEntries.length > 0
+      ? ' WHERE ' + filterEntries.map(([col, val]) => {
+          const escapedCol = col.replace(/"/g, '""');
+          const escapedVal = val.replace(/'/g, "''").toLowerCase();
+          return `LOWER("${escapedCol}") LIKE '%${escapedVal}%'`;
+        }).join(' AND ')
+      : '';
+    const countRes = await this.connection.execute(`SELECT COUNT(*) AS cnt FROM ${fq}${whereClause}`, [], { autoCommit: true });
     const countRow = (countRes.rows || [])[0] as Record<string, number>;
     const total = Number(countRow?.CNT ?? countRow?.cnt ?? 0);
 
-    let sql = `SELECT * FROM ${fq}`;
+    let sql = `SELECT * FROM ${fq}${whereClause}`;
     if (orderBy) {
       sql += ` ORDER BY "${orderBy.replace(/"/g, '')}" ${orderDir === 'DESC' ? 'DESC' : 'ASC'}`;
     } else {
