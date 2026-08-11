@@ -256,7 +256,7 @@ const ConsoleView: React.FC<Record<string, any>> = (props) => {
                             }}
                           >
                             <div className="bg-slate-50 px-3 py-1.5 border-b border-slate-100 flex items-center justify-between">
-                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1">
+                              <span className="text-[10px] font-bold text-slate-400 tracking-wide flex items-center gap-1">
                                 <Sparkles size={10} /> 智能补全
                               </span>
                               <span className="text-[10px] text-slate-400">↑↓ 选择, Enter 确认</span>
@@ -420,16 +420,16 @@ const ConsoleView: React.FC<Record<string, any>> = (props) => {
                     />
                     <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 shrink-0 flex items-center justify-between">
                       <div className="flex items-center gap-4">
-                        <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">查询结果</span>
+                        <span className="text-xs font-bold text-slate-500 tracking-wide">查询结果</span>
                         {activeConsoleId && (
                           <div className="flex items-center gap-2">
                             {consoles.find(c => c.id === activeConsoleId)?.results && (
-                              <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full uppercase tracking-tight">
+                              <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full tracking-tight">
                                 已加载 {consoles.find(c => c.id === activeConsoleId)?.results?.length} 条
                               </span>
                             )}
                             {consoles.find(c => c.id === activeConsoleId)?.isAutoLimited && (
-                              <span className="text-[10px] font-bold text-amber-500 bg-amber-50 border border-amber-100 px-2 py-0.5 rounded-full uppercase tracking-tight flex items-center gap-1">
+                              <span className="text-[10px] font-bold text-amber-500 bg-amber-50 border border-amber-100 px-2 py-0.5 rounded-full tracking-tight flex items-center gap-1">
                                 <Activity size={10} /> 自动限制 (MAX 10,000)
                               </span>
                             )}
@@ -440,7 +440,7 @@ const ConsoleView: React.FC<Record<string, any>> = (props) => {
                         {activeConsoleId && Object.keys(resultColumnWidths).some((k) => k.startsWith(`${activeConsoleId}::`)) && (
                           <button
                             onClick={() => resetAllResultColumnWidths(activeConsoleId)}
-                            className="text-[10px] font-bold text-slate-500 hover:text-blue-600 bg-white border border-slate-200 hover:border-blue-200 hover:bg-blue-50 px-3 py-1 rounded-full uppercase tracking-widest transition-colors"
+                            className="text-[10px] font-bold text-slate-500 hover:text-blue-600 bg-white border border-slate-200 hover:border-blue-200 hover:bg-blue-50 px-3 py-1 rounded-full tracking-wide transition-colors"
                             title="恢复当前结果表的默认列宽"
                           >
                             恢复默认列宽
@@ -449,7 +449,7 @@ const ConsoleView: React.FC<Record<string, any>> = (props) => {
                         {activeConsoleId && consoles.find(c => c.id === activeConsoleId)?.hasMore && (
                           <button
                             onClick={() => handleLoadMore(activeConsoleId)}
-                            className="text-[10px] font-bold text-blue-600 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 px-3 py-1 rounded-full uppercase tracking-widest transition-colors flex items-center gap-1.5"
+                            className="text-[10px] font-bold text-blue-600 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 px-3 py-1 rounded-full tracking-wide transition-colors flex items-center gap-1.5"
                           >
                             <Plus size={12} /> 加载更多数据
                           </button>
@@ -473,7 +473,7 @@ const ConsoleView: React.FC<Record<string, any>> = (props) => {
                                   <div className="w-12 h-12 border-4 border-blue-100 rounded-full" />
                                   <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin absolute top-0 left-0" />
                                 </div>
-                                <span className="mt-4 text-slate-400 font-bold text-[10px] uppercase tracking-widest animate-pulse">正在执行查询...</span>
+                                <span className="mt-4 text-slate-400 font-bold text-[10px] tracking-wide animate-pulse">正在执行查询...</span>
                               </div>
                             );
                           }
@@ -519,7 +519,7 @@ const ConsoleView: React.FC<Record<string, any>> = (props) => {
                                         return (
                                           <th
                                             key={col}
-                                            className="px-4 py-3 text-left text-[10px] font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100 overflow-hidden truncate relative"
+                                            className="px-4 py-3 text-left text-[10px] font-bold text-slate-400 uppercase tracking-wide border-b border-slate-100 overflow-hidden truncate relative"
                                             style={
                                               colWidth
                                                 ? { width: colWidth, minWidth: colWidth, maxWidth: colWidth }
@@ -609,7 +609,7 @@ const ConsoleView: React.FC<Record<string, any>> = (props) => {
                           return (
                             <div className="h-full flex flex-col items-center justify-center text-slate-300">
                               <Activity size={32} className="mb-2 opacity-20" />
-                              <span className="text-xs font-bold uppercase tracking-widest opacity-40">等待执行...</span>
+                              <span className="text-xs font-bold tracking-wide opacity-40">等待执行...</span>
                             </div>
                           );
                         })()}
@@ -636,14 +636,14 @@ const ConsoleView: React.FC<Record<string, any>> = (props) => {
                           <div className="px-6 py-3 border-t border-slate-100 bg-slate-50/50 flex items-center justify-between shrink-0">
                             <div className="flex items-center gap-4">
                               {total > 0 && (
-                                <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                                <div className="text-[10px] text-slate-400 font-bold tracking-wide">
                                   第 {page} / {totalPages} 页 (共 {total} 条)
                                 </div>
                               )}
                               {hasExecutionTime && (
                                 <>
                                   {total > 0 && <div className="h-3 w-px bg-slate-200" />}
-                                  <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                                  <div className="text-[10px] text-slate-400 font-bold tracking-wide">
                                     耗时 {activeConsole.executionTime! < 1000
                                       ? `${activeConsole.executionTime}ms`
                                       : `${(activeConsole.executionTime! / 1000).toFixed(2)}s`}
@@ -654,7 +654,7 @@ const ConsoleView: React.FC<Record<string, any>> = (props) => {
                                 <>
                                   <div className="h-3 w-px bg-slate-200" />
                                   <div className="flex items-center gap-2">
-                                    <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">每页</span>
+                                    <span className="text-[10px] text-slate-400 font-bold tracking-wide">每页</span>
                                     <select
                                       value={size}
                                       onChange={(e) => {

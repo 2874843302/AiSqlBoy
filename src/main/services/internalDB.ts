@@ -73,6 +73,21 @@ export class InternalDBService {
           console.error('Failed to add schema_filter column:', err);
         }
       });
+      this.db.run('ALTER TABLE connections ADD COLUMN read_only INTEGER NOT NULL DEFAULT 0', (err: any) => {
+        if (err && !String(err.message || '').includes('duplicate column name')) {
+          console.error('Failed to add read_only column:', err);
+        }
+      });
+      this.db.run('ALTER TABLE connections ADD COLUMN locked INTEGER NOT NULL DEFAULT 0', (err: any) => {
+        if (err && !String(err.message || '').includes('duplicate column name')) {
+          console.error('Failed to add locked column:', err);
+        }
+      });
+      this.db.run('ALTER TABLE connections ADD COLUMN expires_at INTEGER', (err: any) => {
+        if (err && !String(err.message || '').includes('duplicate column name')) {
+          console.error('Failed to add expires_at column:', err);
+        }
+      });
       this.db.run(`
         CREATE TABLE IF NOT EXISTS settings (
           key TEXT PRIMARY KEY,
@@ -166,35 +181,54 @@ export class InternalDBService {
   }
 
   saveConnection(config: ConnectionConfig): Promise<void> {
+    const toFlag = (v: boolean | undefined) => (v ? 1 : 0);
     return new Promise((resolve, reject) => {
       if (config.id) {
-        // 更新现有连接
-        const stmt = this.db.prepare(`
-          UPDATE connections 
-          SET name = ?, type = ?, host = ?, port = ?, user = ?, password = ?, database = ?, schema_filter = ?
-          WHERE id = ?
-        `);
-        stmt.run(
-          config.name,
-          config.type,
-          config.host || null,
-          config.port || null,
-          config.user || null,
-          encryptPassword(config.password),
-          config.database || null,
-          config.selectedSchemas && config.selectedSchemas.length > 0 ? JSON.stringify(config.selectedSchemas) : null,
-          config.id,
-          (err: Error | null) => {
-            if (err) reject(err);
-            else resolve();
+        // 先读出现有记录：导入包锁定的连接不允许通过更新解除只读/锁定/有效期
+        this.db.get(
+          'SELECT locked, expires_at FROM connections WHERE id = ?',
+          [config.id],
+          (gerr, row: any) => {
+            if (gerr) {
+              reject(gerr);
+              return;
+            }
+            const forceLocked = !!row?.locked;
+            const readOnly = forceLocked ? 1 : toFlag(config.readOnly);
+            const locked = forceLocked ? 1 : toFlag(config.locked);
+            // 锁定连接的有效期以库内原值为准，防止通过保存接口抹掉过期时间
+            const expiresAt = forceLocked ? (row?.expires_at ?? null) : (config.expiresAt ?? null);
+            const stmt = this.db.prepare(`
+              UPDATE connections 
+              SET name = ?, type = ?, host = ?, port = ?, user = ?, password = ?, database = ?, schema_filter = ?, read_only = ?, locked = ?, expires_at = ?
+              WHERE id = ?
+            `);
+            stmt.run(
+              config.name,
+              config.type,
+              config.host || null,
+              config.port || null,
+              config.user || null,
+              encryptPassword(config.password),
+              config.database || null,
+              config.selectedSchemas && config.selectedSchemas.length > 0 ? JSON.stringify(config.selectedSchemas) : null,
+              readOnly,
+              locked,
+              expiresAt,
+              config.id,
+              (err: Error | null) => {
+                if (err) reject(err);
+                else resolve();
+              }
+            );
+            stmt.finalize();
           }
         );
-        stmt.finalize();
       } else {
         // 插入新连接
         const stmt = this.db.prepare(`
-          INSERT INTO connections (name, type, host, port, user, password, database, schema_filter)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO connections (name, type, host, port, user, password, database, schema_filter, read_only, locked, expires_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
         stmt.run(
           config.name,
@@ -205,6 +239,9 @@ export class InternalDBService {
           encryptPassword(config.password),
           config.database || null,
           config.selectedSchemas && config.selectedSchemas.length > 0 ? JSON.stringify(config.selectedSchemas) : null,
+          toFlag(config.readOnly),
+          toFlag(config.locked),
+          config.expiresAt ?? null,
           (err: Error | null) => {
             if (err) reject(err);
             else resolve();
@@ -235,7 +272,10 @@ export class InternalDBService {
             return {
               ...row,
               password: decryptPassword(row.password),
-              selectedSchemas
+              selectedSchemas,
+              readOnly: !!row.read_only,
+              locked: !!row.locked,
+              expiresAt: row.expires_at ?? undefined
             } as ConnectionConfig;
           });
           resolve(parsed);

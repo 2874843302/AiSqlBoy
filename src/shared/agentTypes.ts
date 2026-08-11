@@ -40,6 +40,8 @@ export interface AgentAction {
   tables?: string[];
   /** SQL 安全分类（仅 execute_sql） */
   category?: SqlCategory;
+  /** 审批前影响面预览（UPDATE/DELETE 的预计影响行数） */
+  impactPreview?: { affectedRows: number | null; error?: string };
   /** 动作状态 */
   status: 'pending' | 'auto-executed' | 'approved' | 'rejected' | 'executing' | 'done' | 'error';
   /** 执行结果 */
@@ -96,6 +98,12 @@ export interface AgentSession {
   createdAt: number;
   /** 缓存的表名列表，避免每次迭代都查询数据库 */
   cachedTableNames: string[] | null;
+  /** 当前是否有 Agent 循环在运行（防止同一会话并发） */
+  running?: boolean;
+  /** 用户请求中止当前循环 */
+  cancelRequested?: boolean;
+  /** 当前端点不支持原生 Function Calling 时降级为 action 文本协议 */
+  nativeToolsDisabled?: boolean;
 }
 
 /**
@@ -160,6 +168,7 @@ export const AGENT_SETTING_KEYS = {
   permissionLevel: 'agent_permission_level',
   maxIterations: 'agent_max_iterations',
   selectLimit: 'agent_select_limit',
+  executionTimeout: 'agent_execution_timeout',
 } as const;
 
 /** Agent 默认配置 */

@@ -11,7 +11,7 @@
 import { aiService } from './aiService';
 import { internalDB } from './internalDB';
 import { IDatabaseDriver } from './drivers/types';
-import { classifySql, hasMultipleStatements, ensureSelectLimit, isAllowed, requiresApproval } from './sqlSecurity';
+import { classifySql, hasMultipleStatements, ensureSelectLimit, isAllowed, requiresApproval, buildImpactPreviewSql } from '../../shared/sqlSecurity';
 import { buildAgentSystemPrompt, formatToolResult } from '../../shared/agentPrompt';
 import {
   AGENT_DEFAULTS,
@@ -25,6 +25,65 @@ import {
   type AgentToolName,
 } from '../../shared/agentTypes';
 
+/** 原生 Function Calling 工具定义（OpenAI tools 协议） */
+const AGENT_TOOL_DEFINITIONS: Array<Record<string, unknown>> = [
+  {
+    type: 'function',
+    function: {
+      name: 'list_tables',
+      description: '列出当前数据库的所有表',
+      parameters: {
+        type: 'object',
+        properties: {
+          reason: { type: 'string', description: '执行此操作的原因' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_schema',
+      description: '获取指定表的结构（列名、类型、是否可空、主键等）',
+      parameters: {
+        type: 'object',
+        properties: {
+          reason: { type: 'string', description: '执行此操作的原因' },
+          tables: { type: 'array', items: { type: 'string' }, description: '要查看的表名数组，留空表示获取所有表' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'execute_sql',
+      description: '执行一条 SQL 语句',
+      parameters: {
+        type: 'object',
+        properties: {
+          reason: { type: 'string', description: '执行此操作的原因' },
+          sql: { type: 'string', description: '要执行的 SQL 语句' },
+        },
+        required: ['sql'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'finish',
+      description: '任务完成，给出面向用户的最终总结',
+      parameters: {
+        type: 'object',
+        properties: {
+          reason: { type: 'string', description: '给用户的最终总结内容' },
+        },
+      },
+    },
+  },
+];
+
 // ============================================================
 //  会话管理
 // ============================================================
@@ -33,6 +92,8 @@ class AgentService {
   private sessions = new Map<string, AgentSession>();
   /** 当前活跃的数据库驱动（与 App 的 currentDriver 共享引用） */
   private driver: IDatabaseDriver | null = null;
+  /** 当前驱动对应的连接 ID，用于校验会话是否仍在原连接上 */
+  private driverConnectionId: number | undefined = undefined;
   /** 流式 token 回调（由主进程 IPC 设置，用于向前端推送增量文本） */
   private streamCallback: ((sessionId: string, delta: string) => void) | null = null;
 
@@ -42,8 +103,17 @@ class AgentService {
   }
 
   /** 设置当前数据库驱动（由主进程 index.ts 在连接数据库时调用） */
-  setDriver(driver: IDatabaseDriver | null): void {
+  setDriver(driver: IDatabaseDriver | null, connectionId?: number): void {
     this.driver = driver;
+    this.driverConnectionId = connectionId;
+  }
+
+  /** 请求中止会话中正在运行的 Agent 循环 */
+  cancelSession(sessionId: string): { success: boolean } {
+    const session = this.sessions.get(sessionId);
+    if (!session) return { success: false };
+    session.cancelRequested = true;
+    return { success: true };
   }
 
   /** 创建新的 Agent 会话 */
@@ -111,6 +181,29 @@ class AgentService {
     return AGENT_DEFAULTS.selectLimit;
   }
 
+  /** 获取配置的 SQL 执行超时（ms） */
+  private async getExecutionTimeout(): Promise<number> {
+    const stored = await internalDB.getSetting(AGENT_SETTING_KEYS.executionTimeout);
+    if (stored) {
+      const n = parseInt(stored, 10);
+      if (!isNaN(n) && n > 0) return n;
+    }
+    return AGENT_DEFAULTS.executionTimeout;
+  }
+
+  /** 为 Promise 包装超时，避免慢查询/锁等待卡死整个 Agent 循环 */
+  private async withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label}执行超时（超过 ${Math.round(ms / 1000)} 秒）`)), ms);
+    });
+    try {
+      return await Promise.race([promise, timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   // ============================================================
   //  Agent 主循环
   // ============================================================
@@ -133,13 +226,26 @@ class AgentService {
       return { type: 'error', error: '数据库未连接', status: 'error' };
     }
 
+    if (session.running) {
+      return { type: 'error', error: 'Agent 正在执行中，请等待当前任务完成或点击停止', status: 'error' };
+    }
+
     const now = Date.now();
 
     // 添加用户消息
     session.messages.push({ role: 'user', content: userMessage, timestamp: now });
+    // 每条用户消息开启新的一轮：重置迭代计数与中止标志，
+    // 避免历史轮次累计导致误触发最大迭代限制
+    session.iteration = 0;
+    session.cancelRequested = false;
     session.status = 'thinking';
 
-    return this.runAgentLoop(session);
+    session.running = true;
+    try {
+      return await this.runAgentLoop(session);
+    } finally {
+      session.running = false;
+    }
   }
 
   /**
@@ -176,12 +282,22 @@ class AgentService {
       session.messages.push(toolResultMsg);
 
       // 将拒绝信息反馈给 AI，让它调整策略（传递累积消息）
-      return this.runAgentLoop(session, [toolResultMsg]);
+      session.running = true;
+      try {
+        return await this.runAgentLoop(session, [toolResultMsg]);
+      } finally {
+        session.running = false;
+      }
     }
 
     // 用户批准 — 先执行动作，再继续循环
     action.status = 'approved';
-    return this.executeApprovedActionAndContinue(session, action);
+    session.running = true;
+    try {
+      return await this.executeApprovedActionAndContinue(session, action);
+    } finally {
+      session.running = false;
+    }
   }
 
   /**
@@ -220,39 +336,74 @@ class AgentService {
   private async runAgentLoop(session: AgentSession, accumulatedMessages: AgentMessage[] = []): Promise<AgentResponse> {
     const maxIterations = await this.getMaxIterations();
     const newMessages = accumulatedMessages;
+    // 记录进入本次调用时的迭代数，用于判断是否为多步任务的后续 AI 调用
+    const startIteration = session.iteration;
 
     while (session.iteration < maxIterations) {
+      // 用户请求中止
+      if (session.cancelRequested) {
+        session.cancelRequested = false;
+        session.status = 'finished';
+        const cancelMsg: AgentMessage = {
+          role: 'assistant',
+          content: '已停止执行。如需继续，请重新发送指令。',
+          actions: [],
+          timestamp: Date.now(),
+        };
+        session.messages.push(cancelMsg);
+        newMessages.push(cancelMsg);
+        return {
+          type: 'finished',
+          messages: newMessages,
+          status: 'finished',
+          iteration: session.iteration,
+        };
+      }
+
       session.iteration++;
       session.status = 'thinking';
+
+      // 多步任务时在流式输出间插入分隔，避免前端把多轮 delta 拼成一段难以阅读
+      if (session.iteration > startIteration + 1 && this.streamCallback) {
+        this.streamCallback(session.id, '\n\n---\n\n');
+      }
 
       try {
         // 构建 AI 请求
         const aiMessages = await this.buildAiMessages(session);
 
-        // 调用 AI（流式）
-        const aiResponse = await aiService.chatStream(
-          aiMessages,
-          (delta: string) => {
-            if (this.streamCallback) {
-              this.streamCallback(session.id, delta);
-            }
+        const onToken = (delta: string) => {
+          if (this.streamCallback) {
+            this.streamCallback(session.id, delta);
           }
-        );
+        };
 
-        // 解析 AI 回复中的 action
-        const parsed = this.parseAction(aiResponse);
+        // 调用 AI（优先原生 Function Calling，不支持时降级文本协议，偶发失败自动重试一次）
+        const aiResult = await this.callAi(session, aiMessages, onToken);
+
+        // 解析动作：优先原生 tool_calls，回退到 action 代码块解析
+        let parsedAction: ParsedAction | null = null;
+        let displayText = aiResult.text;
+        if (aiResult.toolCall) {
+          parsedAction = this.parseToolCall(aiResult.toolCall.name, aiResult.toolCall.arguments);
+        }
+        if (!parsedAction) {
+          const legacy = this.parseAction(aiResult.text);
+          parsedAction = legacy.action;
+          displayText = legacy.text;
+        }
 
         const now = Date.now();
 
-        if (parsed.action) {
+        if (parsedAction) {
           // AI 请求执行工具
           const action: AgentAction = {
             id: `act_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
-            tool: parsed.action.tool,
-            reason: parsed.action.reason || '',
-            sql: parsed.action.sql,
-            tables: parsed.action.tables,
-            category: parsed.action.sql ? classifySql(parsed.action.sql) : undefined,
+            tool: parsedAction.tool,
+            reason: parsedAction.reason || '',
+            sql: parsedAction.sql,
+            tables: parsedAction.tables,
+            category: parsedAction.sql ? classifySql(parsedAction.sql) : undefined,
             status: 'pending',
             timestamp: now,
           };
@@ -260,7 +411,7 @@ class AgentService {
           // 记录 assistant 消息（含动作）
           const assistantMsg: AgentMessage = {
             role: 'assistant',
-            content: parsed.text || (action.reason || ''),
+            content: displayText || (action.reason || ''),
             actions: [action],
             timestamp: now,
           };
@@ -304,6 +455,10 @@ class AgentService {
           }
 
           if (securityResult.needsApproval) {
+            // 审批前先预览 UPDATE/DELETE 的影响行数，帮助用户判断
+            if ((action.category === 'UPDATE' || action.category === 'DELETE') && action.sql) {
+              action.impactPreview = await this.previewImpact(action.sql);
+            }
             // 需要用户审批，暂停循环
             session.pendingAction = action;
             session.status = 'awaiting_approval';
@@ -337,7 +492,7 @@ class AgentService {
           // 纯文本回复（无 action）
           const assistantMsg: AgentMessage = {
             role: 'assistant',
-            content: parsed.text,
+            content: displayText,
             actions: [],
             timestamp: now,
           };
@@ -418,12 +573,102 @@ class AgentService {
   }
 
   // ============================================================
+  //  AI 调用与动作解析
+  // ============================================================
+
+  /**
+   * 调用 AI：优先原生 Function Calling；
+   * 若端点不支持 tools 参数则本会话降级为 action 文本协议；
+   * 偶发失败（限流/网络抖动）自动重试一次。
+   */
+  private async callAi(
+    session: AgentSession,
+    aiMessages: { role: 'system' | 'user' | 'assistant'; content: string }[],
+    onToken: (delta: string) => void
+  ): Promise<{ text: string; toolCall: { name: string; arguments: string } | null }> {
+    const invokeOnce = async (): Promise<{ text: string; toolCall: { name: string; arguments: string } | null }> => {
+      if (!session.nativeToolsDisabled) {
+        try {
+          const r = await aiService.chatStreamWithTools(aiMessages, AGENT_TOOL_DEFINITIONS, onToken);
+          return { text: r.content, toolCall: r.toolCalls[0] || null };
+        } catch (e: any) {
+          // 仅当错误信息明确指向 tools/function 不支持时才降级；网络/限流错误照旧抛出重试
+          const msg = String(e?.message || '').toLowerCase();
+          const networkLike = /timeout|network|fetch|socket|econn|etimedout|failed to fetch/.test(msg);
+          if (/tool|function/.test(msg) && !networkLike) {
+            session.nativeToolsDisabled = true;
+          } else {
+            throw e;
+          }
+        }
+      }
+      const text = await aiService.chatStream(aiMessages, onToken);
+      return { text, toolCall: null };
+    };
+
+    try {
+      return await invokeOnce();
+    } catch {
+      await new Promise((r) => setTimeout(r, 1000));
+      return await invokeOnce();
+    }
+  }
+
+  /** 解析原生 tool_calls 的参数为内部动作结构 */
+  private parseToolCall(name: string, argsStr: string): ParsedAction | null {
+    const validTools: AgentToolName[] = ['list_tables', 'get_schema', 'execute_sql', 'finish'];
+    if (!validTools.includes(name as AgentToolName)) return null;
+
+    let args: any = {};
+    try {
+      args = argsStr && argsStr.trim() ? JSON.parse(argsStr) : {};
+    } catch {
+      // 参数 JSON 解析失败时容错提取主要字段
+      const extract = (field: string): string | null => {
+        const re = new RegExp(`"${field}"\\s*:\\s*"([\\s\\S]*?)"\\s*[,}]`);
+        const m = (argsStr || '').match(re);
+        return m ? m[1] : null;
+      };
+      args = { reason: extract('reason'), sql: extract('sql') };
+    }
+
+    return {
+      tool: name as AgentToolName,
+      reason: typeof args.reason === 'string' ? args.reason : (typeof args.summary === 'string' ? args.summary : ''),
+      sql: typeof args.sql === 'string' ? args.sql : undefined,
+      tables: Array.isArray(args.tables) ? args.tables.map((t: any) => String(t)).filter(Boolean) : undefined,
+    };
+  }
+
+  /** 审批前预览 UPDATE/DELETE 的影响行数（失败不阻塞审批流程） */
+  private async previewImpact(sql: string): Promise<{ affectedRows: number | null; error?: string }> {
+    if (!this.driver) return { affectedRows: null };
+    const previewSql = buildImpactPreviewSql(sql);
+    if (!previewSql) return { affectedRows: null };
+    try {
+      const timeout = await this.getExecutionTimeout();
+      const result = await this.withTimeout(this.driver.executeQuery(previewSql), timeout, '影响面预览');
+      const row = result.data?.[0];
+      const raw = row ? Object.values(row)[0] : null;
+      const n = typeof raw === 'number' ? raw : parseInt(String(raw), 10);
+      return Number.isFinite(n) ? { affectedRows: n } : { affectedRows: null };
+    } catch (e: any) {
+      return { affectedRows: null, error: e.message };
+    }
+  }
+
+  // ============================================================
   //  工具执行
   // ============================================================
 
   private async executeTool(session: AgentSession, action: AgentAction): Promise<AgentActionResult> {
     if (!this.driver) {
       return { success: false, error: '数据库未连接' };
+    }
+
+    // 校验会话绑定的连接仍是当前活跃连接，防止切换连接后 SQL 打到错误的库
+    if (this.driverConnectionId !== undefined && session.connectionId !== this.driverConnectionId) {
+      return { success: false, error: '数据库连接已切换，当前 Agent 会话已失效，请新建会话' };
     }
 
     const startTime = Date.now();
@@ -515,31 +760,33 @@ class AgentService {
     let sql = action.sql.trim();
 
     try {
-      // SELECT 自动加 LIMIT
+      // SELECT 自动加行数限制（按数据库方言）
+      const selectLimit = action.category === 'SELECT' ? await this.getSelectLimit() : 0;
       if (action.category === 'SELECT') {
-        const selectLimit = await this.getSelectLimit();
-        const ensured = ensureSelectLimit(sql, selectLimit);
-        sql = ensured.sql;
-        if (ensured.modified) {
-          // 告知 AI 加了 LIMIT
-        }
+        sql = ensureSelectLimit(sql, selectLimit, session.dbType).sql;
       }
 
-      const result = await this.driver!.executeQuery(sql);
+      // 超时保护，避免慢查询/锁等待卡死整个 Agent 循环
+      const executionTimeout = await this.getExecutionTimeout();
+      const result = await this.withTimeout(
+        this.driver!.executeQuery(sql),
+        executionTimeout,
+        'SQL'
+      );
       const executionTime = Date.now() - startTime;
 
-      // 对 SELECT 结果进行截断
-      if (action.category === 'SELECT' && result.data) {
-        const selectLimit = await this.getSelectLimit();
-        const truncated = result.data.length > selectLimit;
-        if (truncated) {
-          result.data = result.data.slice(0, selectLimit);
-        }
+      // DDL 执行成功后失效表名缓存，保证后续 system prompt 中的表列表是最新的
+      if (action.category === 'DDL') {
+        session.cachedTableNames = null;
+      }
+
+      // 对 SELECT 结果进行截断（作为驱动未遵守 LIMIT 时的安全网）
+      if (action.category === 'SELECT' && result.data && result.data.length > selectLimit) {
         return {
           success: true,
           columns: result.columns,
-          data: result.data,
-          truncated,
+          data: result.data.slice(0, selectLimit),
+          truncated: true,
           executionTime,
         };
       }
@@ -586,6 +833,7 @@ class AgentService {
       dbName: session.dbName,
       schemaInfo,
       permissionLevel: session.permissionLevel,
+      useNativeTools: !session.nativeToolsDisabled,
     });
 
     const messages: { role: 'system' | 'user' | 'assistant'; content: string }[] = [
@@ -601,17 +849,20 @@ class AgentService {
         let content = msg.content || '';
         if (msg.actions && msg.actions.length > 0) {
           for (const action of msg.actions) {
-            const actionObj: Record<string, string> = { tool: action.tool };
+            const actionObj: Record<string, unknown> = { tool: action.tool };
             if (action.reason) actionObj.reason = action.reason;
             if (action.sql) actionObj.sql = action.sql;
-            if (action.tables && action.tables.length > 0) actionObj.tables = JSON.stringify(action.tables);
+            if (action.tables && action.tables.length > 0) actionObj.tables = action.tables;
             content += `\n\`\`\`action\n${JSON.stringify(actionObj, null, 2)}\n\`\`\``;
           }
         }
         messages.push({ role: 'assistant', content });
       } else if (msg.role === 'tool_result') {
-        // 将工具结果格式化为 AI 可理解的内容
-        const resultText = formatToolResult(msg.tool, msg.result);
+        // 将工具结果格式化为 AI 可理解的内容（限长避免 token 爆炸）
+        let resultText = formatToolResult(msg.tool, msg.result);
+        if (resultText.length > 3000) {
+          resultText = resultText.slice(0, 3000) + '\n（内容过长已截断）';
+        }
         const statusHint = msg.result?.success
           ? '操作已成功执行。请根据结果判断任务是否完成：若完成请调用 finish 工具总结；若还需继续执行其他操作，请直接调用相应工具。'
           : '操作执行失败。请根据错误信息调整策略，重新调用工具或调用 finish 结束任务。';
@@ -620,6 +871,18 @@ class AgentService {
           content: `[工具执行结果 - ${msg.tool}]\n${resultText}\n\n${statusHint}`,
         });
       }
+    }
+
+    // 上下文裁剪：历史过长时仅保留最近的消息，控制 token 成本
+    const MAX_AI_MESSAGES = 60;
+    const historyCount = messages.length - 1; // 不含 system
+    if (historyCount > MAX_AI_MESSAGES) {
+      const kept = messages.slice(messages.length - MAX_AI_MESSAGES);
+      return [
+        messages[0],
+        { role: 'user', content: '（更早的对话历史已省略，请基于最近的上下文继续任务）' },
+        ...kept,
+      ];
     }
 
     return messages;
@@ -684,6 +947,34 @@ interface ParsedAction {
   reason?: string;
   sql?: string;
   tables?: string[];
+}
+
+/**
+ * 持久化前瘦身：截断工具结果中的完整查询数据，
+ * 避免大会话把内部库撑到 MB 级（保留前 20 行供历史回显）
+ */
+export function sanitizeAgentMessagesForStorage(messagesJson: string): string {
+  try {
+    const messages = JSON.parse(messagesJson);
+    if (!Array.isArray(messages)) return messagesJson;
+    const MAX_ROWS = 20;
+    const slim = (result: any) => {
+      if (result?.data && Array.isArray(result.data) && result.data.length > MAX_ROWS) {
+        result.data = result.data.slice(0, MAX_ROWS);
+        result.truncated = true;
+      }
+    };
+    for (const msg of messages) {
+      if (!msg) continue;
+      if (msg.role === 'tool_result') slim(msg.result);
+      if (msg.role === 'assistant' && Array.isArray(msg.actions)) {
+        for (const a of msg.actions) slim(a?.result);
+      }
+    }
+    return JSON.stringify(messages);
+  } catch {
+    return messagesJson;
+  }
 }
 
 export const agentService = new AgentService();

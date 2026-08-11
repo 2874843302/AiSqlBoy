@@ -190,6 +190,22 @@ const ActionCard: React.FC<ActionCardProps> = ({ action, onApprove, onReject }) 
         </div>
       )}
 
+      {/* 影响面预览（UPDATE/DELETE 审批前） */}
+      {action.impactPreview && (action.impactPreview.affectedRows !== null || action.impactPreview.error) && (
+        <div className="px-4 py-2 border-t border-amber-100/40 bg-amber-50/40 flex items-center gap-1.5">
+          {action.impactPreview.affectedRows !== null ? (
+            <>
+              <AlertTriangle size={12} className="text-amber-500 shrink-0" />
+              <span className="text-xs text-amber-700">
+                预计影响 <b className="font-bold">{action.impactPreview.affectedRows}</b> 行数据，请确认后执行
+              </span>
+            </>
+          ) : (
+            <span className="text-[11px] text-slate-400">影响面预览失败：{action.impactPreview.error}</span>
+          )}
+        </div>
+      )}
+
       {/* Approval buttons */}
       <AnimatePresence>
         {action.status === 'pending' && onApprove && onReject && (

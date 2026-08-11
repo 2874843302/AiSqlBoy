@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { X } from 'lucide-react';
+import { X, PackagePlus } from 'lucide-react';
 import { ConnectionConfig } from '../../../shared/types';
 
 type ConnectionModalProps = {
@@ -8,9 +8,10 @@ type ConnectionModalProps = {
   onChange: (config: ConnectionConfig) => void;
   onClose: () => void;
   onSave: () => void;
+  onExportPackage?: (config: ConnectionConfig) => void;
 };
 
-const ConnectionModal: React.FC<ConnectionModalProps> = ({ config, onChange, onClose, onSave }) => {
+const ConnectionModal: React.FC<ConnectionModalProps> = ({ config, onChange, onClose, onSave, onExportPackage }) => {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
       <motion.div
@@ -177,6 +178,39 @@ const ConnectionModal: React.FC<ConnectionModalProps> = ({ config, onChange, onC
           </div>
         </div>
 
+        {/* 只读模式开关：仅新建连接时可选，已有连接不可回改 */}
+        {config.id == null && (
+          <div className="px-8 pb-5">
+            <label className="flex items-center gap-3 px-4 py-3 rounded-xl border border-amber-200 bg-amber-50/50 cursor-pointer hover:bg-amber-50 transition-colors">
+              <input
+                type="checkbox"
+                checked={!!config.readOnly}
+                onChange={(e) => onChange({ ...config, readOnly: e.target.checked })}
+                className="w-4 h-4 accent-amber-500"
+              />
+              <div>
+                <div className="text-sm font-bold text-amber-700">只读模式</div>
+                <div className="text-xs text-amber-600/80">仅允许查询，禁止数据修改、结构变更与导出等一切写操作</div>
+              </div>
+            </label>
+          </div>
+        )}
+
+        {/* 只读分享：导出加密连接包 */}
+        <div className="px-8 pb-5">
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">只读分享</div>
+            {config.id != null && onExportPackage && (
+              <button
+                onClick={() => onExportPackage(config)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-amber-600 bg-amber-50 hover:bg-amber-100 border border-amber-200 transition-colors"
+              >
+                <PackagePlus size={14} />
+                导出只读包
+              </button>
+            )}
+          </div>
+        </div>
         <div className="px-8 py-6 border-t border-slate-100 bg-slate-50 flex gap-3">
           <button
             onClick={onClose}

@@ -4,9 +4,11 @@ import { autoUpdater } from 'electron-updater'
 import { internalDB } from './services/internalDB'
 import { SQLiteDriver, MySQLDriver, PostgreSQLDriver, OracleDriver, RedisDriver, IDatabaseDriver } from './services/drivers'
 import { aiService } from './services/aiService'
-import { agentService } from './services/agentService'
+import { agentService, sanitizeAgentMessagesForStorage } from './services/agentService'
 import fs from 'fs'
 import { ConnectionConfig } from '../shared/types'
+import { classifySql, hasMultipleStatements, stripSqlNoise } from '../shared/sqlSecurity'
+import { encryptConnectionPackage, decryptConnectionPackage } from './services/connectionPackage'
 
 // 配置自动更新
 autoUpdater.autoDownload = false // 默认不自动下载，由用户选择
@@ -15,6 +17,17 @@ autoUpdater.autoInstallOnAppQuit = true // 程序退出时自动安装
 let mainWindow: BrowserWindow | null = null
 let currentDriver: IDatabaseDriver | null = null
 let heartbeatTimer: NodeJS.Timeout | null = null
+let currentReadOnly = false // 当前连接是否只读模式
+
+const READONLY_DENY = '当前连接为只读模式，禁止此操作'
+
+// 只读模式下校验 SQL：仅放行单条查询，拦截多语句拼接与 SELECT INTO OUTFILE 等伪装写入
+function checkReadOnlySql(sql: string): string | null {
+  if (hasMultipleStatements(sql)) return '只读模式下仅允许执行单条查询语句'
+  if (/\bINTO\s+(OUTFILE|DUMPFILE)\b/i.test(stripSqlNoise(sql))) return '只读模式下禁止 SELECT INTO OUTFILE/DUMPFILE'
+  if (classifySql(sql) !== 'SELECT') return READONLY_DENY + '（仅允许查询）'
+  return null
+}
 
 function createDriver(config: ConnectionConfig): IDatabaseDriver {
   if (config.type === 'sqlite') {
@@ -198,6 +211,48 @@ ipcMain.handle('delete-connection', async (_, id: number) => {
   return internalDB.deleteConnection(id)
 })
 
+// 只读连接包：加密导出 / 选择文件 / 解密导入
+ipcMain.handle('export-connection-package', async (_, config: ConnectionConfig, passphrase: string, expiresAt: number) => {
+  try {
+    if (!expiresAt || typeof expiresAt !== 'number' || expiresAt <= Date.now()) {
+      return { success: false, error: '无效的连接包有效期' }
+    }
+    const { canceled, filePath } = await dialog.showSaveDialog(mainWindow!, {
+      title: '导出只读连接包',
+      defaultPath: `${(config.name || 'connection').replace(/[\\/:*?"<>|]/g, '_')}.aisqlboy`,
+      filters: [{ name: 'AiSqlBoy 连接包', extensions: ['aisqlboy'] }]
+    })
+    if (canceled || !filePath) return { success: false, error: 'User cancelled' }
+    fs.writeFileSync(filePath, encryptConnectionPackage(config, passphrase, expiresAt), 'utf8')
+    return { success: true, filePath }
+  } catch (error: any) {
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('pick-connection-package-file', async () => {
+  try {
+    const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow!, {
+      title: '选择只读连接包',
+      filters: [{ name: 'AiSqlBoy 连接包', extensions: ['aisqlboy'] }],
+      properties: ['openFile']
+    })
+    if (canceled || !filePaths[0]) return { success: false, error: 'User cancelled' }
+    return { success: true, content: fs.readFileSync(filePaths[0], 'utf8') }
+  } catch (error: any) {
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('decrypt-connection-package', async (_, payload: string, passphrase: string) => {
+  try {
+    const config = decryptConnectionPackage(payload, passphrase)
+    return { success: true, config }
+  } catch (error: any) {
+    return { success: false, error: error.message }
+  }
+})
+
 // Console Management IPC
 ipcMain.handle('get-consoles', async (_, connectionId?: number) => {
   return internalDB.getConsoles(connectionId)
@@ -214,6 +269,10 @@ ipcMain.handle('delete-console', async (_, id: string) => {
 // External DB IPC (Data Browsing)
 ipcMain.handle('connect-db', async (_, config: ConnectionConfig) => {
   try {
+    // 导入包到期拦截：不信任渲染进程，主进程强制拒绝连接
+    if (config.expiresAt && Date.now() > config.expiresAt) {
+      return { success: false, error: `该只读连接已于 ${new Date(config.expiresAt).toLocaleString('zh-CN')} 过期，请联系分享者重新导出连接包` }
+    }
     if (currentDriver) {
       await currentDriver.disconnect()
     }
@@ -221,11 +280,13 @@ ipcMain.handle('connect-db', async (_, config: ConnectionConfig) => {
     currentDriver = createDriver(config)
 
     await currentDriver.connect()
-    agentService.setDriver(currentDriver)
+    currentReadOnly = !!config.readOnly
+    agentService.setDriver(currentDriver, config.id)
     startHeartbeat()
     return { success: true }
   } catch (error: any) {
     currentDriver = null
+    currentReadOnly = false
     agentService.setDriver(null)
     stopHeartbeat()
     return { success: false, error: mapConnectError(error, config) }
@@ -294,6 +355,7 @@ ipcMain.handle('get-table-indexes', async (_, tableName: string) => {
 
 ipcMain.handle('rename-table', async (_, oldName: string, newName: string) => {
   if (!currentDriver) return { success: false, error: 'Not connected' }
+  if (currentReadOnly) return { success: false, error: READONLY_DENY }
   try {
     await currentDriver.renameTable(oldName, newName)
     return { success: true }
@@ -304,6 +366,7 @@ ipcMain.handle('rename-table', async (_, oldName: string, newName: string) => {
 
 ipcMain.handle('delete-table', async (_, tableName: string) => {
   if (!currentDriver) return { success: false, error: 'Not connected' }
+  if (currentReadOnly) return { success: false, error: READONLY_DENY }
   try {
     await currentDriver.deleteTable(tableName)
     return { success: true }
@@ -314,6 +377,7 @@ ipcMain.handle('delete-table', async (_, tableName: string) => {
 
 ipcMain.handle('create-table', async (_, tableName: string, columns: any[], indexes?: any[]) => {
   if (!currentDriver) return { success: false, error: 'Not connected' }
+  if (currentReadOnly) return { success: false, error: READONLY_DENY }
   try {
     await currentDriver.createTable(tableName, columns, indexes)
     return { success: true }
@@ -324,6 +388,7 @@ ipcMain.handle('create-table', async (_, tableName: string, columns: any[], inde
 
 ipcMain.handle('update-table-schema', async (_, tableName: string, changes: any) => {
   if (!currentDriver) return { success: false, error: 'Not connected' }
+  if (currentReadOnly) return { success: false, error: READONLY_DENY }
   try {
     await currentDriver.updateTableSchema(tableName, changes)
     return { success: true }
@@ -334,6 +399,7 @@ ipcMain.handle('update-table-schema', async (_, tableName: string, changes: any)
 
 ipcMain.handle('export-database', async (_, includeData: boolean) => {
   if (!currentDriver) return { success: false, error: 'Not connected' }
+  if (currentReadOnly) return { success: false, error: READONLY_DENY }
   try {
     const sql = await currentDriver.exportDatabase(includeData)
     const { filePath } = await dialog.showSaveDialog(mainWindow!, {
@@ -354,6 +420,7 @@ ipcMain.handle('export-database', async (_, includeData: boolean) => {
 
 ipcMain.handle('delete-database', async (_, dbName: string) => {
   if (!currentDriver) return { success: false, error: 'Not connected' }
+  if (currentReadOnly) return { success: false, error: READONLY_DENY }
   try {
     await currentDriver.deleteDatabase(dbName)
     return { success: true }
@@ -364,6 +431,10 @@ ipcMain.handle('delete-database', async (_, dbName: string) => {
 
 ipcMain.handle('execute-query', async (_, sql: string) => {
   if (!currentDriver) return { success: false, error: 'Not connected' }
+  if (currentReadOnly) {
+    const denyReason = checkReadOnlySql(sql)
+    if (denyReason) return { success: false, error: denyReason }
+  }
   try {
     // 这里的 MAX_ROWS 是为了防止单次 IPC 传输过载
     // 我们应该鼓励用户使用分页，而不是一次性拉取所有数据
@@ -450,6 +521,8 @@ agentService.setStreamCallback((sessionId: string, delta: string) => {
 
 ipcMain.handle('agent:create-session', async (_, params: { connectionId: number; dbType: string; dbName: string; permissionLevel: 'readonly' | 'write-confirm' | 'full-control' }) => {
   try {
+    // 只读连接强制降级 Agent 权限，不信任前端传入值
+    if (currentReadOnly) params = { ...params, permissionLevel: 'readonly' }
     const sessionId = await agentService.createSession(params)
     return { success: true, sessionId }
   } catch (error: any) {
@@ -473,19 +546,26 @@ ipcMain.handle('agent:approve', async (_, { sessionId, actionId, approved }: { s
   }
 })
 
+ipcMain.handle('agent:cancel', async (_, sessionId: string) => {
+  return agentService.cancelSession(sessionId)
+})
+
 ipcMain.handle('agent:destroy-session', async (_, sessionId: string) => {
   agentService.destroySession(sessionId)
   return { success: true }
 })
 
 ipcMain.handle('agent:update-permission', async (_, { sessionId, permissionLevel }: { sessionId: string; permissionLevel: 'readonly' | 'write-confirm' | 'full-control' }) => {
+  // 只读连接下不允许提升权限
+  if (currentReadOnly) permissionLevel = 'readonly'
   return agentService.updatePermission(sessionId, permissionLevel)
 })
 
 // Agent 会话持久化
 ipcMain.handle('agent:save-conversation', async (_, conv: { id: string; connection_id: number; title: string; messages: string; selected_db?: string | null; selected_table?: string | null }) => {
   try {
-    await internalDB.saveAgentConversation(conv)
+    // 持久化前截断大查询结果，避免存储膨胀
+    await internalDB.saveAgentConversation({ ...conv, messages: sanitizeAgentMessagesForStorage(conv.messages) })
     return { success: true }
   } catch (error: any) {
     return { success: false, error: error.message }

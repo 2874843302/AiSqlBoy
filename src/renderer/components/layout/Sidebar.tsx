@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Database, Table, Bot, Plus, Settings, Trash2, Loader2, ChevronRight, Layout, RefreshCw, Filter, Server, Key, Star } from 'lucide-react';
+import { Database, Table, Bot, Plus, Settings, Trash2, Loader2, ChevronRight, Layout, RefreshCw, Filter, Server, Key, Star, Import } from 'lucide-react';
 import type { ConnectionConfig } from '../../../shared/types';
 
 type SidebarProps = {
@@ -8,6 +8,7 @@ type SidebarProps = {
   onStartResize: () => void;
   onOpenAgent: () => void;
   onAddConnection: () => void;
+  onImportPackage: () => void;
   savedConnections: ConnectionConfig[];
   activeConnection: ConnectionConfig | null;
   connectingConnectionId: number | null;
@@ -31,11 +32,23 @@ type SidebarProps = {
   onOpenSettings: () => void;
 };
 
+/** 只读连接包剩余有效期文案：按天/小时/分钟自动降档 */
+const formatExpiryRemaining = (expiresAt: number): string => {
+  const diff = expiresAt - Date.now();
+  if (diff <= 0) return '已过期';
+  const minutes = Math.floor(diff / 60000);
+  if (minutes < 60) return `剩 ${Math.max(minutes, 1)} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `剩 ${hours} 小时`;
+  return `剩 ${Math.floor(hours / 24)} 天`;
+};
+
 const Sidebar: React.FC<SidebarProps> = ({
   sidebarWidth,
   onStartResize,
   onOpenAgent,
   onAddConnection,
+  onImportPackage,
   savedConnections,
   activeConnection,
   connectingConnectionId,
@@ -89,6 +102,15 @@ const Sidebar: React.FC<SidebarProps> = ({
             <motion.button
               whileHover={{ scale: 1.1 }}
               whileTap={{ scale: 0.9 }}
+              onClick={onImportPackage}
+              className="w-8 h-8 flex items-center justify-center bg-slate-100 hover:bg-slate-200 rounded-full transition-colors border border-slate-200 text-slate-600"
+              title="导入只读连接包"
+            >
+              <Import size={16} />
+            </motion.button>
+            <motion.button
+              whileHover={{ scale: 1.1 }}
+              whileTap={{ scale: 0.9 }}
               onClick={onAddConnection}
               className="w-8 h-8 flex items-center justify-center bg-slate-100 hover:bg-slate-200 rounded-full transition-colors border border-slate-200 text-slate-600"
               title="添加连接"
@@ -102,7 +124,7 @@ const Sidebar: React.FC<SidebarProps> = ({
           {/* Saved Connections */}
           <div className="p-4 space-y-4">
             <div className="px-2">
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] mb-3">我的连接</div>
+              <div className="text-[10px] font-bold text-slate-400 tracking-wide mb-3">我的连接</div>
               <div className="space-y-1">
                 <AnimatePresence>
                   {savedConnections.map((conn) => (
@@ -113,6 +135,14 @@ const Sidebar: React.FC<SidebarProps> = ({
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, scale: 0.95 }}
                         onClick={() => onConnect(conn)}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            onConnect(conn);
+                          }
+                        }}
                         className={`group flex items-center justify-between px-3 py-2.5 rounded-xl transition-all duration-300 relative overflow-hidden ${
                           activeConnection?.id === conn.id 
                           ? 'bg-blue-50 text-blue-600 border border-blue-100 shadow-sm' 
@@ -137,21 +167,50 @@ const Sidebar: React.FC<SidebarProps> = ({
                             title={activeConnection?.id === conn.id ? '已连接' : '未连接'}
                           />
                           <span className="truncate font-semibold">{conn.name}</span>
+                          {conn.readOnly && (
+                            <span className="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-600 border border-amber-200" title="只读连接：仅允许查询">
+                              只读
+                            </span>
+                          )}
+                          {conn.expiresAt != null && (() => {
+                            const expired = Date.now() > conn.expiresAt;
+                            const soon = !expired && conn.expiresAt! - Date.now() < 24 * 60 * 60 * 1000;
+                            return (
+                              <span
+                                className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                                  expired
+                                    ? 'bg-red-50 text-red-500 border-red-200'
+                                    : soon
+                                      ? 'bg-orange-50 text-orange-600 border-orange-200'
+                                      : 'bg-blue-50 text-blue-600 border-blue-200'
+                                }`}
+                                title={
+                                  expired
+                                    ? `该只读连接已于 ${new Date(conn.expiresAt!).toLocaleString('zh-CN')} 过期，请联系分享者重新导出`
+                                    : `有效期至 ${new Date(conn.expiresAt!).toLocaleString('zh-CN')}`
+                                }
+                              >
+                                {formatExpiryRemaining(conn.expiresAt!)}
+                              </span>
+                            );
+                          })()}
                         </div>
                         <div className="flex items-center gap-1 z-10">
+                          {!conn.locked && (
                           <motion.button
                             whileHover={{ scale: 1.1, color: '#2563eb' }}
                             onClick={(e) => onEditConnection(conn, e)}
-                            className="opacity-0 group-hover:opacity-100 p-1.5 hover:bg-blue-50 rounded-lg transition-all text-slate-400 disabled:opacity-30 disabled:cursor-not-allowed"
+                            className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-1.5 hover:bg-blue-50 rounded-lg transition-all text-slate-400 disabled:opacity-30 disabled:cursor-not-allowed"
                             title="修改配置"
                             disabled={connectingConnectionId !== null}
                           >
                             <Settings size={14} />
                           </motion.button>
+                          )}
                           <motion.button
                             whileHover={{ scale: 1.1, color: '#ef4444' }}
                             onClick={(e) => onDeleteConnection(conn.id!, e)}
-                            className="opacity-0 group-hover:opacity-100 p-1.5 hover:bg-red-50 rounded-lg transition-all text-slate-400 disabled:opacity-30 disabled:cursor-not-allowed"
+                            className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-1.5 hover:bg-red-50 rounded-lg transition-all text-slate-400 disabled:opacity-30 disabled:cursor-not-allowed"
                             title="删除连接"
                             disabled={connectingConnectionId !== null}
                           >
@@ -177,7 +236,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                           >
                             {/* Database List */}
                             <div className="px-2">
-                              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] mb-3 flex items-center gap-2">
+                              <div className="text-[10px] font-bold text-slate-400 tracking-wide mb-3 flex items-center gap-2">
                                 <Layout size={16} /> 数据库
                                 <button
                                   onClick={(e) => {
@@ -213,7 +272,6 @@ const Sidebar: React.FC<SidebarProps> = ({
                                 {filteredDatabases.map((db) => (
                                   <div key={db} className="space-y-1">
                                     <motion.button
-                                      whileHover={{ boxShadow: '0 4px 12px rgba(0, 0, 0, 0.05)' }}
                                       onClick={() => onSelectDatabase(db)}
                                       onContextMenu={(e) => {
                                         e.preventDefault();
@@ -256,7 +314,6 @@ const Sidebar: React.FC<SidebarProps> = ({
                                             const isPinned = pinnedTables.has(table.name);
                                             return (
                                             <motion.button
-                                              whileHover={{ boxShadow: '0 4px 12px rgba(0, 0, 0, 0.05)' }}
                                               key={table.name}
                                               onClick={() => onSelectTable(table.name)}
                                               onContextMenu={(e) => {

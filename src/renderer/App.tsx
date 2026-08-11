@@ -21,9 +21,11 @@ import AgentPanel from './components/agent/AgentPanel';
 import ERDiagramModal from './components/er/ERDiagramModal';
 import ERSchemaDiagramModal from './components/er/ERSchemaDiagramModal';
 import { quoteTableNameForQuery, buildFallbackCreateTableSql, stripSqlComments } from './utils/sqlText';
+import { classifySql, hasMultipleStatements, stripSqlNoise } from '../shared/sqlSecurity';
 import ConsoleRenameModal from './components/console/ConsoleRenameModal';
 import LoadConsoleModal from './components/console/LoadConsoleModal';
 import ConnectionModal from './components/connection/ConnectionModal';
+import ConnectionPackageModal from './components/connection/ConnectionPackageModal';
 import SchemaFilterModal from './components/table/SchemaFilterModal';
 import RenameTableModal from './components/table/RenameTableModal';
 import TextDetailModal from './components/table/TextDetailModal';
@@ -113,6 +115,15 @@ const App: React.FC = () => {
 
   // Context Menu State
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, type: 'table' | 'database' | 'row' | 'console', target: string } | null>(null);
+
+  // 只读连接包：导出/导入弹窗
+  const [packageModal, setPackageModal] = useState<
+    | { mode: 'export'; config: ConnectionConfig }
+    | { mode: 'import'; payload: string }
+    | null
+  >(null);
+  const [packageLoading, setPackageLoading] = useState(false);
+  const [packageError, setPackageError] = useState('');
 
   // 表置顶：被置顶的表在左侧列表优先显示
   const [pinnedTables, setPinnedTables] = useState<Set<string>>(new Set());
@@ -318,10 +329,12 @@ const App: React.FC = () => {
   const {
     showAgentPanel,
     agentLoading,
+    agentBusy,
     agentInput,
     setAgentInput,
     agentMessages,
     permissionLevel,
+    permissionLocked,
     agentError,
     agentIteration,
     conversationsByConn,
@@ -334,6 +347,7 @@ const App: React.FC = () => {
     handleDeleteConversation,
     handleRenameConversation,
     handleAgentSubmit,
+    handleCancelAgent,
     handleApproveAction,
     handleRejectAction,
     handleClearSession,
@@ -344,11 +358,37 @@ const App: React.FC = () => {
     selectedDatabase,
     selectedTable,
     setToast,
-    onRestoreDbTable: (db, table) => {
-      if (db) handleSelectDatabase(db);
-      else setSelectedDatabase(null);
-      if (table) handleSelectTable(table);
-      else setSelectedTable(null);
+    onConnect: (config) => handleConnect(config),
+    onRestoreDbTable: async (db, table) => {
+      // 不走 handleSelectDatabase（其折叠切换逻辑会干扰恢复），直接切换库并加载表
+      if (!db) {
+        setSelectedDatabase(null);
+        setTables([]);
+        setSelectedTable(null);
+        setData([]);
+        setColumns([]);
+        return;
+      }
+      try {
+        const useRes = await window.electronAPI.useDatabase(db);
+        if (!useRes.success) {
+          setToast({ message: useRes.error || `恢复数据库 ${db} 失败`, type: 'error' });
+          return;
+        }
+        setSelectedDatabase(db);
+        setExpandedDatabases((prev) => new Set(prev).add(db));
+        const tableList = await window.electronAPI.getTables();
+        setTables(tableList);
+        if (table && tableList.some((t) => t.name === table)) {
+          await handleSelectTable(table);
+        } else {
+          setSelectedTable(null);
+          setData([]);
+          setColumns([]);
+        }
+      } catch (err: any) {
+        setToast({ message: err.message || '恢复库表上下文失败', type: 'error' });
+      }
     }
   });
 
@@ -852,6 +892,22 @@ const App: React.FC = () => {
     sqlToExecute = stripSqlComments(sqlToExecute);
 
     if (!sqlToExecute.trim()) return;
+
+    // 只读模式预检：仅放行单条查询，拦截多语句拼接与 INTO OUTFILE 伪装写入（UI 礼貌层，主进程另有强制层）
+    if (activeConnection?.readOnly) {
+      if (hasMultipleStatements(sqlToExecute)) {
+        setToast({ message: '只读模式下仅允许执行单条查询语句', type: 'error' });
+        return;
+      }
+      if (/\bINTO\s+(OUTFILE|DUMPFILE)\b/i.test(stripSqlNoise(sqlToExecute))) {
+        setToast({ message: '只读模式下禁止 SELECT INTO OUTFILE/DUMPFILE', type: 'error' });
+        return;
+      }
+      if (classifySql(sqlToExecute) !== 'SELECT') {
+        setToast({ message: '当前连接为只读模式，仅允许执行查询语句', type: 'error' });
+        return;
+      }
+    }
 
     let startTime = Date.now();
     setConsoles(prev => prev.map(c => c.id === id ? { ...c, executing: true, error: undefined, executionTime: undefined } : c));
@@ -1605,6 +1661,55 @@ ${JSON.stringify(payload)}
     }
   };
 
+  // 只读连接包：选择文件 → 口令弹窗
+  const handleImportPackage = async () => {
+    try {
+      const res = await window.electronAPI.pickConnectionPackageFile();
+      if (!res.success || !res.content) {
+        if (res.error) setToast({ message: res.error, type: 'error' });
+        return;
+      }
+      setPackageError('');
+      setPackageModal({ mode: 'import', payload: res.content });
+    } catch (err: any) {
+      setToast({ message: err?.message || '打开连接包失败', type: 'error' });
+    }
+  };
+
+  // 只读连接包：从连接配置弹窗发起导出
+  const handleExportPackage = (config: ConnectionConfig) => {
+    setPackageError('');
+    setPackageModal({ mode: 'export', config });
+  };
+
+  // 只读连接包：口令确认（导出加密写盘 / 导入解密入库）
+  const handlePackageConfirm = async (passphrase: string, expiresAt?: number) => {
+    if (!packageModal) return;
+    setPackageLoading(true);
+    setPackageError('');
+    try {
+      if (packageModal.mode === 'export') {
+        const res = await window.electronAPI.exportConnectionPackage(packageModal.config, passphrase, expiresAt || 0);
+        if (!res.success) throw new Error(res.error || '导出连接包失败');
+        setPackageModal(null);
+        setToast({ message: `只读连接包已导出${res.filePath ? `：${res.filePath}` : ''}`, type: 'success' });
+      } else {
+        const res = await window.electronAPI.decryptConnectionPackage(packageModal.payload, passphrase);
+        if (!res.success || !res.config) throw new Error(res.error || '解密连接包失败');
+        // 剥掉导出方的本地 id，导入为新连接；解密结果已强制 readOnly + locked
+        const imported: ConnectionConfig = { ...res.config, id: undefined };
+        await window.electronAPI.saveConnection(imported);
+        await loadSavedConnections();
+        setPackageModal(null);
+        setToast({ message: `只读连接「${imported.name}」已导入`, type: 'success' });
+      }
+    } catch (err: any) {
+      setPackageError(err?.message || '操作失败');
+    } finally {
+      setPackageLoading(false);
+    }
+  };
+
   const connectingConnectionName = useMemo(
     () => savedConnections.find((c) => c.id === connectingConnectionId)?.name || '',
     [savedConnections, connectingConnectionId]
@@ -1625,6 +1730,7 @@ ${JSON.stringify(payload)}
         }}
         savedConnections={savedConnections}
         activeConnection={activeConnection}
+        onImportPackage={handleImportPackage}
         connectingConnectionId={connectingConnectionId}
         expandedConnections={expandedConnections}
         expandedDatabases={expandedDatabases}
@@ -1885,6 +1991,22 @@ ${JSON.stringify(payload)}
             onChange={setNewConfig}
             onClose={() => setShowAddModal(false)}
             onSave={handleSaveConnection}
+            onExportPackage={handleExportPackage}
+          />
+        )}
+        {packageModal && (
+          <ConnectionPackageModal
+            mode={packageModal.mode}
+            connectionName={packageModal.mode === 'export' ? packageModal.config.name : undefined}
+            loading={packageLoading}
+            error={packageError}
+            onClose={() => {
+              if (!packageLoading) {
+                setPackageModal(null);
+                setPackageError('');
+              }
+            }}
+            onConfirm={handlePackageConfirm}
           />
         )}
       </AnimatePresence>
@@ -1920,6 +2042,7 @@ ${JSON.stringify(payload)}
           <AppContextMenu
             contextMenu={contextMenu}
             connectionType={activeConnection?.type}
+            readOnly={!!activeConnection?.readOnly}
             selectedDatabase={selectedDatabase}
             insertingRow={!!insertingRow}
             deletedRows={deletedRows}
@@ -2035,11 +2158,14 @@ show={showAgentPanel}
 onClose={handleCloseAgent}
 messages={agentMessages}
 loading={agentLoading}
+busy={agentBusy}
 input={agentInput}
 setInput={setAgentInput}
 onSubmit={handleAgentSubmit}
+onCancel={handleCancelAgent}
 permissionLevel={permissionLevel}
 onPermissionChange={handlePermissionChange}
+permissionLocked={permissionLocked}
 onApproveAction={handleApproveAction}
 onRejectAction={handleRejectAction}
 onClearSession={handleClearSession}
@@ -2224,6 +2350,7 @@ activeConnectionName={activeConnection?.name}
             schemaCommentAILoading={schemaCommentAILoading}
             onGenerateAIComments={handleGenerateColumnCommentsByAI}
             connectionType={activeConnection?.type}
+            readOnly={!!activeConnection?.readOnly}
             existingTables={tables.map(t => t.name)}
             onClose={() => setShowSchemaModal(false)}
             onSave={handleUpdateSchema}

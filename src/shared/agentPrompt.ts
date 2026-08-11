@@ -8,10 +8,12 @@ export interface AgentPromptContext {
   dbName: string;
   schemaInfo: string;
   permissionLevel: 'readonly' | 'write-confirm' | 'full-control';
+  /** 是否使用原生 Function Calling（否则使用 action 代码块文本协议） */
+  useNativeTools?: boolean;
 }
 
 export function buildAgentSystemPrompt(ctx: AgentPromptContext): string {
-  const { dbType, dbName, schemaInfo, permissionLevel } = ctx;
+  const { dbType, dbName, schemaInfo, permissionLevel, useNativeTools } = ctx;
 
   const permissionDesc: Record<typeof permissionLevel, string> = {
     readonly: '只读模式 — 仅允许执行 SELECT 查询，任何写操作（INSERT/UPDATE/DELETE/DDL）都会被拒绝',
@@ -19,19 +21,17 @@ export function buildAgentSystemPrompt(ctx: AgentPromptContext): string {
     'full-control': '完全控制 — SELECT 自动执行，写操作和 DDL 需要用户审批，但危险操作（无 WHERE 的 DELETE/UPDATE）会被拒绝',
   };
 
-  return `你是一个专业的数据库 Agent，可以自主调用工具来执行 SQL，帮助用户完成数据库任务。
+  const toolsSection = useNativeTools
+    ? `## 可用工具
+你可以直接调用系统提供的工具函数（function calling）。每次回复只调用一个工具。
 
-## 当前环境
-- 数据库类型: ${dbType}
-- 当前数据库: ${dbName}
+### 可用工具列表：
 
-## 数据库结构
-${schemaInfo}
-
-## 当前权限级别
-${permissionDesc[permissionLevel]}
-
-## 可用工具
+1. **list_tables** — 列出当前数据库的所有表
+2. **get_schema** — 获取指定表的结构（列名、类型、是否可空、主键等）；tables 参数留空表示获取所有表
+3. **execute_sql** — 执行一条 SQL 语句，需提供 sql 参数
+4. **finish** — 任务完成，在 reason 参数中给出面向用户的最终总结`
+    : `## 可用工具
 你可以通过输出 \`action\` 代码块来调用工具。每次回复只能包含一个 action 块。
 
 格式如下（JSON）：
@@ -59,7 +59,21 @@ ${permissionDesc[permissionLevel]}
    - 示例：\`\`\`action\n{"tool":"execute_sql","reason":"查询最近注册的用户","sql":"SELECT id, name, email, created_at FROM users ORDER BY created_at DESC LIMIT 20"}\n\`\`\`
 
 4. **finish** — 任务完成，给出最终总结
-   - 示例：\`\`\`action\n{"tool":"finish","reason":"任务已完成"}\n\`\`\`
+   - 示例：\`\`\`action\n{"tool":"finish","reason":"任务已完成"}\n\`\`\``;
+
+  return `你是一个专业的数据库 Agent，可以自主调用工具来执行 SQL，帮助用户完成数据库任务。
+
+## 当前环境
+- 数据库类型: ${dbType}
+- 当前数据库: ${dbName}
+
+## 数据库结构
+${schemaInfo}
+
+## 当前权限级别
+${permissionDesc[permissionLevel]}
+
+${toolsSection}
 
 ## 安全规则（必须严格遵守）
 1. **严禁捏造**：必须严格基于上方提供的真实数据库结构编写 SQL，严禁使用不存在的表名或字段名
@@ -88,7 +102,7 @@ ${permissionDesc[permissionLevel]}
 5. 验证执行结果，确认任务完成
 6. 调用 finish 给出总结
 
-收到工具执行结果后，继续下一步推理。不要一次性输出多个 action 块。`;
+收到工具执行结果后，继续下一步推理。不要一次性输出多个工具调用。`;
 }
 
 /**
@@ -110,10 +124,21 @@ export function formatToolResult(
     if (!result.data || result.data.length === 0) {
       return '未获取到表结构信息';
     }
-    const lines = result.data.map((row: any) => {
-      return `${row.name} (${row.type}, ${row.nullable ? '可空' : '非空'}${row.primaryKey ? ', 主键' : ''}${row.comment ? `, 注释: ${row.comment}` : ''})`;
-    });
-    return `表结构：\n${lines.join('\n')}`;
+    // 按表分组展示，避免多表查询时 AI 分不清列属于哪张表
+    const byTable = new Map<string, any[]>();
+    for (const row of result.data) {
+      const key = row.table || '(未知表)';
+      if (!byTable.has(key)) byTable.set(key, []);
+      byTable.get(key)!.push(row);
+    }
+    const sections: string[] = [];
+    for (const [tableName, cols] of byTable) {
+      const lines = cols.map((row: any) => {
+        return `- ${row.name} (${row.type}, ${row.nullable ? '可空' : '非空'}${row.primaryKey ? ', 主键' : ''}${row.comment ? `, 注释: ${row.comment}` : ''})`;
+      });
+      sections.push(`表 ${tableName}：\n${lines.join('\n')}`);
+    }
+    return `表结构：\n${sections.join('\n\n')}`;
   }
 
   if (tool === 'execute_sql') {

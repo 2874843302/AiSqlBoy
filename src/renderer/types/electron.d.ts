@@ -9,6 +9,11 @@ declare global {
       validateConnection: (config: ConnectionConfig) => Promise<{ success: boolean; error?: string }>;
       deleteConnection: (id: number) => Promise<any>;
 
+      // 只读连接包
+      exportConnectionPackage: (config: ConnectionConfig, passphrase: string, expiresAt: number) => Promise<{ success: boolean; filePath?: string; error?: string }>;
+      pickConnectionPackageFile: () => Promise<{ success: boolean; content?: string; error?: string }>;
+      decryptConnectionPackage: (payload: string, passphrase: string) => Promise<{ success: boolean; config?: ConnectionConfig; error?: string }>;
+
       // Console Management
       getConsoles: (connectionId?: number) => Promise<any[]>;
       saveConsole: (console: any) => Promise<any>;
@@ -52,6 +57,7 @@ declare global {
       agentCreateSession: (params: { connectionId: number; dbType: string; dbName: string; permissionLevel: 'readonly' | 'write-confirm' | 'full-control' }) => Promise<{ success: boolean; sessionId?: string; error?: string }>;
       agentChat: (sessionId: string, message: string) => Promise<AgentResponse>;
       agentApprove: (sessionId: string, actionId: string, approved: boolean) => Promise<AgentResponse>;
+      agentCancel: (sessionId: string) => Promise<{ success: boolean }>;
       agentDestroySession: (sessionId: string) => Promise<{ success: boolean }>;
       agentUpdatePermission: (sessionId: string, permissionLevel: 'readonly' | 'write-confirm' | 'full-control') => Promise<{ success: boolean; error?: string }>;
       onAgentStreamToken: (callback: (data: { sessionId: string; delta: string }) => void) => void;

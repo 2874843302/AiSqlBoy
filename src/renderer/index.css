@@ -4,16 +4,38 @@
   --font-sans: 'Inter', 'PingFang SC', 'Microsoft YaHei', sans-serif;
 }
 
-:root[data-theme='light'] {
+/* ============================================================
+   语义色 Token（双主题单一数据源）
+   暗色模式策略：
+   1. 翻转 slate 色阶 CSS 变量 —— Tailwind v4 工具类引用 var(--color-*)，
+      翻转变量即可全局生效，透明度修饰符（bg-xxx/50）经 color-mix 自动适配；
+   2. bg-white 等无法靠变量翻转的表面，用少量精确类选择器兜底
+      （规则位于 @layer 之外，天然优先于工具类层，无需 !important）。
+   ============================================================ */
+:root {
   color-scheme: light;
+  --surface: #ffffff;
+  --surface-raised: #f8fafc;
+  --line: #e2e8f0;
 }
 
 :root[data-theme='dark'] {
   color-scheme: dark;
-  /*
-    Tailwind v4 的颜色实现不是简单 rgb 三元组可覆盖，
-    这里改为：在 dark 模式下直接覆盖常用工具类（!important），保证立刻生效。
-  */
+  --surface: #0f172a;
+  --surface-raised: #111c33;
+  --line: rgba(148, 163, 184, 0.15);
+
+  /* slate 色阶翻转：深↔浅互换，文字/背景/边框层级自动倒置 */
+  --color-slate-50: #0b1220;
+  --color-slate-100: #131d31;
+  --color-slate-200: rgba(148, 163, 184, 0.16);
+  --color-slate-300: rgba(148, 163, 184, 0.3);
+  --color-slate-400: #8fa0b8;
+  --color-slate-500: #94a3b8;
+  --color-slate-600: #b6c2d4;
+  --color-slate-700: #dbe3ee;
+  --color-slate-800: #edf1f7;
+  --color-slate-900: #f8fafc;
 }
 
 body {
@@ -32,91 +54,89 @@ body[data-theme='dark'] {
   color: #e5e7eb;
 }
 
-/* --------- Dark theme utility overrides (safe subset) --------- */
-/* 主内容区空白背景兜底 */
-body[data-theme='dark'] main {
-  background-color: #020617 !important;
-}
-body[data-theme='dark'] main [class*='overflow-auto'] {
-  background-color: #020617 !important;
-}
+/* --------- 暗色：表面（bg-white 无法靠变量翻转，精确匹配兜底） --------- */
 body[data-theme='dark'] .bg-white {
-  background-color: #0f172a !important; /* slate-900 */
+  background-color: var(--surface);
 }
-/* Tailwind 透明度类：bg-white/80 等（class 属性里会包含 "bg-white/"） */
-body[data-theme='dark'] [class*='bg-white/'] {
-  background-color: rgba(15, 23, 42, 0.85) !important;
+/* 半透明白表面按原透明度折算到暗色表面 */
+body[data-theme='dark'] .bg-white\/95 { background-color: rgba(15, 23, 42, 0.95); }
+body[data-theme='dark'] .bg-white\/80 { background-color: rgba(15, 23, 42, 0.82); }
+body[data-theme='dark'] .bg-white\/70 { background-color: rgba(15, 23, 42, 0.72); }
+body[data-theme='dark'] .bg-white\/50 { background-color: rgba(15, 23, 42, 0.55); }
+body[data-theme='dark'] .bg-white\/45 { background-color: rgba(15, 23, 42, 0.5); }
+
+/* --------- 暗色：有意保持深色的块在光色翻转后还原 --------- */
+/* 模态遮罩、SQL 代码预览、深色 Snackbar 等 */
+body[data-theme='dark'] .bg-slate-900\/20 { background-color: rgba(2, 6, 23, 0.5); }
+body[data-theme='dark'] .bg-slate-900\/25 { background-color: rgba(2, 6, 23, 0.55); }
+body[data-theme='dark'] .bg-slate-900\/30 { background-color: rgba(2, 6, 23, 0.6); }
+body[data-theme='dark'] .bg-slate-900\/40 { background-color: rgba(2, 6, 23, 0.7); }
+body[data-theme='dark'] .bg-slate-900\/95 { background-color: rgba(2, 6, 23, 0.95); }
+body[data-theme='dark'] .bg-slate-900 { background-color: #020617; }
+body[data-theme='dark'] .border-slate-700 { border-color: #334155; }
+/* 深色代码块内的灰字需还原为暗底可读色（slate-300 已翻转为亮色） */
+body[data-theme='dark'] .bg-slate-900\/95 .text-slate-300,
+body[data-theme='dark'] .bg-slate-900 .text-slate-300 {
+  color: #cbd5e1;
 }
-body[data-theme='dark'] .bg-slate-50 {
-  background-color: #0b1220 !important;
-}
-body[data-theme='dark'] [class*='bg-slate-50/'] {
-  background-color: rgba(11, 18, 32, 0.85) !important;
-}
-body[data-theme='dark'] .bg-slate-100 {
-  background-color: #0b1220 !important;
-}
-body[data-theme='dark'] [class*='bg-slate-100/'] {
-  background-color: rgba(11, 18, 32, 0.85) !important;
-}
-body[data-theme='dark'] .bg-slate-200 {
-  background-color: #111c33 !important;
-}
-body[data-theme='dark'] [class*='bg-slate-200/'] {
-  background-color: rgba(17, 28, 51, 0.85) !important;
-}
-body[data-theme='dark'] .bg-indigo-600 {
-  background-color: #4f46e5 !important;
+/* disabled 填充：slate-300 翻转后近白，白字会消失，改用暗底禁用色 */
+body[data-theme='dark'] button:disabled {
+  background-color: #293548;
 }
 
-body[data-theme='dark'] .text-slate-900 {
-  color: #e2e8f0 !important;
-}
-body[data-theme='dark'] .text-slate-700 {
-  color: #cbd5e1 !important;
-}
-body[data-theme='dark'] .text-slate-600 {
-  color: #94a3b8 !important;
-}
-body[data-theme='dark'] .text-slate-500 {
-  color: #94a3b8 !important;
-}
-body[data-theme='dark'] .text-slate-400 {
-  color: #64748b !important;
-}
+/* --------- 暗色：强调色提亮（深饱和色在暗底上对比不足） --------- */
+body[data-theme='dark'] .text-blue-600 { color: #60a5fa; }
+body[data-theme='dark'] .text-blue-700 { color: #93c5fd; }
+body[data-theme='dark'] .text-indigo-600 { color: #818cf8; }
+body[data-theme='dark'] .text-emerald-600 { color: #34d399; }
+body[data-theme='dark'] .text-amber-600 { color: #fbbf24; }
+body[data-theme='dark'] .text-orange-600 { color: #fb923c; }
+body[data-theme='dark'] .text-red-600,
+body[data-theme='dark'] .text-red-700 { color: #f87171; }
 
-body[data-theme='dark'] .border-slate-200 {
-  border-color: rgba(148, 163, 184, 0.18) !important;
-}
-body[data-theme='dark'] [class*='border-slate-200/'] {
-  border-color: rgba(148, 163, 184, 0.18) !important;
-}
-body[data-theme='dark'] .border-slate-100 {
-  border-color: rgba(148, 163, 184, 0.12) !important;
-}
-body[data-theme='dark'] [class*='border-slate-100/'] {
-  border-color: rgba(148, 163, 184, 0.12) !important;
-}
+/* --------- 暗色：彩色浅底徽章/选中态 → 半透明深色变体 --------- */
+body[data-theme='dark'] .bg-blue-50 { background-color: rgba(59, 130, 246, 0.14); }
+body[data-theme='dark'] .bg-blue-100 { background-color: rgba(59, 130, 246, 0.22); }
+body[data-theme='dark'] .border-blue-100,
+body[data-theme='dark'] .border-blue-200 { border-color: rgba(59, 130, 246, 0.3); }
+body[data-theme='dark'] .bg-indigo-50 { background-color: rgba(99, 102, 241, 0.14); }
+body[data-theme='dark'] .bg-indigo-100 { background-color: rgba(99, 102, 241, 0.22); }
+body[data-theme='dark'] .border-indigo-100,
+body[data-theme='dark'] .border-indigo-200,
+body[data-theme='dark'] .border-indigo-300 { border-color: rgba(99, 102, 241, 0.32); }
+body[data-theme='dark'] .bg-emerald-50 { background-color: rgba(16, 185, 129, 0.12); }
+body[data-theme='dark'] .bg-amber-50 { background-color: rgba(245, 158, 11, 0.12); }
+body[data-theme='dark'] .border-amber-100,
+body[data-theme='dark'] .border-amber-200 { border-color: rgba(245, 158, 11, 0.25); }
+body[data-theme='dark'] .bg-orange-50 { background-color: rgba(249, 115, 22, 0.12); }
+body[data-theme='dark'] .bg-red-50 { background-color: rgba(239, 68, 68, 0.12); }
+body[data-theme='dark'] .bg-red-100 { background-color: rgba(239, 68, 68, 0.2); }
+body[data-theme='dark'] .border-red-100,
+body[data-theme='dark'] .border-red-200 { border-color: rgba(239, 68, 68, 0.28); }
+body[data-theme='dark'] .bg-yellow-50 { background-color: rgba(234, 179, 8, 0.12); }
+body[data-theme='dark'] .bg-green-50 { background-color: rgba(34, 197, 94, 0.12); }
+/* 深色按钮在暗底上加深，避免与表面混同 */
+body[data-theme='dark'] .bg-slate-900.text-white:hover,
+body[data-theme='dark'] button.bg-slate-900:hover { background-color: #0b1220; }
 
-/* 让大面积浅色“渐变/光晕”在深色下弱化 */
-body[data-theme='dark'] [class*='bg-blue-100/'],
-body[data-theme='dark'] [class*='bg-indigo-100/'] {
-  display: none !important;
+/* --------- 暗色：SQL 编辑器（透明文本 + 高亮色方案需适配暗底） --------- */
+body[data-theme='dark'] .sql-editor-container textarea {
+  caret-color: #e2e8f0 !important;
 }
-/* 深色模式下去掉弹窗头部浅色渐变，避免发灰发白 */
-body[data-theme='dark'] [class*='bg-gradient-to-b'] {
-  background-image: none !important;
-  background-color: #0b1220 !important;
-}
+body[data-theme='dark'] .token.keyword { color: #60a5fa; }
+body[data-theme='dark'] .token.string { color: #34d399; }
+body[data-theme='dark'] .token.comment { color: #64748b; }
+body[data-theme='dark'] .token.number { color: #fbbf24; }
+body[data-theme='dark'] .token.punctuation { color: #94a3b8; }
+body[data-theme='dark'] .token.function { color: #a78bfa; }
+body[data-theme='dark'] .token.operator { color: #cbd5e1; }
+body[data-theme='dark'] .token.redis-command { color: #f87171; }
+body[data-theme='dark'] .token.redis-key { color: #a78bfa; }
 
-body[data-theme='dark'] input,
-body[data-theme='dark'] select,
-body[data-theme='dark'] textarea {
-  color: #e2e8f0 !important;
-}
+/* --------- 暗色：占位符与滚动条 --------- */
 body[data-theme='dark'] input::placeholder,
 body[data-theme='dark'] textarea::placeholder {
-  color: #475569 !important;
+  color: #5b6b82;
 }
 
 body[data-theme='dark'] .custom-scrollbar::-webkit-scrollbar-thumb {
@@ -124,6 +144,26 @@ body[data-theme='dark'] .custom-scrollbar::-webkit-scrollbar-thumb {
 }
 body[data-theme='dark'] .custom-scrollbar::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.14);
+}
+
+/* --------- 排版：10px 中文标签过小，全局提升到 11px --------- */
+.text-\[10px\] {
+  font-size: 11px;
+}
+
+/* --------- 可达性：键盘焦点环 --------- */
+/* 仅对非表单控件生效：input/textarea/select 聚焦时（含鼠标）
+   也会命中 :focus-visible，叠加全局 outline 会出现双边框；
+   表单控件自带 focus:ring 等聚焦样式，此处排除。
+   不强制 border-radius，outline 自动跟随元素自身圆角。 */
+:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+}
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: none;
 }
 
 /* Custom Scrollbar */
@@ -137,12 +177,12 @@ body[data-theme='dark'] .custom-scrollbar::-webkit-scrollbar-thumb:hover {
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(0, 0, 0, 0.12);
   border-radius: 10px;
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.22);
 }
 
 /* Glassmorphism Classes */
@@ -153,9 +193,9 @@ body[data-theme='dark'] .custom-scrollbar::-webkit-scrollbar-thumb:hover {
   border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
-/* Smooth Table Transitions */
+/* Smooth Table Transitions — 仅过渡背景色，避免大表格全属性 transition 的性能开销 */
 table tr {
-  transition: all 0.2s ease;
+  transition: background-color 0.15s ease;
 }
 
 /* Input Styles */
@@ -180,129 +220,9 @@ body[data-theme='dark'] .search-hit-mark {
   color: #0b1220;
 }
 
-/* --------- Dark theme: sidebar & table list polish --------- */
-/* 侧边栏及主内容区背景 */
-body[data-theme='dark'] [class*='h-screen'][class*='bg-\\[\\#f8fafc\\]'] {
-  background-color: #020617 !important;
-}
-/* 侧边栏所有浅色背景元素统一样式 */
-body[data-theme='dark'] [class*='border-r'][class*='border-slate-200'] {
-  background-color: #0c1222 !important;
-}
-/* 侧边栏头部渐变去掉浅色 */
-body[data-theme='dark'] [class*='border-b'][class*='border-slate-100'] {
-  border-bottom-color: rgba(148, 163, 184, 0.08) !important;
-}
-body[data-theme='dark'] [class*='bg-gradient-to-b'] {
-  background-image: linear-gradient(to bottom, rgba(15, 23, 42, 0.6), transparent) !important;
-}
-/* 连接卡片 — 未选中 */
-body[data-theme='dark'] [class*='rounded-xl']:not([class*='bg-blue-50']) {
-  border-color: rgba(148, 163, 184, 0.08) !important;
-}
-body[data-theme='dark'] [class*='rounded-xl']:not([class*='bg-blue-50']):hover {
-  background-color: #172033 !important;
-  border-color: rgba(148, 163, 184, 0.16) !important;
-}
-/* 连接卡片 — 已连接展开态 */
-body[data-theme='dark'] [class*='bg-blue-50'] {
-  background-color: rgba(59, 130, 246, 0.12) !important;
-  border-color: rgba(59, 130, 246, 0.2) !important;
-}
-body[data-theme='dark'] [class*='bg-blue-50'] [class*='text-blue'] {
-  color: #60a5fa !important;
-}
-/* 数据库图标圆点 — 未连接 */
-body[data-theme='dark'] [class*='bg-slate-400'] {
-  background-color: #475569 !important;
-}
-/* 表列表左侧竖线 */
-body[data-theme='dark'] [class*='border-l'][class*='border-slate-100'] {
-  border-left-color: rgba(148, 163, 184, 0.10) !important;
-}
-/* 数据库名称 */
-body[data-theme='dark'] [class*='text-slate-700'] {
-  color: #e2e8f0 !important;
-}
-/* 表按钮 — 普通未选中：增加默认底色与 sidebar 区分 */
-body[data-theme='dark'] [class*='ml-4'] [class*='rounded-lg']:not([class*='bg-blue-600']):not([class*='border-slate-200']) {
-  color: #94a3b8 !important;
-  background-color: rgba(255, 255, 255, 0.02) !important;
-}
-body[data-theme='dark'] [class*='ml-4'] [class*='rounded-lg']:not([class*='bg-blue-600']):not([class*='border-slate-200']):hover {
-  background-color: rgba(59, 130, 246, 0.08) !important;
-  color: #e2e8f0 !important;
-}
-/* 表按钮 — 置顶态 hover 统一使用蓝色底 */
-body[data-theme='dark'] [class*='ml-4'] [class*='rounded-lg'][class*='border-slate-200']:hover {
-  background-color: rgba(59, 130, 246, 0.08) !important;
-  border-color: rgba(59, 130, 246, 0.2) !important;
-}
-/* 表按钮 — 选中态 (bg-blue-600) */
-body[data-theme='dark'] [class*='rounded-lg'][class*='bg-blue-600'] {
-  background-color: #2563eb !important;
-  box-shadow: 0 2px 12px rgba(37, 99, 235, 0.25) !important;
-}
-/* 表按钮 — 置顶态（有边框） */
-body[data-theme='dark'] [class*='rounded-lg'][class*='border-slate-200'] {
-  border-color: rgba(148, 163, 184, 0.16) !important;
-  background-color: rgba(255, 255, 255, 0.03) !important;
-}
-body[data-theme='dark'] [class*='rounded-lg'][class*='border-slate-200']:hover {
-  background-color: #172033 !important;
-}
-/* 置顶星标 */
-body[data-theme='dark'] [class*='text-amber-400'] {
-  color: #fbbf24 !important;
-}
-/* 数据表图标颜色 */
-body[data-theme='dark'] [class*='text-slate-400'] {
-  color: #64748b !important;
-}
-
-/* --------- Dark theme: Toast notification polish --------- */
-body[data-theme='dark'] .toast-glass[class*='bg-red-50/'] {
-  background-color: rgba(69, 10, 10, 0.6) !important;
-  border-color: rgba(239, 68, 68, 0.15) !important;
-}
-body[data-theme='dark'] .toast-glass[class*='bg-emerald-50/'] {
-  background-color: rgba(2, 44, 34, 0.6) !important;
-  border-color: rgba(16, 185, 129, 0.15) !important;
-}
-body[data-theme='dark'] .toast-glass[class*='bg-blue-50/'] {
-  background-color: rgba(23, 37, 84, 0.6) !important;
-  border-color: rgba(59, 130, 246, 0.15) !important;
-}
-body[data-theme='dark'] .toast-glass .text-red-900 {
-  color: #fca5a5 !important;
-}
-body[data-theme='dark'] .toast-glass .text-emerald-900 {
-  color: #6ee7b7 !important;
-}
-body[data-theme='dark'] .toast-glass .text-blue-900 {
-  color: #93c5fd !important;
-}
-
-/* --------- Dark theme: column filter popover --------- */
-body[data-theme='dark'] [data-filter-popover] {
-  background-color: #0f172a !important;
-  border-color: rgba(148, 163, 184, 0.15) !important;
-}
-body[data-theme='dark'] [data-filter-popover] input[type="text"] {
-  background-color: rgba(15, 23, 42, 0.6) !important;
-  border-color: rgba(148, 163, 184, 0.12) !important;
-  color: #e2e8f0 !important;
-}
-body[data-theme='dark'] [data-filter-popover] input[type="text"]::placeholder {
-  color: #475569 !important;
-}
-body[data-theme='dark'] [data-filter-popover] input[type="text"]:focus {
-  border-color: rgba(59, 130, 246, 0.4) !important;
-}
-body[data-theme='dark'] [data-filter-popover] input[type="text"].border-blue-300 {
-  background-color: rgba(30, 58, 138, 0.3) !important;
-  border-color: rgba(59, 130, 246, 0.3) !important;
-  color: #93c5fd !important;
+/* --------- Toast（glass 容器随主题适配） --------- */
+body[data-theme='dark'] .toast-glass {
+  border-color: rgba(148, 163, 184, 0.2);
 }
 
 /* --------- JSON syntax highlighting (light mode) --------- */

@@ -13,6 +13,7 @@ type SchemaEditorModalProps = {
   schemaCommentAILoading: boolean;
   onGenerateAIComments: () => void;
   connectionType?: string;
+  readOnly?: boolean; // 只读模式：仅查看结构，隐藏一切修改入口
   existingTables: string[];
   onClose: () => void;
   onSave: () => void;
@@ -26,6 +27,7 @@ const SchemaEditorModal: React.FC<SchemaEditorModalProps> = ({
   schemaCommentAILoading,
   onGenerateAIComments,
   connectionType,
+  readOnly,
   existingTables,
   onClose,
   onSave
@@ -67,7 +69,10 @@ const SchemaEditorModal: React.FC<SchemaEditorModalProps> = ({
                   </div>
                 </div>
                 <div className="flex items-center gap-3">
-                  {activeSchemaTab === 'columns' && (
+                  {readOnly && (
+                    <span className="px-2 py-1 rounded-lg text-[11px] font-bold bg-amber-50 text-amber-600 border border-amber-200">只读模式</span>
+                  )}
+                  {!readOnly && activeSchemaTab === 'columns' && (
                     <motion.button
                       whileHover={{ scale: schemaCommentAILoading ? 1 : 1.05 }}
                       whileTap={{ scale: schemaCommentAILoading ? 1 : 0.95 }}
@@ -79,6 +84,7 @@ const SchemaEditorModal: React.FC<SchemaEditorModalProps> = ({
                       {schemaCommentAILoading ? 'AI 生成中...' : 'AI 一键注释'}
                     </motion.button>
                   )}
+                  {!readOnly && (
                   <motion.button
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.95 }}
@@ -95,6 +101,7 @@ const SchemaEditorModal: React.FC<SchemaEditorModalProps> = ({
                   >
                     <Plus size={14} /> {activeSchemaTab === 'columns' ? '添加列' : '添加索引'}
                   </motion.button>
+                  )}
                   <motion.button
                     whileHover={{ rotate: 90, scale: 1.1 }}
                     onClick={() => onClose()}
@@ -389,6 +396,7 @@ const SchemaEditorModal: React.FC<SchemaEditorModalProps> = ({
                 >
                   取消
                 </button>
+                {!readOnly && (
                 <motion.button
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
@@ -397,6 +405,7 @@ const SchemaEditorModal: React.FC<SchemaEditorModalProps> = ({
                 >
                   <Server size={14} /> 保存修改
                 </motion.button>
+                )}
               </div>
             </motion.div>
           </div>

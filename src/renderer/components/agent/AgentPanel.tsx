@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Bot, Loader2, Send, X, Shield, ShieldCheck, ShieldAlert, Eraser,
   AlertTriangle, ArrowLeft, ChevronDown, Database, Table2,
-  Plus, Trash2, Pencil, MessageSquare, Check, ChevronRight, Link2
+  Plus, Trash2, Pencil, MessageSquare, Check, ChevronRight, Link2, Square, Lock
 } from 'lucide-react';
 import type {
   AgentMessage,
@@ -18,11 +18,16 @@ type AgentPanelProps = {
   onClose: () => void;
   messages: AgentMessage[];
   loading: boolean;
+  /** 任意会话有任务进行中（禁用输入，但思考指示器不显示在非归属会话） */
+  busy?: boolean;
   input: string;
   setInput: (v: string) => void;
   onSubmit: () => void;
+  onCancel: () => void;
   permissionLevel: AgentPermissionLevel;
   onPermissionChange: (level: AgentPermissionLevel) => void;
+  /** 只读连接：权限锁定为只读，禁用切换入口 */
+  permissionLocked?: boolean;
   onApproveAction: (actionId: string) => void;
   onRejectAction: (actionId: string) => void;
   onClearSession: () => void;
@@ -62,8 +67,8 @@ const PERMISSION_OPTIONS: {
 ];
 
 const AgentPanel: React.FC<AgentPanelProps> = ({
-  show, onClose, messages, loading, input, setInput, onSubmit,
-  permissionLevel, onPermissionChange, onApproveAction, onRejectAction,
+  show, onClose, messages, loading, busy = false, input, setInput, onSubmit, onCancel,
+  permissionLevel, onPermissionChange, permissionLocked = false, onApproveAction, onRejectAction,
   onClearSession, errorMessage, iteration = 0,
   databases, selectedDatabase, onSelectDatabase, tables, selectedTable, onSelectTable,
   savedConnections, conversationsByConn, currentConversationId, currentConvConnectionId,
@@ -280,9 +285,22 @@ const AgentPanel: React.FC<AgentPanelProps> = ({
               )}
             </div>
 
-            {/* 底部权限选择器 */}
+            {/* 底部权限选择器（只读连接下锁定，不可切换） */}
             <div className="px-3 py-2 border-t border-slate-200">
               <div className="relative">
+                {permissionLocked ? (
+                  <div
+                    title="当前连接为只读模式，Agent 权限已锁定"
+                    className="w-full flex items-center justify-between gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-bold text-emerald-600 bg-emerald-50 border-emerald-200 cursor-not-allowed"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <ShieldCheck size={12} />
+                      只读（已锁定）
+                    </span>
+                    <Lock size={12} />
+                  </div>
+                ) : (
+                  <>
                 <button
                   onClick={() => setShowPermissionMenu(!showPermissionMenu)}
                   className={`w-full flex items-center justify-between gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-bold transition-all ${currentPerm?.color}`}
@@ -322,6 +340,8 @@ const AgentPanel: React.FC<AgentPanelProps> = ({
                     </>
                   )}
                 </AnimatePresence>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -523,15 +543,27 @@ const AgentPanel: React.FC<AgentPanelProps> = ({
                         (e.target as HTMLTextAreaElement).style.height = 'auto';
                       }
                     }}
-                    disabled={loading}
+                    disabled={loading || busy}
                   />
-                  <motion.button
-                    whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
-                    onClick={onSubmit} disabled={loading || !input.trim()}
-                    className="w-10 h-10 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl flex items-center justify-center shadow-lg shadow-indigo-600/20 transition-all"
-                  >
-                    <Send size={18} />
-                  </motion.button>
+                  {loading ? (
+                    <motion.button
+                      whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
+                      onClick={onCancel}
+                      title="停止当前任务"
+                      className="w-10 h-10 bg-red-500 hover:bg-red-600 text-white rounded-xl flex items-center justify-center shadow-lg shadow-red-500/20 transition-all"
+                    >
+                      <Square size={16} fill="currentColor" />
+                    </motion.button>
+                  ) : (
+                    <motion.button
+                      whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
+                      onClick={onSubmit} disabled={!input.trim() || busy}
+                      title={busy ? '其他会话的任务进行中' : undefined}
+                      className="w-10 h-10 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl flex items-center justify-center shadow-lg shadow-indigo-600/20 transition-all"
+                    >
+                      <Send size={18} />
+                    </motion.button>
+                  )}
                 </div>
               </div>
             </div>

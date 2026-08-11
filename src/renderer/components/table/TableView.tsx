@@ -303,7 +303,7 @@ const TableView: React.FC<Record<string, any>> = (props) => {
 
                           return (
                             <>
-                              {insertingRow && activeConnection?.type !== 'redis' && (
+                              {insertingRow && activeConnection?.type !== 'redis' && !activeConnection?.readOnly && (
                                 <tr className="bg-emerald-50/70 border-b border-emerald-100">
                                   {columns.map((col) => (
                                     <td
@@ -377,7 +377,7 @@ const TableView: React.FC<Record<string, any>> = (props) => {
                                           data-row-idx={rowIdx}
                                           data-col-name={col.name}
                                           className={`px-6 py-4 text-sm text-slate-600 border-x border-transparent transition-all ${isModified ? 'bg-yellow-50/50 !text-yellow-700' : ''} ${isEditing ? 'ring-2 ring-blue-500 ring-inset z-10 !bg-white' : ''} ${isCurrentMatch ? 'ring-2 ring-orange-400 ring-inset z-10 bg-orange-50' : ''}`}
-                                          onDoubleClick={() => handleCellDoubleClick(rowIdx, col.name, row[col.name])}
+                                          onDoubleClick={() => { if (!activeConnection?.readOnly) handleCellDoubleClick(rowIdx, col.name, row[col.name]); }}
                                           style={
                                             tableColumnWidths[col.name]
                                               ? { width: tableColumnWidths[col.name], minWidth: tableColumnWidths[col.name], maxWidth: tableColumnWidths[col.name] }

@@ -7,6 +7,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveConnection: (config: ConnectionConfig) => ipcRenderer.invoke('save-connection', config),
   validateConnection: (config: ConnectionConfig) => ipcRenderer.invoke('validate-connection', config),
   deleteConnection: (id: number) => ipcRenderer.invoke('delete-connection', id),
+
+  // 只读连接包
+  exportConnectionPackage: (config: ConnectionConfig, passphrase: string, expiresAt: number) => ipcRenderer.invoke('export-connection-package', config, passphrase, expiresAt),
+  pickConnectionPackageFile: () => ipcRenderer.invoke('pick-connection-package-file'),
+  decryptConnectionPackage: (payload: string, passphrase: string) => ipcRenderer.invoke('decrypt-connection-package', payload, passphrase),
   
   // Console Management
   getConsoles: (connectionId?: number) => ipcRenderer.invoke('get-consoles', connectionId),
@@ -41,6 +46,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('agent:chat', { sessionId, message }),
     agentApprove: (sessionId: string, actionId: string, approved: boolean) =>
         ipcRenderer.invoke('agent:approve', { sessionId, actionId, approved }),
+    agentCancel: (sessionId: string) =>
+        ipcRenderer.invoke('agent:cancel', sessionId),
     agentDestroySession: (sessionId: string) =>
         ipcRenderer.invoke('agent:destroy-session', sessionId),
     agentUpdatePermission: (sessionId: string, permissionLevel: 'readonly' | 'write-confirm' | 'full-control') =>

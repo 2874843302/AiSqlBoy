@@ -8,6 +8,7 @@ export type AppContextMenuState = { x: number; y: number; type: 'table' | 'datab
 type AppContextMenuProps = {
   contextMenu: AppContextMenuState;
   connectionType?: ConnectionConfig['type'];
+  readOnly?: boolean; // 只读模式：隐藏一切写操作菜单项
   selectedDatabase: string | null;
   insertingRow: boolean;
   deletedRows: Set<number>;
@@ -43,6 +44,7 @@ type AppContextMenuProps = {
 const AppContextMenu: React.FC<AppContextMenuProps> = ({
   contextMenu,
   connectionType,
+  readOnly,
   selectedDatabase,
   insertingRow,
   deletedRows,
@@ -77,7 +79,8 @@ const AppContextMenu: React.FC<AppContextMenuProps> = ({
       y={contextMenu.y}
       onClose={onClose}
       options={
-        contextMenu.type === 'row' ? [
+        contextMenu.type === 'row' ? (
+          readOnly ? [] : [
           ...(connectionType !== 'redis' ? [
             {
               label: insertingRow ? '取消添加行' : '添加行',
@@ -93,7 +96,8 @@ const AppContextMenu: React.FC<AppContextMenuProps> = ({
               danger: !deletedRows.has(parseInt(contextMenu.target, 10))
             }
           ] : [])
-        ] : contextMenu.type === 'console' ? [
+        ]
+        ) : contextMenu.type === 'console' ? [
           {
             label: '重命名',
             icon: <Activity size={14} />,
@@ -121,7 +125,7 @@ const AppContextMenu: React.FC<AppContextMenuProps> = ({
             icon: <Sparkles size={14} className="text-indigo-500" />,
             onClick: () => onOpenAIModal('database', contextMenu.target)
           },
-          ...(connectionType !== 'redis'
+          ...(!readOnly && connectionType !== 'redis'
             ? [
                 {
                   label: '运行 SQL 脚本',
@@ -137,11 +141,11 @@ const AppContextMenu: React.FC<AppContextMenuProps> = ({
                   icon: <Layout size={14} className="text-blue-600" />,
                   onClick: () => onGenerateSchemaER(contextMenu.target)
                 },
-                {
+                ...(!readOnly ? [{
                   label: '添加表',
                   icon: <Plus size={14} />,
                   onClick: onCreateTable
-                }
+                }] : [])
               ]
             : []),
           {
@@ -149,7 +153,7 @@ const AppContextMenu: React.FC<AppContextMenuProps> = ({
             icon: <RefreshCw size={14} />,
             onClick: onRefreshDatabases
           },
-          ...(connectionType !== 'redis' ? [
+          ...(!readOnly && connectionType !== 'redis' ? [
             {
               label: '导出 SQL (仅结构)',
               icon: <Server size={14} />,
@@ -161,12 +165,12 @@ const AppContextMenu: React.FC<AppContextMenuProps> = ({
               onClick: () => onExportDB(true)
             }
           ] : []),
-          {
+          ...(!readOnly ? [{
             label: connectionType === 'redis' ? '清空数据库 (Flush)' : '删除数据库',
             icon: <Trash2 size={14} />,
             onClick: () => onDeleteDB(contextMenu.target),
             danger: true
-          },
+          }] : []),
         ] : [
           {
             label: connectionType === 'redis' ? '查看 Key 内容' : '打开表',
@@ -183,7 +187,7 @@ const AppContextMenu: React.FC<AppContextMenuProps> = ({
             icon: <Sparkles size={14} className="text-indigo-500" />,
             onClick: () => onOpenAIModal('table', contextMenu.target)
           },
-          ...(connectionType !== 'redis'
+          ...(!readOnly && connectionType !== 'redis'
             ? [
                 {
                   label: '运行 SQL 脚本',
@@ -209,7 +213,7 @@ const AppContextMenu: React.FC<AppContextMenuProps> = ({
             onClick: onRefreshTables
           },
           ...(connectionType === 'redis' ? [
-            ...(contextMenu.target !== 'Keys' ? [
+            ...(!readOnly && contextMenu.target !== 'Keys' ? [
               {
                 label: '删除 Key',
                 icon: <Trash2 size={14} />,
@@ -219,10 +223,11 @@ const AppContextMenu: React.FC<AppContextMenuProps> = ({
             ] : [])
           ] : [
             {
-              label: '修改表结构',
+              label: readOnly ? '查看表结构' : '修改表结构',
               icon: <Activity size={14} />,
               onClick: () => onOpenSchemaModal(contextMenu.target)
             },
+            ...(!readOnly ? [
             {
               label: '清空表',
               icon: <Trash2 size={14} />,
@@ -240,6 +245,7 @@ const AppContextMenu: React.FC<AppContextMenuProps> = ({
               onClick: () => onDeleteTable(contextMenu.target),
               danger: true
             }
+            ] : [])
           ])
         ]
       }
