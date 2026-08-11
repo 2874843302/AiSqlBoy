@@ -20,8 +20,12 @@ interface PackagePayload {
   data: string;
 }
 
-/** 将连接配置加密为连接包文本（强制只读 + 有效期）；expiresAt 在密文内，无法被篡改延长 */
+/** 将连接配置加密为连接包文本（强制只读 + 有效期 + 限库）；expiresAt 在密文内，无法被篡改延长 */
 export function encryptConnectionPackage(config: ConnectionConfig, passphrase: string, expiresAt: number): string {
+  // 限库必填：连接包只能授权白名单内的数据库，防止导入方访问同实例其他库
+  if (!Array.isArray(config.allowedDatabases) || config.allowedDatabases.length === 0) {
+    throw new Error('请至少选择一个要授权的数据库再导出连接包');
+  }
   const salt = crypto.randomBytes(16);
   const iv = crypto.randomBytes(12);
   const key = crypto.pbkdf2Sync(passphrase, salt, PBKDF2_ITERATIONS, 32, 'sha256');
@@ -69,6 +73,13 @@ export function decryptConnectionPackage(raw: string, passphrase: string): Conne
   // 有效期校验：缺失或已过期均拒绝导入
   if (!config.expiresAt || typeof config.expiresAt !== 'number') {
     throw new Error('连接包格式无效：缺少有效期信息');
+  }
+  if (
+    !Array.isArray(config.allowedDatabases) ||
+    config.allowedDatabases.length === 0 ||
+    !config.allowedDatabases.every((d) => typeof d === 'string' && d.trim())
+  ) {
+    throw new Error('连接包格式无效：缺少授权数据库信息');
   }
   if (Date.now() > config.expiresAt) {
     throw new Error(`连接包已于 ${new Date(config.expiresAt).toLocaleString('zh-CN')} 过期，请联系分享者重新导出`);

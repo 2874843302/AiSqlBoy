@@ -235,6 +235,41 @@ export function isAllowed(
 }
 
 /**
+ * 检测 SQL 是否越过授权库边界（限库连接包专用）。
+ * 拦截项：
+ * - USE 切换到白名单以外的库（白名单内互切放行）
+ * - SHOW DATABASES/SCHEMAS 枚举全部库、ATTACH 挂载其他 SQLite 文件
+ * - MySQL 反引号限定的跨库引用 `other_db`.`table`（仅限显式带库名的形态，
+ *   裸写的 alias.column 不会误伤）
+ * 通过返回 null，否则返回拒绝原因。Oracle 的 schema.table 与列引用无法区分，
+ * 不在此层拦截，由数据库只读账号权限兜底。
+ */
+export function checkAllowedDatabaseSql(sql: string, allowedDbs: string[]): string | null {
+  // 剔除字符串字面量与注释，避免字面量内的关键字/反引号误判
+  const cleaned = sql.replace(/('(?:[^'\\]|\\.|'')*')|(\/\*[\s\S]*?\*\/)|(--[^\n]*)/g, ' ');
+  const upper = cleaned.trim().toUpperCase();
+  const allowedLower = allowedDbs.map((d) => d.toLowerCase());
+  const inWhitelist = (name: string) => allowedLower.includes(name.toLowerCase());
+  const denyScope = `该连接包仅允许访问数据库：${allowedDbs.join('、')}`;
+
+  const useMatch = cleaned.trim().match(/^USE\s+`?([^`\s]+)`?/i);
+  if (useMatch && !inWhitelist(useMatch[1])) {
+    return `${denyScope}，禁止切换到「${useMatch[1]}」`;
+  }
+  if (/^SHOW\s+(DATABASES|SCHEMAS)\b/.test(upper)) return `${denyScope}，禁止枚举数据库列表`;
+  if (/^ATTACH\b/.test(upper)) return `${denyScope}，禁止挂载其他数据库文件`;
+  // MySQL 反引号限定的跨库引用：`db`.`table`
+  const quotedRe = /`([^`]+)`\s*\.\s*`/g;
+  let m: RegExpExecArray | null;
+  while ((m = quotedRe.exec(cleaned)) !== null) {
+    if (!inWhitelist(m[1])) {
+      return `${denyScope}，禁止跨库引用「${m[1]}」`;
+    }
+  }
+  return null;
+}
+
+/**
  * 获取 SQL 类别的中文描述和风险等级
  */
 export function getSqlCategoryInfo(category: SqlCategory): {

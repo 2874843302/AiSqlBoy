@@ -118,7 +118,7 @@ const App: React.FC = () => {
 
   // 只读连接包：导出/导入弹窗
   const [packageModal, setPackageModal] = useState<
-    | { mode: 'export'; config: ConnectionConfig }
+    | { mode: 'export'; config: ConnectionConfig; databases: string[]; defaultDatabase?: string }
     | { mode: 'import'; payload: string }
     | null
   >(null);
@@ -912,9 +912,10 @@ const App: React.FC = () => {
     let startTime = Date.now();
     setConsoles(prev => prev.map(c => c.id === id ? { ...c, executing: true, error: undefined, executionTime: undefined } : c));
     try {
-      // 如果控制台指定了数据库且当前未切换到该库，则先切换
+      // 如果控制台指定了数据库且当前未切换到该库，则先切换（限库连接包会拒绝越库切换）
       if (consoleTab.dbName && consoleTab.dbName !== selectedDatabase) {
-        await window.electronAPI.useDatabase(consoleTab.dbName);
+        const switchRes = await window.electronAPI.useDatabase(consoleTab.dbName);
+        if (!switchRes.success) throw new Error(switchRes.error || '切换数据库失败');
         setSelectedDatabase(consoleTab.dbName);
         const tableList = await window.electronAPI.getTables();
         setTables(tableList);
@@ -1226,13 +1227,17 @@ const App: React.FC = () => {
   };
 
   const handleConsoleDBChange = async (id: string, dbName: string) => {
-    setConsoles(prev => prev.map(c => c.id === id ? { ...c, dbName } : c));
     if (dbName !== selectedDatabase) {
-      await window.electronAPI.useDatabase(dbName);
+      const switchRes = await window.electronAPI.useDatabase(dbName);
+      if (!switchRes.success) {
+        setToast({ message: switchRes.error || '切换数据库失败', type: 'error' });
+        return;
+      }
       setSelectedDatabase(dbName);
       const tableList = await window.electronAPI.getTables();
       setTables(tableList);
     }
+    setConsoles(prev => prev.map(c => c.id === id ? { ...c, dbName } : c));
   }
 
   const handleConsoleTableSelect = (tableName: string) => {
@@ -1678,18 +1683,30 @@ ${JSON.stringify(payload)}
 
   // 只读连接包：从连接配置弹窗发起导出
   const handleExportPackage = (config: ConnectionConfig) => {
+    // 多选授权库依赖实例的库列表，必须先连接该连接
+    if (activeConnection?.id !== config.id || databases.length === 0) {
+      setToast({ message: '请先连接该连接再导出连接包（需要多选要授权的数据库）', type: 'error' });
+      return;
+    }
     setPackageError('');
-    setPackageModal({ mode: 'export', config });
+    setPackageModal({
+      mode: 'export',
+      config,
+      databases,
+      defaultDatabase: selectedDatabase || undefined
+    });
   };
 
   // 只读连接包：口令确认（导出加密写盘 / 导入解密入库）
-  const handlePackageConfirm = async (passphrase: string, expiresAt?: number) => {
+  const handlePackageConfirm = async (passphrase: string, expiresAt?: number, allowedDatabases?: string[]) => {
     if (!packageModal) return;
     setPackageLoading(true);
     setPackageError('');
     try {
       if (packageModal.mode === 'export') {
-        const res = await window.electronAPI.exportConnectionPackage(packageModal.config, passphrase, expiresAt || 0);
+        // 授权库白名单来自弹窗多选结果，随配置一起加密进包
+        const exportConfig = { ...packageModal.config, allowedDatabases: allowedDatabases || [] };
+        const res = await window.electronAPI.exportConnectionPackage(exportConfig, passphrase, expiresAt || 0);
         if (!res.success) throw new Error(res.error || '导出连接包失败');
         setPackageModal(null);
         setToast({ message: `只读连接包已导出${res.filePath ? `：${res.filePath}` : ''}`, type: 'success' });
@@ -1998,6 +2015,8 @@ ${JSON.stringify(payload)}
           <ConnectionPackageModal
             mode={packageModal.mode}
             connectionName={packageModal.mode === 'export' ? packageModal.config.name : undefined}
+            databases={packageModal.mode === 'export' ? packageModal.databases : undefined}
+            defaultDatabase={packageModal.mode === 'export' ? packageModal.defaultDatabase : undefined}
             loading={packageLoading}
             error={packageError}
             onClose={() => {

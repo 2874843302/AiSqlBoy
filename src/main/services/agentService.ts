@@ -11,7 +11,7 @@
 import { aiService } from './aiService';
 import { internalDB } from './internalDB';
 import { IDatabaseDriver } from './drivers/types';
-import { classifySql, hasMultipleStatements, ensureSelectLimit, isAllowed, requiresApproval, buildImpactPreviewSql } from '../../shared/sqlSecurity';
+import { classifySql, hasMultipleStatements, ensureSelectLimit, isAllowed, requiresApproval, buildImpactPreviewSql, checkAllowedDatabaseSql } from '../../shared/sqlSecurity';
 import { buildAgentSystemPrompt, formatToolResult } from '../../shared/agentPrompt';
 import {
   AGENT_DEFAULTS,
@@ -94,6 +94,8 @@ class AgentService {
   private driver: IDatabaseDriver | null = null;
   /** 当前驱动对应的连接 ID，用于校验会话是否仍在原连接上 */
   private driverConnectionId: number | undefined = undefined;
+  /** 限库连接包授权访问的数据库白名单（null 表示不限） */
+  private allowedDatabases: string[] | null = null;
   /** 流式 token 回调（由主进程 IPC 设置，用于向前端推送增量文本） */
   private streamCallback: ((sessionId: string, delta: string) => void) | null = null;
 
@@ -102,10 +104,11 @@ class AgentService {
     this.streamCallback = cb;
   }
 
-  /** 设置当前数据库驱动（由主进程 index.ts 在连接数据库时调用） */
-  setDriver(driver: IDatabaseDriver | null, connectionId?: number): void {
+  /** 设置当前数据库驱动（由主进程 index.ts 在连接数据库时调用）；限库连接包同时传入授权库白名单 */
+  setDriver(driver: IDatabaseDriver | null, connectionId?: number, allowedDatabases?: string[] | null): void {
     this.driver = driver;
     this.driverConnectionId = connectionId;
+    this.allowedDatabases = allowedDatabases ?? null;
   }
 
   /** 请求中止会话中正在运行的 Agent 循环 */
@@ -546,6 +549,14 @@ class AgentService {
           needsApproval: false,
           reason: '安全限制：Agent 模式下禁止一次执行多条 SQL 语句，请拆分为多次执行。',
         };
+      }
+
+      // 限库连接包：禁止 Agent 访问白名单以外的数据库
+      if (this.allowedDatabases) {
+        const dbDenyReason = checkAllowedDatabaseSql(action.sql, this.allowedDatabases);
+        if (dbDenyReason) {
+          return { allowed: false, needsApproval: false, reason: dbDenyReason };
+        }
       }
 
       const category = action.category || classifySql(action.sql);

@@ -1,15 +1,19 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
-import { X, Lock, PackageOpen, PackagePlus } from 'lucide-react';
+import { X, Lock, PackageOpen, PackagePlus, Database, Check } from 'lucide-react';
 
 type ConnectionPackageModalProps = {
   mode: 'export' | 'import';
   connectionName?: string;
+  /** 导出模式：可选授权的数据库列表（多选） */
+  databases?: string[];
+  /** 导出模式：默认勾选的数据库（当前选中的库） */
+  defaultDatabase?: string;
   loading?: boolean;
   error?: string;
   onClose: () => void;
-  /** expiresAt 仅导出模式传回（毫秒时间戳） */
-  onConfirm: (passphrase: string, expiresAt?: number) => void;
+  /** expiresAt / allowedDatabases 仅导出模式传回 */
+  onConfirm: (passphrase: string, expiresAt?: number, allowedDatabases?: string[]) => void;
 };
 
 const MIN_VALID_DAYS = 1;
@@ -18,6 +22,8 @@ const MAX_VALID_DAYS = 365;
 const ConnectionPackageModal: React.FC<ConnectionPackageModalProps> = ({
   mode,
   connectionName,
+  databases,
+  defaultDatabase,
   loading,
   error,
   onClose,
@@ -27,12 +33,28 @@ const ConnectionPackageModal: React.FC<ConnectionPackageModalProps> = ({
   const [confirmPass, setConfirmPass] = useState('');
   const [mismatch, setMismatch] = useState(false);
   const [validDays, setValidDays] = useState('7');
+  // 授权库多选：默认勾选当前选中的库
+  const [selectedDbs, setSelectedDbs] = useState<Set<string>>(
+    () => new Set(defaultDatabase && databases?.includes(defaultDatabase) ? [defaultDatabase] : [])
+  );
+
+  const toggleDb = (db: string) => {
+    setSelectedDbs((prev) => {
+      const next = new Set(prev);
+      if (next.has(db)) next.delete(db);
+      else next.add(db);
+      return next;
+    });
+  };
 
   const isExport = mode === 'export';
   const daysNum = parseInt(validDays, 10);
   const daysValid = Number.isFinite(daysNum) && daysNum >= MIN_VALID_DAYS && daysNum <= MAX_VALID_DAYS;
   const canSubmit =
-    passphrase.length > 0 && (mode === 'import' || passphrase === confirmPass) && (!isExport || daysValid) && !loading;
+    passphrase.length > 0 &&
+    (mode === 'import' || passphrase === confirmPass) &&
+    (!isExport || (daysValid && selectedDbs.size > 0)) &&
+    !loading;
 
   const submit = () => {
     if (!passphrase) return;
@@ -40,10 +62,14 @@ const ConnectionPackageModal: React.FC<ConnectionPackageModalProps> = ({
       setMismatch(true);
       return;
     }
-    if (isExport && !daysValid) return;
+    if (isExport && (!daysValid || selectedDbs.size === 0)) return;
     setMismatch(false);
-    // 有效期写入密文，到期后包与导入的连接同时失效
-    onConfirm(passphrase, isExport ? Date.now() + daysNum * 24 * 60 * 60 * 1000 : undefined);
+    // 有效期与授权库白名单写入密文，到期后包与导入的连接同时失效
+    onConfirm(
+      passphrase,
+      isExport ? Date.now() + daysNum * 24 * 60 * 60 * 1000 : undefined,
+      isExport ? Array.from(selectedDbs) : undefined
+    );
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -97,6 +123,86 @@ const ConnectionPackageModal: React.FC<ConnectionPackageModalProps> = ({
         </div>
 
         <div className="p-8 space-y-5">
+          {isExport && databases && databases.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between px-1">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                  授权数据库（可多选）
+                </label>
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`text-[10px] font-bold px-2 py-0.5 rounded-full transition-colors ${
+                      selectedDbs.size > 0 ? 'bg-amber-100 text-amber-600' : 'bg-slate-100 text-slate-400'
+                    }`}
+                  >
+                    已选 {selectedDbs.size} / {databases.length}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setSelectedDbs(
+                        selectedDbs.size === databases.length ? new Set() : new Set(databases)
+                      )
+                    }
+                    className="text-[11px] font-bold text-amber-600 hover:text-amber-700 transition-colors"
+                  >
+                    {selectedDbs.size === databases.length ? '清空' : '全选'}
+                  </button>
+                </div>
+              </div>
+              <div className="max-h-44 overflow-y-auto bg-slate-50/70 border border-slate-200 rounded-2xl p-1.5 space-y-1">
+                {databases.map((db) => {
+                  const selected = selectedDbs.has(db);
+                  return (
+                    <label
+                      key={db}
+                      className={`group flex items-center gap-2.5 px-2.5 py-2 rounded-xl cursor-pointer select-none border transition-all ${
+                        selected
+                          ? 'bg-amber-50 border-amber-200'
+                          : 'bg-white border-transparent hover:border-slate-200 hover:bg-slate-100/60'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="sr-only"
+                        checked={selected}
+                        onChange={() => toggleDb(db)}
+                      />
+                      <span
+                        className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 transition-colors ${
+                          selected
+                            ? 'bg-amber-100 text-amber-600'
+                            : 'bg-slate-100 text-slate-400 group-hover:bg-slate-200/70'
+                        }`}
+                      >
+                        <Database size={14} />
+                      </span>
+                      <span
+                        className={`flex-1 text-sm font-semibold truncate ${
+                          selected ? 'text-slate-900' : 'text-slate-600'
+                        }`}
+                      >
+                        {db}
+                      </span>
+                      <span
+                        className={`w-[18px] h-[18px] rounded-md border-2 flex items-center justify-center shrink-0 transition-all ${
+                          selected
+                            ? 'bg-amber-500 border-amber-500 text-white'
+                            : 'border-slate-300 bg-white text-transparent'
+                        }`}
+                      >
+                        <Check size={12} strokeWidth={3.5} />
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+              <p className="text-[11px] text-slate-400 px-1">
+                接收方只能访问选中的 {selectedDbs.size} 个数据库，无法查看或操作其他库
+              </p>
+            </div>
+          )}
+
           <div className="space-y-2">
             <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">
               {isExport ? '打开口令' : '连接包口令'}
@@ -159,8 +265,8 @@ const ConnectionPackageModal: React.FC<ConnectionPackageModalProps> = ({
             <Lock size={14} className="mt-0.5 shrink-0" />
             <p className="text-xs leading-relaxed">
               {isExport
-                ? `连接包将强制以只读模式导出，${daysValid ? daysNum : '?'} 天后过期；接收方导入后无法改为可写，到期后连接自动失效。`
-                : '导入的连接将强制为只读并锁定配置，仅允许在有效期内查询数据。'}
+                ? `连接包将强制以只读模式导出，仅授权访问选中的 ${selectedDbs.size || '?'} 个数据库，${daysValid ? daysNum : '?'} 天后过期；接收方无法改为可写、无法访问其他库，到期后连接自动失效。`
+                : '导入的连接将强制为只读并锁定配置，仅允许在有效期内查询包内授权的数据库。'}
             </p>
           </div>
 

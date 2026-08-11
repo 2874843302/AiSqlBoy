@@ -7,7 +7,7 @@ import { aiService } from './services/aiService'
 import { agentService, sanitizeAgentMessagesForStorage } from './services/agentService'
 import fs from 'fs'
 import { ConnectionConfig } from '../shared/types'
-import { classifySql, hasMultipleStatements, stripSqlNoise } from '../shared/sqlSecurity'
+import { classifySql, hasMultipleStatements, stripSqlNoise, checkAllowedDatabaseSql } from '../shared/sqlSecurity'
 import { encryptConnectionPackage, decryptConnectionPackage } from './services/connectionPackage'
 
 // 配置自动更新
@@ -18,6 +18,7 @@ let mainWindow: BrowserWindow | null = null
 let currentDriver: IDatabaseDriver | null = null
 let heartbeatTimer: NodeJS.Timeout | null = null
 let currentReadOnly = false // 当前连接是否只读模式
+let currentAllowedDatabases: string[] | null = null // 限库连接包授权访问的数据库白名单（null 表示不限）
 
 const READONLY_DENY = '当前连接为只读模式，禁止此操作'
 
@@ -214,6 +215,9 @@ ipcMain.handle('delete-connection', async (_, id: number) => {
 // 只读连接包：加密导出 / 选择文件 / 解密导入
 ipcMain.handle('export-connection-package', async (_, config: ConnectionConfig, passphrase: string, expiresAt: number) => {
   try {
+    if (!Array.isArray(config.allowedDatabases) || config.allowedDatabases.length === 0) {
+      return { success: false, error: '请至少选择一个要授权的数据库再导出连接包' }
+    }
     if (!expiresAt || typeof expiresAt !== 'number' || expiresAt <= Date.now()) {
       return { success: false, error: '无效的连接包有效期' }
     }
@@ -273,6 +277,13 @@ ipcMain.handle('connect-db', async (_, config: ConnectionConfig) => {
     if (config.expiresAt && Date.now() > config.expiresAt) {
       return { success: false, error: `该只读连接已于 ${new Date(config.expiresAt).toLocaleString('zh-CN')} 过期，请联系分享者重新导出连接包` }
     }
+    // 限库连接包：强制连接白名单内的库（优先保留配置库，否则取第一个），覆盖渲染进程传入的 database
+    if (config.allowedDatabases && config.allowedDatabases.length > 0) {
+      const targetDb = config.database && config.allowedDatabases.includes(config.database)
+        ? config.database
+        : config.allowedDatabases[0]
+      config = { ...config, database: targetDb }
+    }
     if (currentDriver) {
       await currentDriver.disconnect()
     }
@@ -281,12 +292,14 @@ ipcMain.handle('connect-db', async (_, config: ConnectionConfig) => {
 
     await currentDriver.connect()
     currentReadOnly = !!config.readOnly
-    agentService.setDriver(currentDriver, config.id)
+    currentAllowedDatabases = config.allowedDatabases && config.allowedDatabases.length > 0 ? config.allowedDatabases : null
+    agentService.setDriver(currentDriver, config.id, currentAllowedDatabases)
     startHeartbeat()
     return { success: true }
   } catch (error: any) {
     currentDriver = null
     currentReadOnly = false
+    currentAllowedDatabases = null
     agentService.setDriver(null)
     stopHeartbeat()
     return { success: false, error: mapConnectError(error, config) }
@@ -295,6 +308,8 @@ ipcMain.handle('connect-db', async (_, config: ConnectionConfig) => {
 
 ipcMain.handle('get-databases', async () => {
   if (!currentDriver) return []
+  // 限库连接包：只向渲染进程暴露白名单内的库，隐藏同实例其他库
+  if (currentAllowedDatabases) return [...currentAllowedDatabases]
   try {
     return await currentDriver.getDatabases()
   } catch (error) {
@@ -305,6 +320,10 @@ ipcMain.handle('get-databases', async () => {
 
 ipcMain.handle('use-database', async (_, dbName: string) => {
   if (!currentDriver) return { success: false, error: 'Not connected' }
+  // 限库连接包：拒绝切换到白名单以外的数据库
+  if (currentAllowedDatabases && !currentAllowedDatabases.includes(dbName)) {
+    return { success: false, error: `该连接包仅允许访问数据库：${currentAllowedDatabases.join('、')}` }
+  }
   try {
     await currentDriver.useDatabase(dbName)
     return { success: true }
@@ -434,6 +453,11 @@ ipcMain.handle('execute-query', async (_, sql: string) => {
   if (currentReadOnly) {
     const denyReason = checkReadOnlySql(sql)
     if (denyReason) return { success: false, error: denyReason }
+  }
+  // 限库连接包：拦截白名单外的 USE/跨库引用等越库操作
+  if (currentAllowedDatabases) {
+    const dbDenyReason = checkAllowedDatabaseSql(sql, currentAllowedDatabases)
+    if (dbDenyReason) return { success: false, error: dbDenyReason }
   }
   try {
     // 这里的 MAX_ROWS 是为了防止单次 IPC 传输过载

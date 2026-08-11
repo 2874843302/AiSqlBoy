@@ -88,6 +88,11 @@ export class InternalDBService {
           console.error('Failed to add expires_at column:', err);
         }
       });
+      this.db.run('ALTER TABLE connections ADD COLUMN allowed_database TEXT', (err: any) => {
+        if (err && !String(err.message || '').includes('duplicate column name')) {
+          console.error('Failed to add allowed_database column:', err);
+        }
+      });
       this.db.run(`
         CREATE TABLE IF NOT EXISTS settings (
           key TEXT PRIMARY KEY,
@@ -182,11 +187,13 @@ export class InternalDBService {
 
   saveConnection(config: ConnectionConfig): Promise<void> {
     const toFlag = (v: boolean | undefined) => (v ? 1 : 0);
+    const toDbList = (v: string[] | undefined) =>
+      v && v.length > 0 ? JSON.stringify(v) : null;
     return new Promise((resolve, reject) => {
       if (config.id) {
-        // 先读出现有记录：导入包锁定的连接不允许通过更新解除只读/锁定/有效期
+        // 先读出现有记录：导入包锁定的连接不允许通过更新解除只读/锁定/有效期/授权库
         this.db.get(
-          'SELECT locked, expires_at FROM connections WHERE id = ?',
+          'SELECT locked, expires_at, allowed_database FROM connections WHERE id = ?',
           [config.id],
           (gerr, row: any) => {
             if (gerr) {
@@ -198,9 +205,11 @@ export class InternalDBService {
             const locked = forceLocked ? 1 : toFlag(config.locked);
             // 锁定连接的有效期以库内原值为准，防止通过保存接口抹掉过期时间
             const expiresAt = forceLocked ? (row?.expires_at ?? null) : (config.expiresAt ?? null);
+            // 锁定连接的授权库白名单以库内原值为准，防止通过保存接口扩大访问范围
+            const allowedDatabases = forceLocked ? (row?.allowed_database ?? null) : toDbList(config.allowedDatabases);
             const stmt = this.db.prepare(`
               UPDATE connections 
-              SET name = ?, type = ?, host = ?, port = ?, user = ?, password = ?, database = ?, schema_filter = ?, read_only = ?, locked = ?, expires_at = ?
+              SET name = ?, type = ?, host = ?, port = ?, user = ?, password = ?, database = ?, schema_filter = ?, read_only = ?, locked = ?, expires_at = ?, allowed_database = ?
               WHERE id = ?
             `);
             stmt.run(
@@ -215,6 +224,7 @@ export class InternalDBService {
               readOnly,
               locked,
               expiresAt,
+              allowedDatabases,
               config.id,
               (err: Error | null) => {
                 if (err) reject(err);
@@ -227,8 +237,8 @@ export class InternalDBService {
       } else {
         // 插入新连接
         const stmt = this.db.prepare(`
-          INSERT INTO connections (name, type, host, port, user, password, database, schema_filter, read_only, locked, expires_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO connections (name, type, host, port, user, password, database, schema_filter, read_only, locked, expires_at, allowed_database)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
         stmt.run(
           config.name,
@@ -242,6 +252,7 @@ export class InternalDBService {
           toFlag(config.readOnly),
           toFlag(config.locked),
           config.expiresAt ?? null,
+          toDbList(config.allowedDatabases),
           (err: Error | null) => {
             if (err) reject(err);
             else resolve();
@@ -269,13 +280,26 @@ export class InternalDBService {
                 selectedSchemas = undefined;
               }
             }
+            // 授权库白名单：JSON 数组；兼容早期单库格式（纯字符串即库名）
+            let allowedDatabases: string[] | undefined;
+            if (row.allowed_database) {
+              try {
+                const list = JSON.parse(String(row.allowed_database));
+                if (Array.isArray(list) && list.length > 0) {
+                  allowedDatabases = list.map((v) => String(v));
+                }
+              } catch {
+                allowedDatabases = [String(row.allowed_database)];
+              }
+            }
             return {
               ...row,
               password: decryptPassword(row.password),
               selectedSchemas,
               readOnly: !!row.read_only,
               locked: !!row.locked,
-              expiresAt: row.expires_at ?? undefined
+              expiresAt: row.expires_at ?? undefined,
+              allowedDatabases
             } as ConnectionConfig;
           });
           resolve(parsed);

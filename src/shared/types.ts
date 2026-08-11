@@ -11,6 +11,7 @@ export interface ConnectionConfig {
   readOnly?: boolean; // 只读模式：仅允许查询，禁止一切写操作
   locked?: boolean; // 来自导入的连接包：禁止编辑配置，防止本地改为可写
   expiresAt?: number; // 有效期截止（毫秒时间戳）：来自导入的连接包，到期后不可连接
+  allowedDatabases?: string[]; // 授权库白名单：连接包仅允许访问这些数据库，禁止枚举/切换/跨库操作
 }
 
 export interface TableInfo {
