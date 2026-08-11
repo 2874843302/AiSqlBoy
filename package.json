@@ -48,12 +48,20 @@
     "mac": {
       "icon": "src/assets/app.icns",
       "target": [
-        "dmg",
-        "zip"
-      ],
-      "arch": [
-        "arm64",
-        "x64"
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
       ]
     },
     "nsis": {
