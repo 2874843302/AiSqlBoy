@@ -4,7 +4,7 @@ import { User, Bot, Copy, Check } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import ActionCard from './ActionCard';
-import type { AgentMessage } from '../../../shared/agentTypes';
+import type { AgentMessage, AgentAction } from '../../../shared/agentTypes';
 
 const SqlCodeBlock: React.FC<{ content: string }> = ({ content }) => {
   const [copied, setCopied] = useState(false);
@@ -33,11 +33,12 @@ const SqlCodeBlock: React.FC<{ content: string }> = ({ content }) => {
 
 type AgentMessageItemProps = {
   message: AgentMessage;
-  onApprove?: (actionId: string) => void;
-  onReject?: (actionId: string) => void;
+  onApprove: (actionId: string) => void;
+  onReject: (actionId: string) => void;
+  onLocate?: (action: AgentAction) => void;
 };
 
-const AgentMessageItem: React.FC<AgentMessageItemProps> = ({ message, onApprove, onReject }) => {
+const AgentMessageItem: React.FC<AgentMessageItemProps> = ({ message, onApprove, onReject, onLocate }) => {
   if (message.role === 'tool_result') {
     // tool_result 消息不单独渲染，而是作为 action card 的结果展示
     // 但如果该消息没有被任何 action 关联，就展示为系统消息
@@ -50,7 +51,7 @@ const AgentMessageItem: React.FC<AgentMessageItemProps> = ({ message, onApprove,
     <motion.div
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      className={`flex gap-3 ${isUser ? 'flex-row-reverse' : ''}`}
+      className={`flex gap-3 w-full ${isUser ? 'flex-row-reverse' : ''}`}
     >
       <div
         className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 ${
@@ -59,7 +60,7 @@ const AgentMessageItem: React.FC<AgentMessageItemProps> = ({ message, onApprove,
       >
         {isUser ? <User size={18} /> : <Bot size={18} />}
       </div>
-      <div className={`min-w-0 ${isUser ? 'max-w-[75%]' : 'flex-1'}`}>
+      <div className={`min-w-0 ${isUser ? 'max-w-[85%]' : 'flex-1'}`}>
         <div
           className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${
             isUser
@@ -129,6 +130,7 @@ const AgentMessageItem: React.FC<AgentMessageItemProps> = ({ message, onApprove,
                 action={action}
                 onApprove={onApprove}
                 onReject={onReject}
+                onLocate={onLocate}
               />
             ))}
           </div>

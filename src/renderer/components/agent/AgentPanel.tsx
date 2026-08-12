@@ -1,17 +1,20 @@
 import React, { useRef, useEffect, useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Bot, Loader2, Send, X, Shield, ShieldCheck, ShieldAlert, Eraser,
+  Bot, Loader2, Send, Shield, ShieldCheck, ShieldAlert, Eraser,
   AlertTriangle, ArrowLeft, ChevronDown, Database, Table2,
-  Plus, Trash2, Pencil, MessageSquare, Check, ChevronRight, Link2, Square, Lock
+  Plus, Trash2, Pencil, MessageSquare, Check, ChevronRight, Link2, Square, Lock, PanelRight
 } from 'lucide-react';
 import type {
   AgentMessage,
+  AgentAction,
   AgentPermissionLevel,
 } from '../../../shared/agentTypes';
 import type { AgentConversation } from '../../hooks/useAgent';
 import type { ConnectionConfig } from '../../../shared/types';
 import AgentMessageItem from './AgentMessageItem';
+import AgentTimeline from './AgentTimeline';
+import AgentTableBrowser, { type AiResultView } from './AgentTableBrowser';
 
 type AgentPanelProps = {
   show: boolean;
@@ -28,6 +31,8 @@ type AgentPanelProps = {
   onPermissionChange: (level: AgentPermissionLevel) => void;
   /** 只读连接：权限锁定为只读，禁用切换入口 */
   permissionLocked?: boolean;
+  /** 轻量提示（定位失败等反馈） */
+  onToast?: (message: string) => void;
   onApproveAction: (actionId: string) => void;
   onRejectAction: (actionId: string) => void;
   onClearSession: () => void;
@@ -68,7 +73,7 @@ const PERMISSION_OPTIONS: {
 
 const AgentPanel: React.FC<AgentPanelProps> = ({
   show, onClose, messages, loading, busy = false, input, setInput, onSubmit, onCancel,
-  permissionLevel, onPermissionChange, permissionLocked = false, onApproveAction, onRejectAction,
+  permissionLevel, onPermissionChange, permissionLocked = false, onToast, onApproveAction, onRejectAction,
   onClearSession, errorMessage, iteration = 0,
   databases, selectedDatabase, onSelectDatabase, tables, selectedTable, onSelectTable,
   savedConnections, conversationsByConn, currentConversationId, currentConvConnectionId,
@@ -83,6 +88,61 @@ const AgentPanel: React.FC<AgentPanelProps> = ({
   const [editingConvId, setEditingConvId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
   const [expandedConns, setExpandedConns] = useState<Set<number>>(new Set());
+  // 时间线跳转后的目标行闪烁高亮
+  const [flashIndex, setFlashIndex] = useState<number | null>(null);
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleTimelineJump = (index: number) => {
+    setFlashIndex(index);
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+    flashTimerRef.current = setTimeout(() => setFlashIndex(null), 1400);
+  };
+
+  useEffect(() => () => {
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+  }, []);
+
+  // 右侧数据面板开关
+  const [showBrowser, setShowBrowser] = useState(false);
+  // 面板宽度：首次展开时取右侧区域的一半，之后可拖拽调整并记忆
+  const rightAreaRef = useRef<HTMLDivElement>(null);
+  const [browserWidth, setBrowserWidth] = useState(0);
+  const [resizingBrowser, setResizingBrowser] = useState(false);
+
+  const toggleBrowser = () => {
+    if (!showBrowser && browserWidth <= 0) {
+      const areaW = rightAreaRef.current?.clientWidth || 0;
+      setBrowserWidth(Math.max(420, Math.floor(areaW / 2)));
+    }
+    setShowBrowser((v) => !v);
+  };
+
+  // 拖拽面板左缘调整宽度（向左拖变宽），限制：面板 ≥320px，对话区保留 ≥380px
+  const startBrowserResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = browserWidth;
+    const areaW = rightAreaRef.current?.clientWidth || window.innerWidth;
+    const maxW = Math.max(320, areaW - 380);
+    setResizingBrowser(true);
+    const onMove = (ev: MouseEvent) => {
+      const next = startWidth + (startX - ev.clientX);
+      setBrowserWidth(Math.max(320, Math.min(next, maxW)));
+    };
+    const onUp = () => {
+      setResizingBrowser(false);
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+
+  // Agent 本轮任务结束（loading 由 true → false）时递增，触发数据面板自动刷新 + AI 定位
+  const [dataRefreshKey, setDataRefreshKey] = useState(0);
+  const prevLoadingRef = useRef(loading);
+  // AI → 数据面板：查询结果视图
+  const [aiResult, setAiResult] = useState<AiResultView | null>(null);
 
   const mergedMessages = useMemo(() => {
     const resultMap = new Map<string, AgentMessage>();
@@ -110,6 +170,65 @@ const AgentPanel: React.FC<AgentPanelProps> = ({
     }
     return result;
   }, [messages]);
+
+  // 从 SQL 解析定位目标：单表名 + WHERE 等值条件（JOIN/多表无法定位）
+  const parseFocusTarget = (sql: string): { table: string; wherePairs: [string, string][] } | null => {
+    const cleaned = sql
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')
+      .replace(/--[^\n]*/g, ' ')
+      .replace(/`/g, ' ')
+      .replace(/"/g, ' ');
+    if (/\bJOIN\b/i.test(cleaned)) return null;
+    const m = cleaned.match(/\b(?:FROM|UPDATE|INTO)\s+([A-Za-z0-9_$.]+)/i);
+    if (!m) return null;
+    const table = m[1].split('.').pop() || m[1];
+    // 等值条件（跳过 >=/<=/!=，字符串取引号内、数字直接取）
+    const pairs: [string, string][] = [];
+    const eqRe = /\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:'((?:[^'\\]|\\.|'')*)'|(\d+(?:\.\d+)?))/g;
+    let em: RegExpExecArray | null;
+    while ((em = eqRe.exec(cleaned)) !== null) {
+      const col = em[1];
+      const val = em[2] !== undefined ? em[2] : em[3];
+      if (/^(AND|OR|NOT|SET|WHERE|WHEN|THEN)$/i.test(col)) continue;
+      pairs.push([col, val]);
+      if (pairs.length >= 6) break;
+    }
+    return { table, wherePairs: pairs };
+  };
+
+  // 手动定位：点击 SQL 动作卡上的「定位数据」→ 右侧面板以结果视图原样展示查询结果
+  const handleLocateAction = (act: AgentAction) => {
+    const data = act.result?.data;
+    if (!data || data.length === 0) {
+      onToast?.('该动作没有查询结果集');
+      return;
+    }
+    const columns =
+      act.result?.columns && act.result.columns.length > 0
+        ? act.result.columns
+        : Object.keys(data[0] || {});
+    if (columns.length === 0) {
+      onToast?.('无法提取结果列');
+      return;
+    }
+    // 解析表名用于标题与下拉框上下文同步（解析失败不阻塞结果展示）
+    const target = parseFocusTarget(act.sql || '');
+    if (target?.table) onSelectTable(target.table);
+    setAiResult({
+      seq: Date.now(),
+      title: target?.table || '查询结果',
+      columns,
+      rows: data
+    });
+    if (!showBrowser) toggleBrowser(); // 自动展开数据面板
+  };
+
+  useEffect(() => {
+    if (prevLoadingRef.current && !loading) {
+      setDataRefreshKey((k) => k + 1);
+    }
+    prevLoadingRef.current = loading;
+  }, [loading]);
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -346,7 +465,11 @@ const AgentPanel: React.FC<AgentPanelProps> = ({
             </div>
           </div>
 
-          {/* ============ 右侧对话区 ============ */}
+          {/* ============ 右侧对话区 + 数据面板 ============ */}
+          <div
+            ref={rightAreaRef}
+            className={`flex-1 flex min-w-0 ${resizingBrowser ? 'select-none cursor-col-resize' : ''}`}
+          >
           <div className="flex-1 flex flex-col min-w-0">
             {/* 顶部工具栏 */}
             <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between">
@@ -364,18 +487,20 @@ const AgentPanel: React.FC<AgentPanelProps> = ({
               </div>
               <div className="flex items-center gap-2">
                 <button
+                  onClick={toggleBrowser}
+                  className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] transition-colors ${
+                    showBrowser ? 'bg-indigo-50 text-indigo-600' : 'hover:bg-slate-100 text-slate-400'
+                  }`}
+                  title="展开/收起右侧数据面板"
+                >
+                  <PanelRight size={12} /> 数据面板
+                </button>
+                <button
                   onClick={onClearSession}
                   className="flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-slate-100 text-slate-400 text-[11px] transition-colors"
                   title="清空当前会话消息"
                 >
                   <Eraser size={12} /> 清空
-                </button>
-                <button
-                  onClick={onClose}
-                  className="w-7 h-7 flex items-center justify-center bg-slate-100 hover:bg-slate-200 rounded-lg text-slate-400 transition-colors"
-                  title="关闭"
-                >
-                  <X size={14} />
                 </button>
               </div>
             </div>
@@ -393,38 +518,52 @@ const AgentPanel: React.FC<AgentPanelProps> = ({
               )}
             </AnimatePresence>
 
-            {/* 消息区域 */}
-            <div ref={scrollRef} className="flex-1 overflow-y-auto px-5 py-8 bg-slate-50/30">
-              <div className="max-w-3xl mx-auto space-y-6">
-                {messages.length === 0 && !loading && (
-                  <div className="flex flex-col items-center justify-center py-32 text-slate-400 gap-3">
-                    <Bot size={56} className="text-slate-200" />
-                    <p className="text-sm text-center max-w-[320px] leading-relaxed">
-                      从左侧选择或新建一个会话，然后告诉我你想做什么。
-                    </p>
-                    <span className="text-xs text-slate-300 mt-2">
-                      当前权限: {currentPerm?.label} — {currentPerm?.desc}
-                    </span>
-                  </div>
-                )}
-
-                {mergedMessages.map((msg, i) => (
-                  <div key={i} className={msg.role === 'user' ? 'flex justify-end' : ''}>
-                    <AgentMessageItem message={msg} onApprove={onApproveAction} onReject={onRejectAction} />
-                  </div>
-                ))}
-
-                {(() => { const lastMsg = mergedMessages[mergedMessages.length - 1]; return loading && !(mergedMessages.length > 0 && lastMsg?.role === 'assistant' && lastMsg.content); })() && (
-                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex gap-3">
-                    <div className="w-9 h-9 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center shrink-0">
-                      <Bot size={18} />
+            {/* 消息区域（左侧悬浮时间线 + 滚动容器） */}
+            <div className="flex-1 relative min-h-0">
+              <AgentTimeline messages={mergedMessages} scrollRef={scrollRef} onJump={handleTimelineJump} />
+              <div ref={scrollRef} className="absolute inset-0 overflow-y-auto custom-scrollbar pr-5 pl-9 py-8 bg-slate-50/30">
+                <div className="max-w-3xl mx-auto space-y-6">
+                  {messages.length === 0 && !loading && (
+                    <div className="flex flex-col items-center justify-center py-32 text-slate-400 gap-3">
+                      <Bot size={56} className="text-slate-200" />
+                      <p className="text-sm text-center max-w-[320px] leading-relaxed">
+                        从左侧选择或新建一个会话，然后告诉我你想做什么。
+                      </p>
+                      <span className="text-xs text-slate-300 mt-2">
+                        当前权限: {currentPerm?.label} — {currentPerm?.desc}
+                      </span>
                     </div>
-                    <div className="bg-white border border-slate-200 rounded-2xl px-4 py-3 shadow-sm flex items-center gap-2">
-                      <Loader2 size={16} className="animate-spin text-indigo-600" />
-                      <span className="text-xs text-slate-500">Agent 思考中...</span>
+                  )}
+
+                  {mergedMessages.map((msg, i) => (
+                    <div
+                      key={i}
+                      data-msg-index={i}
+                      className={`${msg.role === 'user' ? 'flex justify-end' : ''} rounded-xl transition-shadow ${
+                        flashIndex === i ? 'ring-2 ring-indigo-400/70 shadow-lg shadow-indigo-100' : ''
+                      }`}
+                    >
+                      <AgentMessageItem
+                        message={msg}
+                        onApprove={onApproveAction}
+                        onReject={onRejectAction}
+                        onLocate={handleLocateAction}
+                      />
                     </div>
-                  </motion.div>
-                )}
+                  ))}
+
+                  {(() => { const lastMsg = mergedMessages[mergedMessages.length - 1]; return loading && !(mergedMessages.length > 0 && lastMsg?.role === 'assistant' && lastMsg.content); })() && (
+                    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex gap-3">
+                      <div className="w-9 h-9 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center shrink-0">
+                        <Bot size={18} />
+                      </div>
+                      <div className="bg-white border border-slate-200 rounded-2xl px-4 py-3 shadow-sm flex items-center gap-2">
+                        <Loader2 size={16} className="animate-spin text-indigo-600" />
+                        <span className="text-xs text-slate-500">Agent 思考中...</span>
+                      </div>
+                    </motion.div>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -567,6 +706,35 @@ const AgentPanel: React.FC<AgentPanelProps> = ({
                 </div>
               </div>
             </div>
+          </div>
+
+          {/* 右侧数据面板：展开时把对话区挤向左边，宽度可拖拽调整 */}
+          <AnimatePresence>
+            {showBrowser && (
+              <motion.div
+                initial={{ width: 0, opacity: 0 }}
+                animate={{ width: browserWidth, opacity: 1 }}
+                exit={{ width: 0, opacity: 0 }}
+                transition={{ duration: resizingBrowser ? 0 : 0.2 }}
+                className="relative shrink-0 border-l border-slate-200 overflow-hidden"
+              >
+                {/* 左缘拖拽手柄 */}
+                <div
+                  onMouseDown={startBrowserResize}
+                  className="absolute left-0 top-0 bottom-0 w-1.5 cursor-col-resize z-20 hover:bg-indigo-300/60 active:bg-indigo-400/70 transition-colors"
+                  title="拖拽调整面板宽度"
+                />
+                <AgentTableBrowser
+                  databaseName={selectedDatabase}
+                  tables={tables}
+                  selectedTable={selectedTable}
+                  onSelectTable={onSelectTable}
+                  refreshKey={dataRefreshKey}
+                  aiResult={aiResult}
+                />
+              </motion.div>
+            )}
+          </AnimatePresence>
           </div>
         </motion.div>
       )}

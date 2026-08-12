@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { CheckCircle2, XCircle, Loader2, Database, Table2, Terminal, AlertTriangle, ShieldCheck, ShieldAlert, Copy, Check } from 'lucide-react';
+import { CheckCircle2, XCircle, Loader2, Database, Table2, Terminal, AlertTriangle, ShieldCheck, ShieldAlert, Copy, Check, Crosshair } from 'lucide-react';
 import type { AgentAction, SqlCategory } from '../../../shared/agentTypes';
 
 // 复用主进程的安全分类信息（这里内联一份对应关系，避免跨进程导入）
@@ -31,9 +31,11 @@ type ActionCardProps = {
   action: AgentAction;
   onApprove?: (actionId: string) => void;
   onReject?: (actionId: string) => void;
+  /** 成功的 SQL 动作：在右侧数据面板定位查询结果 */
+  onLocate?: (action: AgentAction) => void;
 };
 
-const ActionCard: React.FC<ActionCardProps> = ({ action, onApprove, onReject }) => {
+const ActionCard: React.FC<ActionCardProps> = ({ action, onApprove, onReject, onLocate }) => {
   const Icon = TOOL_ICONS[action.tool] || Terminal;
   const toolLabel = TOOL_LABELS[action.tool] || action.tool;
   const categoryInfo = action.category ? CATEGORY_INFO[action.category] : null;
@@ -115,6 +117,18 @@ const ActionCard: React.FC<ActionCardProps> = ({ action, onApprove, onReject }) 
           <div className="flex items-center gap-1 text-[10px] font-bold text-amber-600">
             <ShieldAlert size={12} /> 需要审批
           </div>
+        )}
+        {action.tool === 'execute_sql' && action.result?.success && onLocate && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onLocate(action);
+            }}
+            className="flex items-center gap-1 px-2 py-1 rounded-md bg-indigo-50 hover:bg-indigo-100 text-indigo-600 text-[10px] font-bold transition-colors"
+            title="在右侧数据面板中定位该查询的数据"
+          >
+            <Crosshair size={11} /> 定位数据
+          </button>
         )}
       </div>
 

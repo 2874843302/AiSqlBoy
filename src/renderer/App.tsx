@@ -2178,6 +2178,7 @@ onClose={handleCloseAgent}
 messages={agentMessages}
 loading={agentLoading}
 busy={agentBusy}
+onToast={(m) => setToast({ message: m, type: 'info' })}
 input={agentInput}
 setInput={setAgentInput}
 onSubmit={handleAgentSubmit}
