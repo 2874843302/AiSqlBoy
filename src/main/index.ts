@@ -6,7 +6,8 @@ import { SQLiteDriver, MySQLDriver, PostgreSQLDriver, OracleDriver, RedisDriver,
 import { aiService } from './services/aiService'
 import { agentService, sanitizeAgentMessagesForStorage } from './services/agentService'
 import fs from 'fs'
-import { ConnectionConfig } from '../shared/types'
+import crypto from 'crypto'
+import { ConnectionConfig, ConnectionPackagePreview } from '../shared/types'
 import { classifySql, hasMultipleStatements, stripSqlNoise, checkAllowedDatabaseSql } from '../shared/sqlSecurity'
 import { encryptConnectionPackage, decryptConnectionPackage } from './services/connectionPackage'
 
@@ -19,6 +20,9 @@ let currentDriver: IDatabaseDriver | null = null
 let heartbeatTimer: NodeJS.Timeout | null = null
 let currentReadOnly = false // 当前连接是否只读模式
 let currentAllowedDatabases: string[] | null = null // 限库连接包授权访问的数据库白名单（null 表示不限）
+
+// 连接包导入暂存：解密后的完整配置仅存于主进程内存，token 一次性、5 分钟过期
+const pendingImports = new Map<string, { config: ConnectionConfig; expireAt: number }>()
 
 const READONLY_DENY = '当前连接为只读模式，禁止此操作'
 
@@ -251,7 +255,59 @@ ipcMain.handle('pick-connection-package-file', async () => {
 ipcMain.handle('decrypt-connection-package', async (_, payload: string, passphrase: string) => {
   try {
     const config = decryptConnectionPackage(payload, passphrase)
-    return { success: true, config }
+    // 明文凭据只留在主进程：渲染进程仅获得脱敏预览 + 一次性 token（5 分钟有效）
+    const now = Date.now()
+    for (const [k, v] of pendingImports) if (now > v.expireAt) pendingImports.delete(k)
+    const token = crypto.randomBytes(16).toString('hex')
+    pendingImports.set(token, { config, expireAt: now + 5 * 60 * 1000 })
+    const preview: ConnectionPackagePreview = {
+      name: config.name,
+      type: config.type,
+      allowedDatabases: config.allowedDatabases,
+      expiresAt: config.expiresAt
+    }
+    return { success: true, token, preview }
+  } catch (error: any) {
+    return { success: false, error: error.message }
+  }
+})
+
+// 确认导入：凭一次性 token 在主进程内完成入库，渲染进程全程接触不到凭据明文
+ipcMain.handle('confirm-import-package', async (_, token: string, name: string) => {
+  try {
+    const entry = pendingImports.get(token)
+    pendingImports.delete(token) // 一次性使用
+    if (!entry || Date.now() > entry.expireAt) {
+      return { success: false, error: '导入会话已失效或过期，请重新解密' }
+    }
+    const trimmed = String(name || '').trim()
+    if (!trimmed) return { success: false, error: '连接名称不能为空' }
+    const imported: ConnectionConfig = { ...entry.config, id: undefined, name: trimmed }
+    await internalDB.saveConnection(imported)
+    return { success: true, name: imported.name }
+  } catch (error: any) {
+    return { success: false, error: error.message }
+  }
+})
+
+// 导出当前数据（表视图/结果视图）为 CSV：BOM 头保证 Excel 中文不乱码
+ipcMain.handle('save-table-csv', async (_, columns: string[], rows: any[], defaultName: string) => {
+  try {
+    const { canceled, filePath } = await dialog.showSaveDialog(mainWindow!, {
+      title: '导出 CSV',
+      defaultPath: defaultName,
+      filters: [{ name: 'CSV Files', extensions: ['csv'] }]
+    })
+    if (canceled || !filePath) return { success: false, error: 'User cancelled' }
+    const esc = (v: any) => {
+      if (v === null || v === undefined) return ''
+      const s = typeof v === 'object' ? JSON.stringify(v) : String(v)
+      return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
+    }
+    const lines = [columns.map(esc).join(',')]
+    for (const row of rows) lines.push(columns.map((c) => esc(row[c])).join(','))
+    fs.writeFileSync(filePath, '\uFEFF' + lines.join('\r\n'), 'utf8')
+    return { success: true, filePath }
   } catch (error: any) {
     return { success: false, error: error.message }
   }

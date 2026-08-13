@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react'
 import { Database, Table, Layout, Settings, Loader2, Key, ArrowUp, ArrowDown, Filter } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { ConnectionConfig } from '../shared/types'
+import { ConnectionConfig, ConnectionPackagePreview } from '../shared/types'
 import {
   AI_VERSION_OPTIONS,
   defaultModelForVendor,
@@ -119,7 +119,7 @@ const App: React.FC = () => {
   // 只读连接包：导出/导入弹窗
   const [packageModal, setPackageModal] = useState<
     | { mode: 'export'; config: ConnectionConfig; databases: string[]; defaultDatabase?: string }
-    | { mode: 'import'; payload: string }
+    | { mode: 'import'; payload: string; token?: string; preview?: ConnectionPackagePreview }
     | null
   >(null);
   const [packageLoading, setPackageLoading] = useState(false);
@@ -228,6 +228,7 @@ const App: React.FC = () => {
 
   const {
     useVirtualScroll, ROW_HEIGHT,
+    density, handleDensityChange, gridMetrics,
     pageSize, setPageSize,
     currentPage, setCurrentPage,
     totalRows, setTotalRows,
@@ -326,6 +327,38 @@ const App: React.FC = () => {
     aiPopupRef
   });
 
+  /** 恢复库表上下文（不走 handleSelectDatabase，其折叠切换逻辑会干扰恢复） */
+  const restoreDbTable = async (db: string | null, table: string | null) => {
+    if (!db) {
+      setSelectedDatabase(null);
+      setTables([]);
+      setSelectedTable(null);
+      setData([]);
+      setColumns([]);
+      return;
+    }
+    try {
+      const useRes = await window.electronAPI.useDatabase(db);
+      if (!useRes.success) {
+        setToast({ message: useRes.error || `恢复数据库 ${db} 失败`, type: 'error' });
+        return;
+      }
+      setSelectedDatabase(db);
+      setExpandedDatabases((prev) => new Set(prev).add(db));
+      const tableList = await window.electronAPI.getTables();
+      setTables(tableList);
+      if (table && tableList.some((t) => t.name === table)) {
+        await handleSelectTable(table);
+      } else {
+        setSelectedTable(null);
+        setData([]);
+        setColumns([]);
+      }
+    } catch (err: any) {
+      setToast({ message: err.message || '恢复库表上下文失败', type: 'error' });
+    }
+  };
+
   const {
     showAgentPanel,
     agentLoading,
@@ -359,38 +392,62 @@ const App: React.FC = () => {
     selectedTable,
     setToast,
     onConnect: (config) => handleConnect(config),
-    onRestoreDbTable: async (db, table) => {
-      // 不走 handleSelectDatabase（其折叠切换逻辑会干扰恢复），直接切换库并加载表
-      if (!db) {
-        setSelectedDatabase(null);
-        setTables([]);
-        setSelectedTable(null);
-        setData([]);
-        setColumns([]);
-        return;
-      }
-      try {
-        const useRes = await window.electronAPI.useDatabase(db);
-        if (!useRes.success) {
-          setToast({ message: useRes.error || `恢复数据库 ${db} 失败`, type: 'error' });
-          return;
-        }
-        setSelectedDatabase(db);
-        setExpandedDatabases((prev) => new Set(prev).add(db));
-        const tableList = await window.electronAPI.getTables();
-        setTables(tableList);
-        if (table && tableList.some((t) => t.name === table)) {
-          await handleSelectTable(table);
-        } else {
-          setSelectedTable(null);
-          setData([]);
-          setColumns([]);
-        }
-      } catch (err: any) {
-        setToast({ message: err.message || '恢复库表上下文失败', type: 'error' });
-      }
-    }
+    onRestoreDbTable: restoreDbTable
   });
+
+  // ============ 会话状态持久化：重启后自动恢复工作现场 ============
+  const restoreFinishedRef = useRef(false);
+  const restoreStartedRef = useRef(false);
+  useEffect(() => {
+    if (restoreStartedRef.current || savedConnections.length === 0) return;
+    restoreStartedRef.current = true;
+    (async () => {
+      try {
+        const raw = await window.electronAPI.getSetting('ui_session_state');
+        if (raw) {
+          const s = JSON.parse(raw);
+          if (Array.isArray(s.expandedConnections)) setExpandedConnections(new Set(s.expandedConnections));
+          if (Array.isArray(s.expandedDatabases)) setExpandedDatabases(new Set(s.expandedDatabases));
+          const conn = savedConnections.find((c) => c.id === s.activeConnectionId);
+          if (conn) {
+            await handleConnect(conn);
+            if (s.selectedDatabase) await restoreDbTable(s.selectedDatabase, s.selectedTable ?? null);
+            if (s.showAgentPanel) {
+              handleOpenAgent();
+              if (s.currentConversationId) await handleSelectConversation(s.currentConversationId);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('恢复会话状态失败:', err);
+      }
+      restoreFinishedRef.current = true;
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [savedConnections]);
+
+  // 防抖写入会话状态（恢复完成前不写，避免覆盖存档）
+  const sessionSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (sessionSaveTimer.current) clearTimeout(sessionSaveTimer.current);
+    sessionSaveTimer.current = setTimeout(() => {
+      if (!restoreFinishedRef.current) return;
+      const state = {
+        activeConnectionId: activeConnection?.id ?? null,
+        expandedConnections: [...expandedConnections],
+        expandedDatabases: [...expandedDatabases],
+        selectedDatabase,
+        selectedTable,
+        currentConversationId,
+        showAgentPanel
+      };
+      window.electronAPI.saveSetting('ui_session_state', JSON.stringify(state)).catch(() => {});
+    }, 500);
+    return () => {
+      if (sessionSaveTimer.current) clearTimeout(sessionSaveTimer.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeConnection?.id, expandedConnections, expandedDatabases, selectedDatabase, selectedTable, currentConversationId, showAgentPanel]);
 
   const {
     appVersion,
@@ -509,9 +566,9 @@ const App: React.FC = () => {
     return databases.filter((db) => allow.has(db));
   }, [databases, activeConnection]);
 
-  /** 切换表的置顶状态（非阻塞） */
+  /** 切换表的置顶状态（非阻塞）；按 连接+数据库 作用域存储 */
   const togglePinTable = (tableName: string) => {
-    if (!activeConnection?.id) return;
+    if (!activeConnection?.id || !selectedDatabase) return;
     const next = new Set(pinnedTables);
     if (next.has(tableName)) {
       next.delete(tableName);
@@ -519,8 +576,8 @@ const App: React.FC = () => {
       next.add(tableName);
     }
     setPinnedTables(next);
-    // 异步写入持久化
-    window.electronAPI.saveSetting(`pinned_tables_${activeConnection.id}`, JSON.stringify([...next]))
+    // 异步写入持久化（按库隔离，避免不同库同名表互相串扰）
+    window.electronAPI.saveSetting(`pinned_tables_${activeConnection.id}_${selectedDatabase}`, JSON.stringify([...next]))
       .catch((err: any) => console.error('保存置顶表失败:', err));
   };
 
@@ -534,17 +591,33 @@ const App: React.FC = () => {
     }
   }
 
-  /** 从持久化存储中加载当前连接的置顶表列表 */
+  /** 加载当前 连接+数据库 的置顶表列表；无记录时清空（避免旧连接/旧库的置顶状态残留） */
+  const pinnedLoadSeq = useRef(0);
   const loadPinnedTables = async () => {
-    if (!activeConnection?.id) return;
-    const raw = await window.electronAPI.getSetting(`pinned_tables_${activeConnection.id}`);
+    const seq = ++pinnedLoadSeq.current;
+    if (!activeConnection?.id || !selectedDatabase) {
+      setPinnedTables(new Set());
+      return;
+    }
+    const raw = await window.electronAPI.getSetting(`pinned_tables_${activeConnection.id}_${selectedDatabase}`);
+    if (seq !== pinnedLoadSeq.current) return; // 快速切换时丢弃过期响应
     if (raw) {
       try {
         const list = JSON.parse(raw);
-        if (Array.isArray(list)) setPinnedTables(new Set(list));
+        if (Array.isArray(list)) {
+          setPinnedTables(new Set(list));
+          return;
+        }
       } catch { /* ignore */ }
     }
+    setPinnedTables(new Set());
   };
+
+  // 切换连接或数据库时重载置顶状态
+  useEffect(() => {
+    loadPinnedTables();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeConnection?.id, selectedDatabase]);
 
   const handleConnect = async (config: ConnectionConfig) => {
     if (connectingConnectionId !== null) return;
@@ -1697,31 +1770,54 @@ ${JSON.stringify(payload)}
     });
   };
 
-  // 只读连接包：口令确认（导出加密写盘 / 导入解密入库）
+  // 只读连接包：导出确认（加密写盘）
   const handlePackageConfirm = async (passphrase: string, expiresAt?: number, allowedDatabases?: string[]) => {
-    if (!packageModal) return;
+    if (!packageModal || packageModal.mode !== 'export') return;
     setPackageLoading(true);
     setPackageError('');
     try {
-      if (packageModal.mode === 'export') {
-        // 授权库白名单来自弹窗多选结果，随配置一起加密进包
-        const exportConfig = { ...packageModal.config, allowedDatabases: allowedDatabases || [] };
-        const res = await window.electronAPI.exportConnectionPackage(exportConfig, passphrase, expiresAt || 0);
-        if (!res.success) throw new Error(res.error || '导出连接包失败');
-        setPackageModal(null);
-        setToast({ message: `只读连接包已导出${res.filePath ? `：${res.filePath}` : ''}`, type: 'success' });
-      } else {
-        const res = await window.electronAPI.decryptConnectionPackage(packageModal.payload, passphrase);
-        if (!res.success || !res.config) throw new Error(res.error || '解密连接包失败');
-        // 剥掉导出方的本地 id，导入为新连接；解密结果已强制 readOnly + locked
-        const imported: ConnectionConfig = { ...res.config, id: undefined };
-        await window.electronAPI.saveConnection(imported);
-        await loadSavedConnections();
-        setPackageModal(null);
-        setToast({ message: `只读连接「${imported.name}」已导入`, type: 'success' });
-      }
+      // 授权库白名单来自弹窗多选结果，随配置一起加密进包
+      const exportConfig = { ...packageModal.config, allowedDatabases: allowedDatabases || [] };
+      const res = await window.electronAPI.exportConnectionPackage(exportConfig, passphrase, expiresAt || 0);
+      if (!res.success) throw new Error(res.error || '导出连接包失败');
+      setPackageModal(null);
+      setToast({ message: `只读连接包已导出${res.filePath ? `：${res.filePath}` : ''}`, type: 'success' });
     } catch (err: any) {
       setPackageError(err?.message || '操作失败');
+    } finally {
+      setPackageLoading(false);
+    }
+  };
+
+  // 只读连接包：导入第一阶段，仅解密（凭据明文留在主进程，渲染进程只拿脱敏预览 + token）
+  const handleImportDecrypt = async (passphrase: string) => {
+    if (!packageModal || packageModal.mode !== 'import') return;
+    setPackageLoading(true);
+    setPackageError('');
+    try {
+      const res = await window.electronAPI.decryptConnectionPackage(packageModal.payload, passphrase);
+      if (!res.success || !res.token || !res.preview) throw new Error(res.error || '解密连接包失败');
+      setPackageModal({ ...packageModal, token: res.token, preview: res.preview });
+    } catch (err: any) {
+      setPackageError(err?.message || '解密失败，请检查口令');
+    } finally {
+      setPackageLoading(false);
+    }
+  };
+
+  // 只读连接包：导入第二阶段，凭 token 由主进程完成入库（渲染进程不接触凭据）
+  const handleImportConfirm = async (name: string) => {
+    if (!packageModal || packageModal.mode !== 'import' || !packageModal.token) return;
+    setPackageLoading(true);
+    setPackageError('');
+    try {
+      const res = await window.electronAPI.confirmImportPackage(packageModal.token, name);
+      if (!res.success) throw new Error(res.error || '导入失败');
+      await loadSavedConnections();
+      setPackageModal(null);
+      setToast({ message: `只读连接「${res.name}」已导入`, type: 'success' });
+    } catch (err: any) {
+      setPackageError(err?.message || '导入失败');
     } finally {
       setPackageLoading(false);
     }
@@ -1852,6 +1948,9 @@ ${JSON.stringify(payload)}
                 pageSize={pageSize}
                 resetAllTableColumnWidths={resetAllTableColumnWidths}
                 ROW_HEIGHT={ROW_HEIGHT}
+                density={density}
+                onDensityChange={handleDensityChange}
+                gridMetrics={gridMetrics}
                 searchMatches={searchMatches}
                 selectedTable={selectedTable}
                 setActiveFilterCol={setActiveFilterCol}
@@ -2017,6 +2116,9 @@ ${JSON.stringify(payload)}
             connectionName={packageModal.mode === 'export' ? packageModal.config.name : undefined}
             databases={packageModal.mode === 'export' ? packageModal.databases : undefined}
             defaultDatabase={packageModal.mode === 'export' ? packageModal.defaultDatabase : undefined}
+            decryptedConfig={packageModal.mode === 'import' ? packageModal.preview : undefined}
+            onDecrypt={handleImportDecrypt}
+            onImportConfirm={handleImportConfirm}
             loading={packageLoading}
             error={packageError}
             onClose={() => {

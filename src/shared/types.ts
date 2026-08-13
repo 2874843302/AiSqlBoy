@@ -14,6 +14,14 @@ export interface ConnectionConfig {
   allowedDatabases?: string[]; // 授权库白名单：连接包仅允许访问这些数据库，禁止枚举/切换/跨库操作
 }
 
+/** 连接包解密预览（脱敏信息，不含账号口令等凭据） */
+export interface ConnectionPackagePreview {
+  name: string;
+  type: string;
+  allowedDatabases?: string[];
+  expiresAt?: number;
+}
+
 export interface TableInfo {
   name: string;
 }

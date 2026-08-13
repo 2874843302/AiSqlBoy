@@ -320,12 +320,12 @@ const Sidebar: React.FC<SidebarProps> = ({
                                                 e.preventDefault();
                                                 onTableContextMenu(table.name, e.clientX, e.clientY);
                                               }}
-                                              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-left transition-all duration-200 ${
+                                              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-left border transition-all duration-200 ${
                                                 selectedTable === table.name 
-                                                ? 'bg-blue-600 text-white shadow-md' 
+                                                ? 'bg-blue-600 text-white shadow-md border-transparent' 
                                                 : isPinned
-                                                  ? 'text-slate-600 border border-slate-200/60'
-                                                  : 'hover:bg-slate-50 text-slate-500 hover:text-slate-700'
+                                                  ? 'text-slate-600 border-slate-200/60'
+                                                  : 'hover:bg-slate-50 text-slate-500 hover:text-slate-700 border-transparent'
                                               }`}
                                             >
                                               {activeConnection?.type === 'redis' ? (

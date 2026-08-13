@@ -1,4 +1,4 @@
-import type { ConnectionConfig } from '../../shared/types';
+import type { ConnectionConfig, ConnectionPackagePreview } from '../../shared/types';
 import type { AgentResponse } from '../../shared/agentTypes';
 
 declare global {
@@ -12,7 +12,9 @@ declare global {
       // 只读连接包
       exportConnectionPackage: (config: ConnectionConfig, passphrase: string, expiresAt: number) => Promise<{ success: boolean; filePath?: string; error?: string }>;
       pickConnectionPackageFile: () => Promise<{ success: boolean; content?: string; error?: string }>;
-      decryptConnectionPackage: (payload: string, passphrase: string) => Promise<{ success: boolean; config?: ConnectionConfig; error?: string }>;
+      decryptConnectionPackage: (payload: string, passphrase: string) => Promise<{ success: boolean; token?: string; preview?: ConnectionPackagePreview; error?: string }>;
+      confirmImportPackage: (token: string, name: string) => Promise<{ success: boolean; name?: string; error?: string }>;
+      saveTableCsv: (columns: string[], rows: any[], defaultName: string) => Promise<{ success: boolean; filePath?: string; error?: string }>;
 
       // Console Management
       getConsoles: (connectionId?: number) => Promise<any[]>;

@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   exportConnectionPackage: (config: ConnectionConfig, passphrase: string, expiresAt: number) => ipcRenderer.invoke('export-connection-package', config, passphrase, expiresAt),
   pickConnectionPackageFile: () => ipcRenderer.invoke('pick-connection-package-file'),
   decryptConnectionPackage: (payload: string, passphrase: string) => ipcRenderer.invoke('decrypt-connection-package', payload, passphrase),
+  confirmImportPackage: (token: string, name: string) => ipcRenderer.invoke('confirm-import-package', token, name),
+  saveTableCsv: (columns: string[], rows: any[], defaultName: string) => ipcRenderer.invoke('save-table-csv', columns, rows, defaultName),
   
   // Console Management
   getConsoles: (connectionId?: number) => ipcRenderer.invoke('get-consoles', connectionId),

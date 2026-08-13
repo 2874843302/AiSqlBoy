@@ -1,10 +1,18 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Database, Table, Play, Plus, Trash2, X, Server, HardDrive, RefreshCw, ChevronRight, Layout, Settings, Activity, AlignLeft, Bot, Sparkles, Send, Loader2, Key, Search, ArrowUp, ArrowDown, FileJson, Save, Terminal, Download, CheckCircle2, Filter, Star, Copy } from 'lucide-react';
+import { Database, Table, Play, Plus, Trash2, X, Server, HardDrive, RefreshCw, ChevronRight, Layout, Settings, Activity, AlignLeft, Bot, Sparkles, Send, Loader2, Key, Search, ArrowUp, ArrowDown, FileJson, Save, Terminal, Download, CheckCircle2, Filter, Star, Copy, Rows3, Rows4 } from 'lucide-react';
 import { getTimeInputType, isBooleanType, formatTimeForInput, sanitizeDisplayText, formatRedisValue } from '../../utils/valueFormat';
 import { isJsonLike, escapeRegExp, formatJson, renderJsonSyntax } from '../../utils/jsonText';
 import { highlightSqlForDisplay } from '../../utils/sqlText';
+
+/** 表头类型简写：去掉冗长后缀（完整类型仍在悬浮 title 中展示） */
+const shortType = (t: string): string =>
+  String(t || '')
+    .replace(/\s*without time zone$/i, '')
+    .replace(/\s*with time zone$/i, ' tz')
+    .replace(/^character varying/i, 'varchar')
+    .replace(/^double precision/i, 'double');
 import OverflowPreviewText from '../common/OverflowPreviewText';
 import TableInspectorPanel from './TableInspector';
 
@@ -43,6 +51,9 @@ const TableView: React.FC<Record<string, any>> = (props) => {
     pageSize,
     resetAllTableColumnWidths,
     ROW_HEIGHT,
+    density,
+    onDensityChange,
+    gridMetrics,
     searchMatches,
     selectedTable,
     setActiveFilterCol,
@@ -71,6 +82,14 @@ const TableView: React.FC<Record<string, any>> = (props) => {
     totalRows,
     useVirtualScroll
   } = props;
+
+  // 密度联动的单元格内边距/字号（滑杆实时调节）
+  const padStyle = {
+    paddingTop: gridMetrics.padY,
+    paddingBottom: gridMetrics.padY,
+    paddingLeft: gridMetrics.padX,
+    paddingRight: gridMetrics.padX
+  };
   return (
               <motion.div
                 key={selectedTable}
@@ -90,11 +109,10 @@ const TableView: React.FC<Record<string, any>> = (props) => {
                   </button>
                 )}
                 <div
-                  className="flex-1 overflow-auto p-8 custom-scrollbar relative transition-all"
+                  className="flex-1 min-h-0 flex flex-col relative transition-all"
                   style={tableInspector.open ? { paddingRight: tableInspectorWidth + 40 } : undefined}
-                  ref={tableContainerRef}
-                  onScroll={(e) => handleContainerScroll(e, 'table')}
                 >
+                <div className="flex-1 min-h-0 flex flex-col p-8 pb-4">
                   {Object.keys(tableColumnWidths).length > 0 && (
                     <div className="mb-3 flex items-center justify-between">
                       <div />
@@ -124,8 +142,12 @@ const TableView: React.FC<Record<string, any>> = (props) => {
                       </div>
                     </div>
                   )}
-                  <div className="bg-white rounded-3xl border border-slate-200 overflow-hidden shadow-2xl shadow-slate-200/50 backdrop-blur-sm relative">
-                    <div className="overflow-x-auto">
+                  <div className="bg-white rounded-3xl border border-slate-200 overflow-hidden shadow-2xl shadow-slate-200/50 backdrop-blur-sm relative flex-1 min-h-0 flex flex-col">
+                    <div
+                      className="flex-1 overflow-auto table-scrollbar"
+                      ref={tableContainerRef}
+                      onScroll={(e) => handleContainerScroll(e, 'table')}
+                    >
                       <table className="w-full border-collapse">
                       <thead>
                         <tr className="bg-slate-50/50 border-b border-slate-100">
@@ -137,19 +159,19 @@ const TableView: React.FC<Record<string, any>> = (props) => {
                             return (
                             <th
                               key={col.name}
-                              className="px-6 py-5 text-left cursor-pointer hover:bg-slate-100/50 transition-colors group/th relative"
+                              className="sticky top-0 z-20 bg-slate-50 border-b border-slate-100 text-left cursor-pointer hover:bg-slate-100 transition-colors group/th"
                               onClick={() => handleSort(col.name)}
-                              title={col.comment ? `${col.name}: ${col.comment}` : undefined}
+                              title={`${col.name} ${col.type}${col.comment ? ` — ${col.comment}` : ''}`}
                               style={
                                 colWidth
-                                  ? { width: colWidth, minWidth: colWidth, maxWidth: colWidth }
-                                  : { maxWidth: TABLE_COL_MAX_WIDTH }
+                                  ? { ...padStyle, width: colWidth, minWidth: colWidth, maxWidth: colWidth }
+                                  : { ...padStyle, maxWidth: TABLE_COL_MAX_WIDTH }
                               }
                             >
                               <div className="flex flex-col gap-1">
-                                <div className="flex items-center justify-between">
-                                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{col.type}</span>
-                                  <div className="flex items-center gap-1">
+                                <div className="flex items-center justify-between gap-1">
+                                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest truncate min-w-0">{shortType(col.type)}</span>
+                                  <div className="flex items-center gap-1 shrink-0">
                                     {/* Filter toggle button */}
                                     <button
                                       data-filter-toggle
@@ -181,13 +203,13 @@ const TableView: React.FC<Record<string, any>> = (props) => {
                                     </div>
                                   </div>
                                 </div>
-                                <span className="text-sm font-bold text-slate-800 tracking-tight flex items-center gap-1.5">
-                                  {col.name}
+                                <span className="text-sm font-bold text-slate-800 tracking-tight flex items-center gap-1.5 min-w-0">
+                                  <span className="truncate">{col.name}</span>
                                   {col.primaryKey && (
-                                    <span className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-amber-100 text-amber-700 text-[10px] font-extrabold tracking-wide leading-none shadow-sm">PK</span>
+                                    <span className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-amber-100 text-amber-700 text-[10px] font-extrabold tracking-wide leading-none shadow-sm shrink-0">PK</span>
                                   )}
                                   {isFilterActive && (
-                                    <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-blue-100 text-blue-600 text-[9px] font-bold leading-none">
+                                    <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-blue-100 text-blue-600 text-[9px] font-bold leading-none shrink-0">
                                       <Filter size={8} fill="currentColor" />
                                       {filterVal.length > 8 ? filterVal.slice(0, 8) + '…' : filterVal}
                                     </span>
@@ -290,7 +312,8 @@ const TableView: React.FC<Record<string, any>> = (props) => {
                       </thead>
                       <tbody className="divide-y divide-slate-50">
                         {(() => {
-                          const shouldVirtualize = useVirtualScroll && filteredData.length > 80;
+                          // 混合渲染：≤500 行全量进 DOM（content-visibility 跳过屏外渲染，原生搜索/打印可用）；>500 行窗口化虚拟滚动
+                          const shouldVirtualize = useVirtualScroll && filteredData.length > 500;
                           const visibleRowsCount = Math.max(1, Math.ceil((tableViewportHeight || ROW_HEIGHT * 10) / ROW_HEIGHT));
                           const overscanRows = 5; // 上下各预渲染 5 行
                           const startIdx = shouldVirtualize ? Math.max(0, Math.floor(tableScrollTop / ROW_HEIGHT) - overscanRows) : 0;
@@ -353,6 +376,7 @@ const TableView: React.FC<Record<string, any>> = (props) => {
                                   <tr
                                     key={rowIdx}
                                     className={`group hover:bg-blue-50/40 transition-colors cursor-pointer ${isDeleted ? 'bg-red-50 opacity-60 grayscale-[0.5]' : ''}`}
+                                    style={shouldVirtualize ? undefined : { contentVisibility: 'auto', containIntrinsicSize: `auto ${ROW_HEIGHT}px` }}
                                     onContextMenu={(e) => {
                                       e.preventDefault();
                                       setContextMenu({
@@ -376,13 +400,15 @@ const TableView: React.FC<Record<string, any>> = (props) => {
                                           key={col.name}
                                           data-row-idx={rowIdx}
                                           data-col-name={col.name}
-                                          className={`px-6 py-4 text-sm text-slate-600 border-x border-transparent transition-all ${isModified ? 'bg-yellow-50/50 !text-yellow-700' : ''} ${isEditing ? 'ring-2 ring-blue-500 ring-inset z-10 !bg-white' : ''} ${isCurrentMatch ? 'ring-2 ring-orange-400 ring-inset z-10 bg-orange-50' : ''}`}
+                                          className={`text-slate-600 border-x border-transparent transition-all ${isModified ? 'bg-yellow-50/50 !text-yellow-700' : ''} ${isEditing ? 'ring-2 ring-blue-500 ring-inset z-10 !bg-white' : ''} ${isCurrentMatch ? 'ring-2 ring-orange-400 ring-inset z-10 bg-orange-50' : ''}`}
                                           onDoubleClick={() => { if (!activeConnection?.readOnly) handleCellDoubleClick(rowIdx, col.name, row[col.name]); }}
-                                          style={
-                                            tableColumnWidths[col.name]
+                                          style={{
+                                            ...padStyle,
+                                            fontSize: gridMetrics.fontPx,
+                                            ...(tableColumnWidths[col.name]
                                               ? { width: tableColumnWidths[col.name], minWidth: tableColumnWidths[col.name], maxWidth: tableColumnWidths[col.name] }
-                                              : { maxWidth: TABLE_COL_MAX_WIDTH }
-                                          }
+                                              : { maxWidth: TABLE_COL_MAX_WIDTH })
+                                          }}
                                         >
                                           {isEditing ? (
                                             isBooleanType(col.type) ? (
@@ -482,9 +508,41 @@ const TableView: React.FC<Record<string, any>> = (props) => {
                     </div>
                   )}
 
-                  {/* Pagination Controls */}
-                  {data.length > 0 && (
-                    <div className="px-6 py-4 border-t border-slate-100 bg-slate-50/50 flex items-center justify-between">
+                  {/* 分页栏已移至滚动区外底部固定，见文件底部固定栏 */}
+
+                  {data.length === 0 && (
+                    <div
+                      className="p-24 text-center"
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        setContextMenu({
+                          x: e.clientX,
+                          y: e.clientY,
+                          type: 'row',
+                          target: '-1'
+                        });
+                      }}
+                    >
+                      <motion.div
+                        initial={{ scale: 0.9, opacity: 0 }}
+                        animate={{ scale: 1, opacity: 1 }}
+                        className="inline-flex flex-col items-center"
+                      >
+                        <div className="w-20 h-20 bg-slate-50 rounded-3xl flex items-center justify-center mb-6 border border-slate-100 shadow-inner">
+                          <Table size={32} className="text-slate-300" />
+                        </div>
+                        <h4 className="text-lg font-bold text-slate-400 tracking-tight">空表</h4>
+                        <p className="text-sm text-slate-500 mt-2">当前表中没有任何数据</p>
+                      </motion.div>
+                    </div>
+                  )}
+                </div>
+                </div>
+
+                {/* 底部分页栏：固定在滚动区外，任何密度下都无需滚动即可见 */}
+                {data.length > 0 && (
+                  <div className="shrink-0 px-8 pb-4 pt-2">
+                    <div className="bg-white rounded-2xl border border-slate-200 shadow-lg shadow-slate-200/60 px-6 py-3 flex items-center justify-between">
                       <div className="flex items-center gap-4">
                         <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">
                           共 {totalRows} 条数据
@@ -519,6 +577,19 @@ const TableView: React.FC<Record<string, any>> = (props) => {
                             ))}
                           </select>
                         </div>
+                        <div className="h-4 w-px bg-slate-200" />
+                        <div className="flex items-center gap-1.5" title="行密度：拖动实时调节（左紧凑 / 右舒适）">
+                          <Rows3 size={14} className="text-slate-400 shrink-0" />
+                          <input
+                            type="range"
+                            min={0}
+                            max={100}
+                            value={density}
+                            onChange={(e) => onDensityChange(Number(e.target.value))}
+                            className="w-20 accent-indigo-600 cursor-pointer"
+                          />
+                          <Rows4 size={14} className="text-slate-400 shrink-0" />
+                        </div>
                       </div>
 
                       <div className="flex items-center gap-2">
@@ -545,36 +616,9 @@ const TableView: React.FC<Record<string, any>> = (props) => {
                         </button>
                       </div>
                     </div>
-                  )}
-
-                  {data.length === 0 && (
-                    <div
-                      className="p-24 text-center"
-                      onContextMenu={(e) => {
-                        e.preventDefault();
-                        setContextMenu({
-                          x: e.clientX,
-                          y: e.clientY,
-                          type: 'row',
-                          target: '-1'
-                        });
-                      }}
-                    >
-                      <motion.div
-                        initial={{ scale: 0.9, opacity: 0 }}
-                        animate={{ scale: 1, opacity: 1 }}
-                        className="inline-flex flex-col items-center"
-                      >
-                        <div className="w-20 h-20 bg-slate-50 rounded-3xl flex items-center justify-center mb-6 border border-slate-100 shadow-inner">
-                          <Table size={32} className="text-slate-300" />
-                        </div>
-                        <h4 className="text-lg font-bold text-slate-400 tracking-tight">空表</h4>
-                        <p className="text-sm text-slate-500 mt-2">当前表中没有任何数据</p>
-                      </motion.div>
-                    </div>
-                  )}
+                  </div>
+                )}
                 </div>
-              </div>
 
               <AnimatePresence>
                 {tableInspector.open && (

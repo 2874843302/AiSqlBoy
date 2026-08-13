@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { X, Lock, PackageOpen, PackagePlus, Database, Check } from 'lucide-react';
+import type { ConnectionPackagePreview } from '../../../shared/types';
 
 type ConnectionPackageModalProps = {
   mode: 'export' | 'import';
@@ -9,11 +10,17 @@ type ConnectionPackageModalProps = {
   databases?: string[];
   /** 导出模式：默认勾选的数据库（当前选中的库） */
   defaultDatabase?: string;
+  /** 导入模式：解密成功后的脱敏预览（进入第二阶段，不含凭据） */
+  decryptedConfig?: ConnectionPackagePreview | null;
   loading?: boolean;
   error?: string;
   onClose: () => void;
   /** expiresAt / allowedDatabases 仅导出模式传回 */
   onConfirm: (passphrase: string, expiresAt?: number, allowedDatabases?: string[]) => void;
+  /** 导入模式第一阶段：解密 */
+  onDecrypt?: (passphrase: string) => void;
+  /** 导入模式第二阶段：以自定义名称确认导入 */
+  onImportConfirm?: (name: string) => void;
 };
 
 const MIN_VALID_DAYS = 1;
@@ -24,15 +31,23 @@ const ConnectionPackageModal: React.FC<ConnectionPackageModalProps> = ({
   connectionName,
   databases,
   defaultDatabase,
+  decryptedConfig = null,
   loading,
   error,
   onClose,
-  onConfirm
+  onConfirm,
+  onDecrypt,
+  onImportConfirm
 }) => {
   const [passphrase, setPassphrase] = useState('');
   const [confirmPass, setConfirmPass] = useState('');
   const [mismatch, setMismatch] = useState(false);
   const [validDays, setValidDays] = useState('7');
+  // 导入第二阶段：连接名称（预填包内原名，可修改）
+  const [importName, setImportName] = useState('');
+  useEffect(() => {
+    if (decryptedConfig) setImportName(decryptedConfig.name || '');
+  }, [decryptedConfig]);
   // 授权库多选：默认勾选当前选中的库
   const [selectedDbs, setSelectedDbs] = useState<Set<string>>(
     () => new Set(defaultDatabase && databases?.includes(defaultDatabase) ? [defaultDatabase] : [])
@@ -48,28 +63,40 @@ const ConnectionPackageModal: React.FC<ConnectionPackageModalProps> = ({
   };
 
   const isExport = mode === 'export';
+  const importStage2 = !isExport && !!decryptedConfig;
   const daysNum = parseInt(validDays, 10);
   const daysValid = Number.isFinite(daysNum) && daysNum >= MIN_VALID_DAYS && daysNum <= MAX_VALID_DAYS;
   const canSubmit =
-    passphrase.length > 0 &&
-    (mode === 'import' || passphrase === confirmPass) &&
-    (!isExport || (daysValid && selectedDbs.size > 0)) &&
-    !loading;
+    !loading &&
+    (isExport
+      ? passphrase.length > 0 && passphrase === confirmPass && daysValid && selectedDbs.size > 0
+      : importStage2
+        ? importName.trim().length > 0
+        : passphrase.length > 0);
 
   const submit = () => {
-    if (!passphrase) return;
-    if (isExport && passphrase !== confirmPass) {
-      setMismatch(true);
+    if (isExport) {
+      if (!passphrase || passphrase !== confirmPass) {
+        setMismatch(true);
+        return;
+      }
+      if (!daysValid || selectedDbs.size === 0) return;
+      setMismatch(false);
+      // 有效期与授权库白名单写入密文，到期后包与导入的连接同时失效
+      onConfirm(
+        passphrase,
+        Date.now() + daysNum * 24 * 60 * 60 * 1000,
+        Array.from(selectedDbs)
+      );
       return;
     }
-    if (isExport && (!daysValid || selectedDbs.size === 0)) return;
-    setMismatch(false);
-    // 有效期与授权库白名单写入密文，到期后包与导入的连接同时失效
-    onConfirm(
-      passphrase,
-      isExport ? Date.now() + daysNum * 24 * 60 * 60 * 1000 : undefined,
-      isExport ? Array.from(selectedDbs) : undefined
-    );
+    if (importStage2) {
+      if (!importName.trim()) return;
+      onImportConfirm?.(importName.trim());
+      return;
+    }
+    if (!passphrase) return;
+    onDecrypt?.(passphrase);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -109,7 +136,9 @@ const ConnectionPackageModal: React.FC<ConnectionPackageModalProps> = ({
                   ? connectionName
                     ? `为连接「${connectionName}」设置打开口令`
                     : '设置连接包的打开口令'
-                  : '输入连接包的打开口令以解密导入'}
+                  : importStage2
+                    ? '解密成功，确认连接信息并命名'
+                    : '输入连接包的打开口令以解密'}
               </p>
             </div>
           </div>
@@ -123,6 +152,60 @@ const ConnectionPackageModal: React.FC<ConnectionPackageModalProps> = ({
         </div>
 
         <div className="p-8 space-y-5">
+          {importStage2 && decryptedConfig && (
+            <>
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">
+                  连接名称
+                </label>
+                <input
+                  type="text"
+                  autoFocus
+                  className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-slate-900 focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 outline-none transition-all"
+                  placeholder="给这个连接起个名字"
+                  value={importName}
+                  onChange={(e) => setImportName(e.target.value)}
+                />
+                <p className="text-[11px] text-slate-400 px-1">
+                  默认使用包内原名，可修改以便在你的连接列表中区分
+                </p>
+              </div>
+              <div className="px-4 py-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
+                <div className="text-[11px] text-slate-500 flex items-center gap-1.5">
+                  <Database size={11} className="text-indigo-500 shrink-0" />
+                  <span className="truncate">
+                    授权数据库：{(decryptedConfig.allowedDatabases || []).join('、') || '未知'}
+                  </span>
+                </div>
+                <div className="text-[11px] text-slate-500 flex items-center gap-1.5">
+                  <Lock size={11} className="text-amber-500 shrink-0" />
+                  <span>
+                    有效期至：
+                    {decryptedConfig.expiresAt
+                      ? new Date(decryptedConfig.expiresAt).toLocaleString('zh-CN')
+                      : '未知'}
+                  </span>
+                </div>
+              </div>
+            </>
+          )}
+
+          {!importStage2 && (
+          <div className="space-y-2">
+            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">
+              {isExport ? '打开口令' : '连接包口令'}
+            </label>
+            <input
+              type="password"
+              autoFocus
+              className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-slate-900 focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 outline-none transition-all"
+              placeholder={isExport ? '接收方需要此口令才能导入' : '请输入口令'}
+              value={passphrase}
+              onChange={(e) => setPassphrase(e.target.value)}
+            />
+          </div>
+          )}
+
           {isExport && databases && databases.length > 0 && (
             <div className="space-y-2">
               <div className="flex items-center justify-between px-1">
@@ -203,20 +286,6 @@ const ConnectionPackageModal: React.FC<ConnectionPackageModalProps> = ({
             </div>
           )}
 
-          <div className="space-y-2">
-            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">
-              {isExport ? '打开口令' : '连接包口令'}
-            </label>
-            <input
-              type="password"
-              autoFocus
-              className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-slate-900 focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 outline-none transition-all"
-              placeholder={isExport ? '接收方需要此口令才能导入' : '请输入口令'}
-              value={passphrase}
-              onChange={(e) => setPassphrase(e.target.value)}
-            />
-          </div>
-
           {isExport && (
             <div className="space-y-2">
               <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">
@@ -291,7 +360,7 @@ const ConnectionPackageModal: React.FC<ConnectionPackageModalProps> = ({
               {loading && (
                 <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
               )}
-              {isExport ? '加密导出' : '解密导入'}
+              {isExport ? '加密导出' : importStage2 ? '确认导入' : '解密'}
             </motion.button>
           </div>
         </div>

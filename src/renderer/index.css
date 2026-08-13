@@ -185,6 +185,34 @@ select:focus-visible {
   background: rgba(0, 0, 0, 0.22);
 }
 
+/* --------- 表格区滚动条：加宽加深，更醒目易拖 --------- */
+.table-scrollbar::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.table-scrollbar::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 8px;
+}
+.table-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.table-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.4);
+}
+body[data-theme='dark'] .table-scrollbar::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+}
+body[data-theme='dark'] .table-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.25);
+}
+body[data-theme='dark'] .table-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.4);
+}
+
 /* Glassmorphism Classes */
 .glass {
   background: rgba(255, 255, 255, 0.03);

@@ -1,7 +1,8 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  RefreshCw, Search, Table2, ChevronLeft, ChevronRight, ChevronDown, Database, Inbox, Sparkles, X
+  RefreshCw, Search, Table2, ChevronLeft, ChevronRight, ChevronDown, Database, Inbox, Sparkles, X,
+  ArrowUp, ArrowDown, Download
 } from 'lucide-react';
 import TextDetailModal, { type TextDetailData } from '../table/TextDetailModal';
 
@@ -65,6 +66,8 @@ const AgentTableBrowser: React.FC<AgentTableBrowserProps> = ({
   const [error, setError] = useState('');
   // 视图模式：result = 展示 AI 结果；table = 浏览整表
   const [viewMode, setViewMode] = useState<'table' | 'result'>('table');
+  // 排序：表视图走服务端 ORDER BY，结果视图客户端排序；第三次点击取消
+  const [sort, setSort] = useState<{ col: string; dir: 'ASC' | 'DESC' } | null>(null);
   // 单元格双击预览（长文本 / JSON）
   const [textDetail, setTextDetail] = useState<TextDetailData | null>(null);
   // 轻量 toast（预览弹窗的复制反馈）
@@ -85,14 +88,20 @@ const AgentTableBrowser: React.FC<AgentTableBrowserProps> = ({
     ? tables.filter((t) => t.name.toLowerCase().includes(search.trim().toLowerCase()))
     : tables;
 
-  const load = useCallback(async (tableName: string, pageNum: number) => {
+  const load = useCallback(async (
+    tableName: string,
+    pageNum: number,
+    sortArg?: { col: string; dir: 'ASC' | 'DESC' } | null
+  ) => {
+    // 排序一律由调用方显式传入，保持 load 引用稳定（避免触发切表 effect 重置排序）
+    const s = sortArg ?? null;
     const seq = ++fetchSeq.current;
     setLoading(true);
     setError('');
     try {
       const [cols, res] = await Promise.all([
         window.electronAPI.getTableColumns(tableName),
-        window.electronAPI.getTableData(tableName, PAGE_SIZE, (pageNum - 1) * PAGE_SIZE)
+        window.electronAPI.getTableData(tableName, PAGE_SIZE, (pageNum - 1) * PAGE_SIZE, s?.col, s?.dir)
       ]);
       if (seq !== fetchSeq.current) return;
       setColumns(cols || []);
@@ -106,10 +115,17 @@ const AgentTableBrowser: React.FC<AgentTableBrowserProps> = ({
     }
   }, []);
 
-  // 切表：回到第一页并加载，同时退出结果视图
+  // 排序的最新值引用：供不随 sort 重跑的 effect（自动刷新）使用
+  const sortRef = useRef<{ col: string; dir: 'ASC' | 'DESC' } | null>(null);
+  useEffect(() => {
+    sortRef.current = sort;
+  }, [sort]);
+
+  // 切表：回到第一页并加载，同时退出结果视图、清除排序
   useEffect(() => {
     setPage(1);
     setViewMode('table');
+    setSort(null);
     if (selectedTable) {
       load(selectedTable, 1);
     } else {
@@ -121,7 +137,7 @@ const AgentTableBrowser: React.FC<AgentTableBrowserProps> = ({
 
   // Agent 执行完成后自动刷新当前表（仅表浏览视图；refreshKey 由 AgentPanel 递增）
   useEffect(() => {
-    if (refreshKey > 0 && selectedTable && viewMode === 'table') load(selectedTable, page);
+    if (refreshKey > 0 && selectedTable && viewMode === 'table') load(selectedTable, page, sortRef.current);
     // 仅在 refreshKey 变化时触发，page/selectedTable 变化已有上方 effect 覆盖
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
@@ -135,19 +151,60 @@ const AgentTableBrowser: React.FC<AgentTableBrowserProps> = ({
   const gotoPage = (p: number) => {
     if (!selectedTable || p < 1 || p > totalPages) return;
     setPage(p);
-    load(selectedTable, p);
+    load(selectedTable, p, sort);
   };
 
   const showingResult = viewMode === 'result' && !!aiResult;
   const gridColumns: string[] = showingResult
     ? aiResult!.columns
     : columns.map((c) => c.name as string);
-  const gridRows: any[] = showingResult ? aiResult!.rows : rows;
 
   // 列注释：来自表元数据（结果视图下若列名与当前表匹配也能命中）
   const commentOf = (col: string): string => {
     const meta = columns.find((c) => c.name === col);
     return meta?.comment ? String(meta.comment) : '';
+  };
+
+  // 点击列头切换排序：ASC → DESC → 取消
+  const toggleSort = (col: string) => {
+    const next = sort?.col === col
+      ? (sort.dir === 'ASC' ? { col, dir: 'DESC' as const } : null)
+      : { col, dir: 'ASC' as const };
+    setSort(next);
+    if (!showingResult && selectedTable) {
+      setPage(1);
+      load(selectedTable, 1, next);
+    }
+  };
+
+  // 展示行：结果视图下客户端排序，表视图已由服务端排序
+  const displayRows = useMemo(() => {
+    if (!showingResult) return rows;
+    const base = aiResult?.rows || [];
+    if (!sort) return base;
+    const copy = [...base];
+    copy.sort((a, b) => {
+      const av = a[sort.col];
+      const bv = b[sort.col];
+      if (av === bv) return 0;
+      if (av === null || av === undefined) return 1;
+      if (bv === null || bv === undefined) return -1;
+      const an = Number(av);
+      const bn = Number(bv);
+      const cmp = !Number.isNaN(an) && !Number.isNaN(bn) ? an - bn : String(av).localeCompare(String(bv));
+      return sort.dir === 'ASC' ? cmp : -cmp;
+    });
+    return copy;
+  }, [showingResult, rows, aiResult, sort]);
+
+  // 导出当前展示数据为 CSV
+  const handleExportCsv = async () => {
+    if (displayRows.length === 0 || gridColumns.length === 0) return;
+    const defaultName = showingResult
+      ? `AI结果_${aiResult!.title}_${Date.now()}.csv`
+      : `${selectedTable}_${Date.now()}.csv`;
+    const res = await window.electronAPI.saveTableCsv(gridColumns, displayRows, defaultName);
+    showMiniToast(res.success ? `已导出${res.filePath ? `：${res.filePath}` : ''}` : (res.error || '导出失败'));
   };
 
   const openPreview = (row: any, col: string) => {
@@ -181,7 +238,7 @@ const AgentTableBrowser: React.FC<AgentTableBrowserProps> = ({
         )}
         {!showingResult && (
           <button
-            onClick={() => selectedTable && load(selectedTable, page)}
+            onClick={() => selectedTable && load(selectedTable, page, sort)}
             disabled={!selectedTable || loading}
             className="w-6 h-6 flex items-center justify-center rounded hover:bg-slate-100 text-slate-400 hover:text-indigo-600 disabled:opacity-40 transition-colors"
             title="刷新表数据"
@@ -189,6 +246,14 @@ const AgentTableBrowser: React.FC<AgentTableBrowserProps> = ({
             <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
           </button>
         )}
+        <button
+          onClick={handleExportCsv}
+          disabled={displayRows.length === 0}
+          className="w-6 h-6 flex items-center justify-center rounded hover:bg-slate-100 text-slate-400 hover:text-emerald-600 disabled:opacity-40 transition-colors"
+          title="导出当前数据为 CSV"
+        >
+          <Download size={13} />
+        </button>
       </div>
 
       {/* 表选择：可搜索下拉框（选择后自动回到表浏览视图） */}
@@ -288,12 +353,18 @@ const AgentTableBrowser: React.FC<AgentTableBrowserProps> = ({
                 {gridColumns.map((col) => (
                   <th
                     key={col}
-                    title={commentOf(col) || undefined}
-                    className={`border-b border-slate-200 px-3 py-2 text-left font-bold whitespace-nowrap ${
+                    onClick={() => toggleSort(col)}
+                    title={`${commentOf(col) || col}（点击排序）`}
+                    className={`border-b border-slate-200 px-3 py-2 text-left font-bold whitespace-nowrap cursor-pointer hover:bg-slate-100/60 transition-colors ${
                       commentOf(col) ? 'cursor-help' : ''
                     } ${showingResult ? 'bg-indigo-50 text-indigo-600' : 'bg-slate-50 text-slate-500'}`}
                   >
                     {col}
+                    {sort?.col === col && (
+                      sort.dir === 'ASC'
+                        ? <ArrowUp size={10} className="inline ml-1" />
+                        : <ArrowDown size={10} className="inline ml-1" />
+                    )}
                     {commentOf(col) && (
                       <div className="text-[9px] font-normal text-slate-400 max-w-[160px] truncate">
                         {commentOf(col)}
@@ -309,7 +380,7 @@ const AgentTableBrowser: React.FC<AgentTableBrowserProps> = ({
               </tr>
             </thead>
             <tbody>
-              {gridRows.map((row, ri) => (
+              {displayRows.map((row, ri) => (
                 <tr key={ri} className="hover:bg-indigo-50/30 transition-colors">
                   {gridColumns.map((col) => (
                     <td

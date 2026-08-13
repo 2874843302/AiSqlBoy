@@ -4,6 +4,23 @@ import { ConnectionConfig } from '../../shared/types';
 import { getTimeInputType, isBooleanType, formatTimeForInput, formatRedisValue } from '../utils/valueFormat';
 import { escapeRegExp } from '../utils/jsonText';
 
+/** 行密度指标：由 0(紧凑)–100(舒适) 连续映射出行高/内边距/字号 */
+export interface DensityMetrics {
+  rowHeight: number;
+  padX: number;
+  padY: number;
+  fontPx: number;
+}
+
+export const densityMetrics = (d: number): DensityMetrics => {
+  const t = Math.min(1, Math.max(0, d / 100));
+  const fontPx = Math.round(11 + 3 * t); // 11..14
+  const rowHeight = Math.round(26 + 26 * t); // 26..52
+  const padY = Math.max(2, Math.round((rowHeight - fontPx * 1.6) / 2));
+  const padX = Math.round(8 + 16 * t); // 8..24
+  return { rowHeight, padX, padY, fontPx };
+};
+
 interface UseTableGridOptions {
   activeConnection: ConnectionConfig | null;
   selectedTable: string | null;
@@ -34,7 +51,32 @@ export const useTableGrid = ({
   handleSelectTable
 }: UseTableGridOptions) => {
   const [useVirtualScroll] = useState(true); // 是否开启虚拟滚动
-  const ROW_HEIGHT = 48; // 预估行高
+  // 行密度 0(紧凑)–100(舒适)，滑杆实时调节，防抖持久化
+  const [density, setDensity] = useState(70);
+  useEffect(() => {
+    window.electronAPI.getSetting('table_density').then((v) => {
+      if (v !== null && v !== undefined && v !== '') {
+        const n = Number(v);
+        if (Number.isFinite(n)) setDensity(Math.min(100, Math.max(0, n)));
+      } else {
+        // 兼容旧两档设置
+        window.electronAPI.getSetting('table_density_compact')
+          .then((c) => { if (c === '1') setDensity(15); })
+          .catch(() => {});
+      }
+    }).catch(() => {});
+  }, []);
+  const densityPersistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleDensityChange = (v: number) => {
+    const clamped = Math.min(100, Math.max(0, v));
+    setDensity(clamped);
+    if (densityPersistTimer.current) clearTimeout(densityPersistTimer.current);
+    densityPersistTimer.current = setTimeout(() => {
+      window.electronAPI.saveSetting('table_density', String(clamped)).catch(() => {});
+    }, 300);
+  };
+  const gridMetrics = useMemo(() => densityMetrics(density), [density]);
+  const ROW_HEIGHT = gridMetrics.rowHeight; // 预估行高（与密度联动，保证虚拟滚动计算一致）
 
   // Pagination State
   const [pageSize, setPageSize] = useState(20);
@@ -734,6 +776,9 @@ export const useTableGrid = ({
   return {
     useVirtualScroll,
     ROW_HEIGHT,
+    density,
+    handleDensityChange,
+    gridMetrics,
     pageSize,
     setPageSize,
     currentPage,
