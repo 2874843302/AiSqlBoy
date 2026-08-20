@@ -137,7 +137,7 @@ const SchemaEditorModal: React.FC<SchemaEditorModalProps> = ({
                 </button>
               </div>
 
-              <div className="flex-1 overflow-auto p-0">
+              <div className="h-[56vh] overflow-auto p-0">
                 {activeSchemaTab === 'columns' ? (
                   <table className="w-full border-collapse">
                     <thead className="sticky top-0 bg-slate-50 z-10 shadow-sm">
@@ -154,10 +154,8 @@ const SchemaEditorModal: React.FC<SchemaEditorModalProps> = ({
                     </thead>
                     <tbody className="divide-y divide-slate-50">
                       {schemaData.columns.map((col, idx) => (
-                        <motion.tr
+                        <tr
                           key={col.id}
-                          initial={{ opacity: 0, x: -10 }}
-                          animate={{ opacity: 1, x: 0 }}
                           className="group hover:bg-slate-50/50 transition-colors"
                         >
                           <td className="px-6 py-3">
@@ -282,7 +280,7 @@ const SchemaEditorModal: React.FC<SchemaEditorModalProps> = ({
                               <Trash2 size={14} />
                             </button>
                           </td>
-                        </motion.tr>
+                        </tr>
                       ))}
                     </tbody>
                   </table>
@@ -299,10 +297,8 @@ const SchemaEditorModal: React.FC<SchemaEditorModalProps> = ({
                       </thead>
                       <tbody className="divide-y divide-slate-50">
                         {schemaData.indexes.map((idx, i) => (
-                          <motion.tr
+                          <tr
                             key={idx.id}
-                            initial={{ opacity: 0, x: -10 }}
-                            animate={{ opacity: 1, x: 0 }}
                             className="group hover:bg-slate-50/50 transition-colors"
                           >
                             <td className="px-6 py-3">
@@ -375,7 +371,7 @@ const SchemaEditorModal: React.FC<SchemaEditorModalProps> = ({
                                 <Trash2 size={14} />
                               </button>
                             </td>
-                          </motion.tr>
+                          </tr>
                         ))}
                       </tbody>
                     </table>

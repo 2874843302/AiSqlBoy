@@ -3,6 +3,7 @@ import type { IDatabaseDriver, ConnectionConfig, TableInfo, ColumnInfo, IndexInf
 
 export class RedisDriver implements IDatabaseDriver {
   private client: any = null;
+  onConnectionLost?: (message: string) => void;
   constructor(private config: ConnectionConfig) {}
 
   async connect() {
@@ -15,6 +16,11 @@ export class RedisDriver implements IDatabaseDriver {
     url += `${this.config.host || 'localhost'}:${this.config.port || 6379}`;
     
     this.client = createClient({ url });
+    // redis v4 必须监听 error 事件，否则连接异常会变成未捕获异常炸主进程
+    this.client.on('error', (err: any) => {
+      console.error('[Redis] connection error:', err?.message);
+      this.onConnectionLost?.(err?.message || '连接已断开');
+    });
     await this.client.connect();
   }
 
@@ -23,8 +29,14 @@ export class RedisDriver implements IDatabaseDriver {
   }
 
   async getDatabases(): Promise<string[]> {
-    // Redis 默认有 16 个数据库 (0-15)
-    return Array.from({ length: 16 }, (_, i) => i.toString());
+    // 动态读取 databases 配置（默认 16），失败时回退 16
+    try {
+      const res = await this.client.configGet('databases');
+      const n = parseInt(res?.databases ?? '16', 10);
+      return Array.from({ length: Number.isFinite(n) && n > 0 ? n : 16 }, (_, i) => i.toString());
+    } catch {
+      return Array.from({ length: 16 }, (_, i) => i.toString());
+    }
   }
 
   async useDatabase(dbName: string): Promise<void> {
@@ -54,8 +66,15 @@ export class RedisDriver implements IDatabaseDriver {
 
   async getTableData(tableName: string, limit = 100, offset = 0, orderBy?: string, orderDir: 'ASC' | 'DESC' = 'ASC'): Promise<{ data: any[], total: number }> {
     if (!this.client) throw new Error('Not connected');
-    
-    const keys = await this.client.keys('*');
+
+    // 用 SCAN 增量收集 key，避免 KEYS * 阻塞 Redis 主线程；上限 1 万条
+    const keys: string[] = [];
+    const MAX_KEYS = 10000;
+    for await (const key of this.client.scanIterator({ MATCH: '*', COUNT: 1000 })) {
+      keys.push(key);
+      if (keys.length >= MAX_KEYS) break;
+    }
+    keys.sort();
     const total = keys.length;
     const pagedKeys = keys.slice(offset, offset + limit);
     
@@ -95,7 +114,11 @@ export class RedisDriver implements IDatabaseDriver {
 
   async exportDatabase(includeData: boolean): Promise<string> {
     if (!this.client) throw new Error('Not connected');
-    const keys = await this.client.keys('*');
+    const keys: string[] = [];
+    for await (const key of this.client.scanIterator({ MATCH: '*', COUNT: 1000 })) {
+      keys.push(key);
+      if (keys.length >= 10000) break;
+    }
     let output = `# AiSqlBoy Redis Export\n# Date: ${new Date().toLocaleString()}\n\n`;
     
     for (const key of keys) {

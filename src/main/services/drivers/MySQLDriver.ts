@@ -4,6 +4,7 @@ import type { TableInfo } from '../../../shared/types';
 
 export class MySQLDriver implements IDatabaseDriver {
   private connection: mysql.Connection | null = null;
+  onConnectionLost?: (message: string) => void;
   constructor(private config: ConnectionConfig) {}
 
   private escapeSqlString(value: string): string {
@@ -42,6 +43,12 @@ export class MySQLDriver implements IDatabaseDriver {
       multipleStatements: true, // 允许执行多条 SQL 语句
       supportBigNumbers: true,
       bigNumberStrings: true
+    });
+    // 捕获底层连接的 error 事件：服务端断开/网络中断时不再抛未捕获异常炸主进程
+    const underlying: any = (this.connection as any).connection ?? this.connection;
+    underlying.on('error', (err: any) => {
+      console.error('[MySQL] connection error:', err?.message);
+      this.onConnectionLost?.(err?.message || '连接已断开');
     });
   }
 

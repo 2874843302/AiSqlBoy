@@ -15,6 +15,7 @@ declare global {
       decryptConnectionPackage: (payload: string, passphrase: string) => Promise<{ success: boolean; token?: string; preview?: ConnectionPackagePreview; error?: string }>;
       confirmImportPackage: (token: string, name: string) => Promise<{ success: boolean; name?: string; error?: string }>;
       saveTableCsv: (columns: string[], rows: any[], defaultName: string) => Promise<{ success: boolean; filePath?: string; error?: string }>;
+      onConnectionLost: (cb: (message: string) => void) => void;
 
       // Console Management
       getConsoles: (connectionId?: number) => Promise<any[]>;

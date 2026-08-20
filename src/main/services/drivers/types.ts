@@ -1,6 +1,8 @@
 import type { ConnectionConfig, TableInfo, ColumnInfo, IndexInfo } from '../../../shared/types';
 
 export interface IDatabaseDriver {
+  /** 连接丢失回调（主进程设置，用于通知渲染进程；服务端断开/网络中断时触发） */
+  onConnectionLost?: (message: string) => void;
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   getDatabases(): Promise<string[]>;

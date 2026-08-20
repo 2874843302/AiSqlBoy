@@ -54,6 +54,9 @@ const TableView: React.FC<Record<string, any>> = (props) => {
     density,
     onDensityChange,
     gridMetrics,
+    aiDict,
+    generatingDict,
+    onGenerateDict,
     searchMatches,
     selectedTable,
     setActiveFilterCol,
@@ -91,12 +94,8 @@ const TableView: React.FC<Record<string, any>> = (props) => {
     paddingRight: gridMetrics.padX
   };
   return (
-              <motion.div
+              <div
                 key={selectedTable}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.4, ease: "easeOut" }}
                 className="flex-1 flex flex-col relative overflow-hidden"
               >
                 {!tableInspector.open && (
@@ -161,7 +160,7 @@ const TableView: React.FC<Record<string, any>> = (props) => {
                               key={col.name}
                               className="sticky top-0 z-20 bg-slate-50 border-b border-slate-100 text-left cursor-pointer hover:bg-slate-100 transition-colors group/th"
                               onClick={() => handleSort(col.name)}
-                              title={`${col.name} ${col.type}${col.comment ? ` — ${col.comment}` : ''}`}
+                              title={`${col.name} ${col.type}${col.comment ? ` — ${col.comment}` : ''}${aiDict?.columns?.[col.name] ? ` | AI：${aiDict.columns[col.name]}` : ''}`}
                               style={
                                 colWidth
                                   ? { ...padStyle, width: colWidth, minWidth: colWidth, maxWidth: colWidth }
@@ -215,6 +214,9 @@ const TableView: React.FC<Record<string, any>> = (props) => {
                                     </span>
                                   )}
                                 </span>
+                                {aiDict?.columns?.[col.name] && (
+                                  <div className="text-[9px] font-normal text-indigo-400 truncate">{aiDict.columns[col.name]}</div>
+                                )}
                               </div>
 
                               {/* Filter popover */}
@@ -401,7 +403,14 @@ const TableView: React.FC<Record<string, any>> = (props) => {
                                           data-row-idx={rowIdx}
                                           data-col-name={col.name}
                                           className={`text-slate-600 border-x border-transparent transition-all ${isModified ? 'bg-yellow-50/50 !text-yellow-700' : ''} ${isEditing ? 'ring-2 ring-blue-500 ring-inset z-10 !bg-white' : ''} ${isCurrentMatch ? 'ring-2 ring-orange-400 ring-inset z-10 bg-orange-50' : ''}`}
-                                          onDoubleClick={() => { if (!activeConnection?.readOnly) handleCellDoubleClick(rowIdx, col.name, row[col.name]); }}
+                                          onDoubleClick={() => {
+                                            // Redis 的值不可行内编辑：双击打开预览（JSON 格式化等）
+                                            if (activeConnection?.type === 'redis') {
+                                              setTextDetail({ content: row[col.name], fieldName: col.name });
+                                              return;
+                                            }
+                                            if (!activeConnection?.readOnly) handleCellDoubleClick(rowIdx, col.name, row[col.name]);
+                                          }}
                                           style={{
                                             ...padStyle,
                                             fontSize: gridMetrics.fontPx,
@@ -590,6 +599,31 @@ const TableView: React.FC<Record<string, any>> = (props) => {
                           />
                           <Rows4 size={14} className="text-slate-400 shrink-0" />
                         </div>
+                        {aiDict?.tableDescription && (
+                          <>
+                            <div className="h-4 w-px bg-slate-200" />
+                            <span
+                              className="text-xs text-indigo-500 font-medium max-w-[360px] truncate"
+                              title={aiDict.tableDescription}
+                            >
+                              {aiDict.tableDescription}
+                            </span>
+                          </>
+                        )}
+                        {onGenerateDict && (
+                          <>
+                            <div className="h-4 w-px bg-slate-200" />
+                            <button
+                              onClick={() => onGenerateDict(selectedTable!)}
+                              disabled={generatingDict}
+                              className="flex items-center gap-1 text-xs text-slate-500 font-semibold hover:text-indigo-600 transition-colors disabled:opacity-50"
+                              title="AI 读取表结构与采样数据，生成表/字段的业务描述"
+                            >
+                              <Sparkles size={14} className={generatingDict ? 'animate-pulse text-indigo-500' : ''} />
+                              {generatingDict ? '生成中' : aiDict ? '重新生成字典' : 'AI 字典'}
+                            </button>
+                          </>
+                        )}
                       </div>
 
                       <div className="flex items-center gap-2">
@@ -712,7 +746,7 @@ const TableView: React.FC<Record<string, any>> = (props) => {
                     </motion.div>
                   )}
                 </AnimatePresence>
-              </motion.div>
+              </div>
   );
 };
 

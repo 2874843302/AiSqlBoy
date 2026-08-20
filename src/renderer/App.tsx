@@ -619,6 +619,76 @@ const App: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeConnection?.id, selectedDatabase]);
 
+  // ============ AI 数据字典：按 连接+库+表 持久化 ============
+  const [currentAiDict, setCurrentAiDict] = useState<{ tableDescription?: string; columns?: Record<string, string> } | null>(null);
+  const [generatingDict, setGeneratingDict] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setCurrentAiDict(null);
+    if (!selectedTable || !activeConnection?.id || !selectedDatabase) return;
+    const key = `ai_dict_${activeConnection.id}_${selectedDatabase}_${selectedTable}`;
+    window.electronAPI.getSetting(key).then((raw) => {
+      if (cancelled || !raw) return;
+      try { setCurrentAiDict(JSON.parse(raw)); } catch { /* ignore */ }
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [selectedTable, activeConnection?.id, selectedDatabase]);
+
+  /** 从 AI 回复中稳健提取 JSON（容忍代码围栏与前后缀文字） */
+  const parseDictJson = (text: string): { tableDescription?: string; columns?: Record<string, string> } => {
+    const cleaned = String(text || '').replace(/```json/gi, '').replace(/```/g, '').trim();
+    const start = cleaned.indexOf('{');
+    const end = cleaned.lastIndexOf('}');
+    if (start < 0 || end <= start) throw new Error('AI 返回格式无效');
+    return JSON.parse(cleaned.slice(start, end + 1));
+  };
+
+  const handleGenerateAiDictionary = async (tableName: string) => {
+    if (!activeConnection?.id || !selectedDatabase || generatingDict) return;
+    setGeneratingDict(true);
+    try {
+      const [cols, sample] = await Promise.all([
+        window.electronAPI.getTableColumns(tableName),
+        window.electronAPI.getTableData(tableName, 5, 0)
+      ]);
+      const schema = (cols || []).map((c: any) => ({
+        name: c.name,
+        type: c.type,
+        comment: c.comment || undefined,
+        primaryKey: !!c.primaryKey
+      }));
+      const prompt = [
+        {
+          role: 'system',
+          content: '你是数据库文档专家。根据表结构定义与采样数据，推断每个字段的业务含义和该表的业务用途。只输出严格 JSON：{"tableDescription":"表业务描述(50字内)","columns":{"字段名":"业务描述(20字内)"}}，使用中文，不要输出任何其他文字。'
+        },
+        {
+          role: 'user',
+          content: `数据库类型：${activeConnection.type}\n表名：${tableName}\n字段定义：${JSON.stringify(schema)}\n采样数据(至多5行)：${JSON.stringify(sample?.data || [])}`
+        }
+      ];
+      const res = await window.electronAPI.aiChat(prompt);
+      if (!res?.success || !res.response) throw new Error(res?.error || 'AI 调用失败');
+      const dict = parseDictJson(res.response);
+      const key = `ai_dict_${activeConnection.id}_${selectedDatabase}_${tableName}`;
+      await window.electronAPI.saveSetting(key, JSON.stringify(dict));
+      setCurrentAiDict(dict);
+      setToast({ message: `「${tableName}」数据字典已生成`, type: 'success' });
+    } catch (err: any) {
+      setToast({ message: err?.message || '生成数据字典失败', type: 'error' });
+    } finally {
+      setGeneratingDict(false);
+    }
+  };
+
+  // 数据库连接断开通知：友好 toast 提示，替代主进程崩溃弹窗
+  useEffect(() => {
+    window.electronAPI.onConnectionLost?.((msg) => {
+      setToast({ message: `数据库连接已断开：${msg}。下次操作时将尝试自动重连`, type: 'error' });
+    });
+  }, []);
+
   const handleConnect = async (config: ConnectionConfig) => {
     if (connectingConnectionId !== null) return;
     // 当前连接支持折叠/展开
@@ -1951,6 +2021,9 @@ ${JSON.stringify(payload)}
                 density={density}
                 onDensityChange={handleDensityChange}
                 gridMetrics={gridMetrics}
+                aiDict={currentAiDict}
+                generatingDict={generatingDict}
+                onGenerateDict={handleGenerateAiDictionary}
                 searchMatches={searchMatches}
                 selectedTable={selectedTable}
                 setActiveFilterCol={setActiveFilterCol}

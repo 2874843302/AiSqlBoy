@@ -5,6 +5,7 @@ import type { TableInfo } from '../../../shared/types';
 
 export class PostgreSQLDriver implements IDatabaseDriver {
   private client: pg.Client | null = null;
+  onConnectionLost?: (message: string) => void;
   constructor(private config: ConnectionConfig) {}
 
   async connect() {
@@ -16,6 +17,11 @@ export class PostgreSQLDriver implements IDatabaseDriver {
       database: this.config.database
     });
     await this.client.connect();
+    // 捕获连接 error 事件：服务端断开时不再抛未捕获异常炸主进程
+    this.client.on('error', (err: any) => {
+      console.error('[PG] connection error:', err?.message);
+      this.onConnectionLost?.(err?.message || '连接已断开');
+    });
   }
 
   async disconnect() {

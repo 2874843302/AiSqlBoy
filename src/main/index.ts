@@ -345,6 +345,10 @@ ipcMain.handle('connect-db', async (_, config: ConnectionConfig) => {
     }
 
     currentDriver = createDriver(config)
+    // 连接丢失时通知渲染进程（toast 提示），不再让未捕获异常炸主进程
+    currentDriver.onConnectionLost = (msg) => {
+      mainWindow?.webContents.send('db-connection-lost', msg)
+    }
 
     await currentDriver.connect()
     currentReadOnly = !!config.readOnly

@@ -120,7 +120,7 @@ const Sidebar: React.FC<SidebarProps> = ({
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto custom-scrollbar">
+        <div className="flex-1 overflow-y-auto custom-scrollbar [scrollbar-gutter:stable]">
           {/* Saved Connections */}
           <div className="p-4 space-y-4">
             <div className="px-2">

@@ -292,7 +292,7 @@ const AgentPanel: React.FC<AgentPanelProps> = ({
             </div>
 
             {/* 连接 + 会话列表 */}
-            <div className="flex-1 overflow-y-auto py-2">
+            <div className="flex-1 overflow-y-auto py-2 custom-scrollbar [scrollbar-gutter:stable]">
               {savedConnections.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-12 text-slate-300 gap-2">
                   <Link2 size={32} />

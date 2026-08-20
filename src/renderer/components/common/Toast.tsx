@@ -11,18 +11,21 @@ type ToastProps = {
 const AUTO_CLOSE_MS = 3500;
 
 const Toast: React.FC<ToastProps> = ({ message, type = 'error', onClose }) => {
-  const [progress, setProgress] = useState(100);
   const [paused, setPaused] = useState(false);
   const remainingRef = useRef(AUTO_CLOSE_MS);
+  // 回调走 ref：App 重渲染产生的新 onClose 不重建计时器，点击其他地方倒计时不中断
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   // Reset when message/type changes
   useEffect(() => {
     remainingRef.current = AUTO_CLOSE_MS;
-    setProgress(100);
     setPaused(false);
   }, [message, type]);
 
-  // Countdown timer — pauses on hover
+  // 关闭计时器 — 仅悬停暂停；进度条视觉由 CSS 动画驱动，这里不 setState，避免高频重渲染导致抽帧
   useEffect(() => {
     if (paused) return;
 
@@ -32,16 +35,15 @@ const Toast: React.FC<ToastProps> = ({ message, type = 'error', onClose }) => {
       const delta = now - lastTick;
       lastTick = now;
       remainingRef.current = Math.max(0, remainingRef.current - delta);
-      setProgress((remainingRef.current / AUTO_CLOSE_MS) * 100);
 
       if (remainingRef.current <= 0) {
         clearInterval(interval);
-        onClose();
+        onCloseRef.current();
       }
-    }, 50);
+    }, 100);
 
     return () => clearInterval(interval);
-  }, [paused, onClose]);
+  }, [paused]);
 
   const config = {
     error: {
@@ -104,11 +106,15 @@ const Toast: React.FC<ToastProps> = ({ message, type = 'error', onClose }) => {
         <X className="w-3.5 h-3.5" strokeWidth={2.5} />
       </button>
 
-      {/* Progress bar */}
+      {/* Progress bar — CSS 动画驱动（合成器层），悬停暂停 */}
       <div className="absolute bottom-0 left-0 right-0 h-1 rounded-b-2xl overflow-hidden">
         <div
-          className={`h-full ${c.progress} transition-all duration-100 ease-linear`}
-          style={{ width: `${progress}%` }}
+          key={`${message}-${type}`}
+          className={`h-full ${c.progress}`}
+          style={{
+            animation: `toast-progress ${AUTO_CLOSE_MS}ms linear forwards`,
+            animationPlayState: paused ? 'paused' : 'running'
+          }}
         />
       </div>
     </motion.div>

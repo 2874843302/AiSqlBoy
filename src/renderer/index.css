@@ -213,6 +213,12 @@ body[data-theme='dark'] .table-scrollbar::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.4);
 }
 
+/* --------- Toast 进度条：CSS 动画驱动，合成器层运行，不触发 React 重渲染 --------- */
+@keyframes toast-progress {
+  from { width: 100%; }
+  to { width: 0%; }
+}
+
 /* Glassmorphism Classes */
 .glass {
   background: rgba(255, 255, 255, 0.03);

@@ -1,6 +1,6 @@
 {
   "name": "aisqlboy",
-  "version": "1.6.3",
+  "version": "1.6.4",
   "description": "",
   "main": "dist-electron/main/index.js",
   "scripts": {
@@ -74,7 +74,10 @@
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.18",
+    "@types/dagre": "^0.7.54",
     "@types/pg": "^8.16.0",
+    "@xyflow/react": "^12.11.3",
+    "dagre": "^0.8.5",
     "electron-updater": "^6.7.3",
     "framer-motion": "^12.30.0",
     "lucide-react": "^0.563.0",

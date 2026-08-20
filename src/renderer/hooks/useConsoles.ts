@@ -152,7 +152,7 @@ export const useConsoles = ({
       id,
       connectionId: activeConnection?.id,
       name: uniqueName,
-      sql: isRedis ? 'KEYS *' : initialSql ? `${initialSql};` : '',
+      sql: isRedis ? 'SCAN 0 COUNT 100' : initialSql ? `${initialSql};` : '',
       executing: false,
       dbName,
       tableName,

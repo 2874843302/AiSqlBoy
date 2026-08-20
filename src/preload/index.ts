@@ -14,6 +14,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   decryptConnectionPackage: (payload: string, passphrase: string) => ipcRenderer.invoke('decrypt-connection-package', payload, passphrase),
   confirmImportPackage: (token: string, name: string) => ipcRenderer.invoke('confirm-import-package', token, name),
   saveTableCsv: (columns: string[], rows: any[], defaultName: string) => ipcRenderer.invoke('save-table-csv', columns, rows, defaultName),
+  onConnectionLost: (cb: (message: string) => void) => {
+    ipcRenderer.on('db-connection-lost', (_e, msg) => cb(msg));
+  },
   
   // Console Management
   getConsoles: (connectionId?: number) => ipcRenderer.invoke('get-consoles', connectionId),
