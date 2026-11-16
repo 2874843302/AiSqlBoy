@@ -15,6 +15,7 @@ AiSqlBoy 是一款集成 AI 能力的现代化数据库管理工具，旨在通�
   - 支持 SQL 自动补全和语法高亮。
 - **📁 数据管理**：可视化浏览表数据、修改结构、管理索引。
 - **🔄 自动更新**：内置自动更新机制，确保始终使用最新版本。
+- **🔌 MCP 服务**：把本机已保存的数据库连接以 MCP 协议开放给 Cursor、Claude Code 等外部 AI 客户端，默认全只读，写权限需在设置中显式开启。
 - **📦 自动化发布**：集成 GitHub Actions，支持通过 Git Tag 自动打包发布 Windows 安装包。
 
 ## 🛠️ 技术栈
@@ -49,6 +50,37 @@ npm run build
 # 打包并尝试发布 (需要 GITHUB_TOKEN)
 npm run publish
 ```
+
+## 🔌 MCP 服务
+
+AiSqlBoy 可以把本机已保存的连接以 MCP（Model Context Protocol）开放给外部 AI 客户端。
+
+**启用**：设置 → MCP 服务 → 打开「启用本地 MCP 服务」。
+
+**客户端配置**：设置页内直接点「复制」，粘贴到 MCP 客户端后重启客户端即可。内容形如：
+
+```json
+{
+  "mcpServers": {
+    "aisqlboy": {
+      "command": "<AiSqlBoy 可执行文件路径>",
+      "args": ["<resources>/mcp-server/index.mjs"],
+      "env": { "ELECTRON_RUN_AS_NODE": "1" }
+    }
+  }
+}
+```
+
+路径由应用自动填入，用应用自带的 Electron 运行时跑桥，客户端机器无需预装 Node。
+**配置里没有密钥是正常的**：token 每次启动随机生成并存于本机端点文件，桥会自动读取。
+
+**工作方式**：`aisqlboy-mcp` 是一个零依赖的 stdio 桥，只做协议转换；实际查询由运行中的 AiSqlBoy 主进程执行，
+因此系统级加密的连接凭据、只读守卫、授权库白名单都照常生效，桥进程本身不接触任何密码。
+
+**能力**：`list_connections`、`list_databases`、`list_tables`、`describe_table`、`run_query`、`explain_query`、`redis_command`。
+写工具 `execute_sql` 仅在设置中开启「允许写操作」后才会注册。
+
+详见 [packages/mcp-server/README.md](packages/mcp-server/README.md)。
 
 ## 📝 使用说明
 

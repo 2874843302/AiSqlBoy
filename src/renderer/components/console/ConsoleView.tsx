@@ -11,6 +11,12 @@ import { getTimeInputType, isBooleanType, formatTimeForInput, sanitizeDisplayTex
 import { isJsonLike, escapeRegExp, formatJson, renderJsonSyntax } from '../../utils/jsonText';
 import { highlightSqlForDisplay } from '../../utils/sqlText';
 import OverflowPreviewText from '../common/OverflowPreviewText';
+import { computeColumnWidths, TABLE_COL_MIN_WIDTH } from '../../hooks/useTableGrid';
+import { Select } from '../../ui';
+
+/** 结果表格的固定度量：与该表 text-[13px] / px-4 / h-[48px] 保持一致 */
+const RESULT_METRICS = { fontPx: 13, padX: 16, padY: 12, rowHeight: 48 };
+const EMPTY_RESULT_WIDTHS: Record<string, number> = {};
 
 const ConsoleView: React.FC<Record<string, any>> = (props) => {
   const {
@@ -30,6 +36,7 @@ const ConsoleView: React.FC<Record<string, any>> = (props) => {
     handleContainerScroll,
     handleEditorKeyDown,
     handleExecuteSQL,
+    onSelectResultSet,
     handleFormatSQL,
     handleLoadMore,
     handleOpenAIModal,
@@ -65,6 +72,26 @@ const ConsoleView: React.FC<Record<string, any>> = (props) => {
     tables,
     updateSuggestions
   } = props;
+
+  // 结果表格列宽：按当前结果集每列最长值算一次。
+  // 这张表本来就是 table-fixed，但没有默认宽度时所有列会被平均分配，列一多就挤成一条。
+  // 依赖用 results/columns 的原始引用（不带 || []），保证滚动时 memo 能命中。
+  const resultOwner = consoles.find((c) => c.id === activeConsoleId);
+  const resultRowsRaw = resultOwner?.results;
+  const resultColumnsRaw = resultOwner?.columns;
+  const resultSets = resultOwner?.resultSets ?? [];
+  const activeResultIndex = resultOwner?.activeResultIndex ?? 0;
+
+  const autoResultWidths = React.useMemo(() => {
+    if (!resultColumnsRaw?.length) return EMPTY_RESULT_WIDTHS;
+    return computeColumnWidths(
+      resultColumnsRaw.map((name: string) => ({ name })),
+      resultRowsRaw || [],
+      RESULT_METRICS,
+      TABLE_COL_MIN_WIDTH,
+      TABLE_COL_MAX_WIDTH
+    );
+  }, [resultColumnsRaw, resultRowsRaw, TABLE_COL_MAX_WIDTH]);
   return (
               <motion.div
                 key={activeConsoleId}
@@ -86,38 +113,47 @@ const ConsoleView: React.FC<Record<string, any>> = (props) => {
                         </div>
 
                         {/* 数据库选择下拉框 */}
-                        <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-lg px-2 py-1 shadow-sm">
-                          {activeConnection?.type === 'redis' ? <Server size={12} className="text-slate-400" /> : <Database size={12} className="text-slate-400" />}
-                          <select
-                            className="text-xs font-medium text-slate-600 outline-none bg-transparent cursor-pointer"
-                            value={consoles.find(c => c.id === activeConsoleId)?.dbName || ''}
-                            onChange={(e) => handleConsoleDBChange(activeConsoleId!, e.target.value)}
-                          >
-                            <option value="">{activeConnection?.type === 'redis' ? '选择 DB' : '选择数据库'}</option>
-                            {databases.map(db => (
-                              <option key={db} value={db}>{activeConnection?.type === 'redis' ? `DB ${db}` : db}</option>
-                            ))}
-                          </select>
-                        </div>
+                        <Select
+                          ariaLabel="选择数据库"
+                          variant="ghost"
+                          size="sm"
+                          className="inline-block"
+                          leadingIcon={
+                            activeConnection?.type === 'redis' ? (
+                              <Server size={12} className="text-slate-400" />
+                            ) : (
+                              <Database size={12} className="text-slate-400" />
+                            )
+                          }
+                          value={consoles.find(c => c.id === activeConsoleId)?.dbName || ''}
+                          onChange={(next) => handleConsoleDBChange(activeConsoleId!, next)}
+                          placeholder={activeConnection?.type === 'redis' ? '选择 DB' : '选择数据库'}
+                          options={databases.map(db => ({
+                            value: db,
+                            label: activeConnection?.type === 'redis' ? `DB ${db}` : db
+                          }))}
+                        />
 
                         {/* 表选择下拉框（辅助输入） */}
-                        <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-lg px-2 py-1 shadow-sm">
-                          {activeConnection?.type === 'redis' ? <Key size={12} className="text-slate-400" /> : <Table size={12} className="text-slate-400" />}
-                          <select
-                            className="text-xs font-medium text-slate-600 outline-none bg-transparent cursor-pointer"
-                            onChange={(e) => {
-                              if (e.target.value) {
-                                handleConsoleTableSelect(e.target.value);
-                                e.target.value = ""; // 重置以便下次选择
-                              }
-                            }}
-                          >
-                            <option value="">{activeConnection?.type === 'redis' ? '快速插入 Key' : '快速插入表查询'}</option>
-                            {tables.map(table => (
-                              <option key={table.name} value={table.name}>{table.name}</option>
-                            ))}
-                          </select>
-                        </div>
+                        <Select
+                          ariaLabel="快速插入表查询"
+                          variant="ghost"
+                          size="sm"
+                          className="inline-block"
+                          value=""
+                          leadingIcon={
+                            activeConnection?.type === 'redis' ? (
+                              <Key size={12} className="text-slate-400" />
+                            ) : (
+                              <Table size={12} className="text-slate-400" />
+                            )
+                          }
+                          onChange={(next) => {
+                            if (next) handleConsoleTableSelect(next);
+                          }}
+                          placeholder={activeConnection?.type === 'redis' ? '快速插入 Key' : '快速插入表查询'}
+                          options={tables.map(table => ({ value: table.name, label: table.name }))}
+                        />
                       </div>
                       <div className="flex items-center gap-3">
                         {activeConnection?.type !== 'redis' && (
@@ -456,6 +492,43 @@ const ConsoleView: React.FC<Record<string, any>> = (props) => {
                         )}
                       </div>
                     </div>
+
+                    {/* 多结果集切换：仅在执行了多条语句时出现 */}
+                    {resultSets.length > 1 && activeConsoleId && (
+                      <div className="px-6 py-2 border-b border-slate-100 bg-white shrink-0 flex items-center gap-2 overflow-x-auto custom-scrollbar">
+                        {resultSets.map((set, index) => {
+                          const isActive = index === activeResultIndex;
+                          const badge = set.success
+                            ? set.columns?.length
+                              ? `${set.data?.length ?? 0} 行`
+                              : `${set.affectedRows ?? 0} 行受影响`
+                            : '失败';
+                          return (
+                            <button
+                              key={index}
+                              onClick={() => onSelectResultSet(activeConsoleId, index)}
+                              title={set.success ? set.sql : `${set.sql}\n\n错误：${set.error || ''}`}
+                              className={`shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[11px] font-bold transition-colors ${
+                                isActive
+                                  ? 'bg-blue-50 border-blue-200 text-blue-600'
+                                  : set.success
+                                    ? 'bg-white border-slate-200 text-slate-500 hover:border-blue-200 hover:text-blue-600'
+                                    : 'bg-red-50/60 border-red-200 text-red-600 hover:bg-red-50'
+                              }`}
+                            >
+                              结果 {index + 1}
+                              <span
+                                className={`font-medium ${
+                                  isActive ? 'text-blue-500' : set.success ? 'text-slate-400' : 'text-red-500'
+                                }`}
+                              >
+                                {badge}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
                     <div className="flex-1 relative overflow-hidden flex flex-col">
                       <div
                         className="flex-1 overflow-auto custom-scrollbar"
@@ -515,7 +588,7 @@ const ConsoleView: React.FC<Record<string, any>> = (props) => {
                                     <tr className="bg-slate-50 sticky top-0 z-10 h-[48px]">
                                       {activeConsole.columns?.map(col => {
                                         const colKey = `${activeConsoleId ?? 'console'}::${col}`;
-                                        const colWidth = resultColumnWidths[colKey];
+                                        const colWidth = resultColumnWidths[colKey] ?? autoResultWidths[col];
                                         return (
                                           <th
                                             key={col}
@@ -546,6 +619,9 @@ const ConsoleView: React.FC<Record<string, any>> = (props) => {
                                           {activeConsole.columns?.map(col => {
                                             const rawValue = row[col];
                                             const cellText = sanitizeDisplayText(rawValue);
+                                            const cellWidth =
+                                              resultColumnWidths[`${activeConsoleId ?? 'console'}::${col}`] ??
+                                              autoResultWidths[col];
                                             return (
                                               <td
                                                 key={col}
@@ -557,12 +633,8 @@ const ConsoleView: React.FC<Record<string, any>> = (props) => {
                                                   setTextDetail({ content: rawValue, fieldName: col });
                                                 }}
                                                 style={
-                                                  resultColumnWidths[`${activeConsoleId ?? 'console'}::${col}`]
-                                                    ? {
-                                                        width: resultColumnWidths[`${activeConsoleId ?? 'console'}::${col}`],
-                                                        minWidth: resultColumnWidths[`${activeConsoleId ?? 'console'}::${col}`],
-                                                        maxWidth: resultColumnWidths[`${activeConsoleId ?? 'console'}::${col}`]
-                                                      }
+                                                  cellWidth
+                                                    ? { width: cellWidth, minWidth: cellWidth, maxWidth: cellWidth }
                                                     : { maxWidth: TABLE_COL_MAX_WIDTH }
                                                 }
                                               >
@@ -655,18 +727,21 @@ const ConsoleView: React.FC<Record<string, any>> = (props) => {
                                   <div className="h-3 w-px bg-slate-200" />
                                   <div className="flex items-center gap-2">
                                     <span className="text-[10px] text-slate-400 font-bold tracking-wide">每页</span>
-                                    <select
-                                      value={size}
-                                      onChange={(e) => {
-                                        const newSize = Number(e.target.value);
+                                    <Select
+                                      ariaLabel="每页条数"
+                                      className="inline-block"
+                                      minMenuWidth={72}
+                                      triggerClassName="flex items-center gap-1 bg-white border border-slate-200 rounded px-1.5 py-0.5 text-[11px] font-bold text-slate-500 outline-none transition-colors hover:border-blue-200 hover:text-blue-600 focus:ring-1 focus:ring-blue-500/20"
+                                      value={String(size)}
+                                      onChange={(next) => {
+                                        const newSize = Number(next);
                                         setConsoles(prev => prev.map(c => c.id === activeConsoleId ? { ...c, pageSize: newSize, currentPage: 1 } : c));
                                       }}
-                                      className="bg-white border border-slate-200 rounded text-[10px] font-bold px-1 py-0.5 outline-none focus:ring-1 focus:ring-blue-500/20 transition-all cursor-pointer text-slate-500"
-                                    >
-                                      {[20, 50, 100, 200, 500].map(s => (
-                                        <option key={s} value={s}>{s}</option>
-                                      ))}
-                                    </select>
+                                      options={[20, 50, 100, 200, 500].map(s => ({
+                                        value: String(s),
+                                        label: String(s)
+                                      }))}
+                                    />
                                   </div>
                                 </>
                               )}

@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { AnimatePresence } from 'framer-motion';
 import { Loader2, Maximize2, Minimize2, Pencil, Send, Sparkles, Trash2, Undo2, X } from 'lucide-react';
 import ConfirmModal from '../common/ConfirmModal';
+import { Modal } from '../../ui';
 import type { ERLabelLanguage } from './ERDiagramModal';
 
 export type ERSchemaTable = {
@@ -890,26 +891,16 @@ const ERSchemaDiagramModal: React.FC<ERSchemaDiagramModalProps> = ({
       />
       <AnimatePresence>
         {show && (
-          <div className={`fixed inset-0 z-[230] flex items-center justify-center ${isFullscreen ? 'p-0' : 'p-5'}`}>
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setCloseConfirmOpen(true)}
-              className="absolute inset-0 bg-slate-900/40"
-            />
-
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0, y: 12 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.95, opacity: 0, y: 12 }}
-              onClick={(e) => e.stopPropagation()}
-              className={`relative z-10 bg-white border border-slate-200 shadow-2xl flex flex-col overflow-hidden ${
-                isFullscreen
-                  ? 'w-screen h-screen rounded-none'
-                  : 'w-[94vw] max-w-[1600px] h-[88vh] rounded-3xl'
-              }`}
-            >
+          <Modal
+            onClose={() => setCloseConfirmOpen(true)}
+            zIndex={230}
+            padding={isFullscreen ? 'p-0' : 'p-5'}
+            backdropClassName="bg-slate-900/40"
+            rounded={isFullscreen ? 'rounded-none' : 'rounded-3xl'}
+            width={isFullscreen ? 'w-screen h-screen' : 'w-[94vw] max-w-[1600px] h-[88vh]'}
+            className="flex flex-col"
+            ariaLabel="Schema ER 图"
+          >
               {textEdit && (
                 <div
                   className="absolute inset-0 z-[300] flex items-center justify-center bg-slate-900/25 rounded-3xl p-4"
@@ -1323,8 +1314,7 @@ const ERSchemaDiagramModal: React.FC<ERSchemaDiagramModalProps> = ({
                   </svg>
                 )}
               </div>
-            </motion.div>
-          </div>
+          </Modal>
         )}
       </AnimatePresence>
     </>

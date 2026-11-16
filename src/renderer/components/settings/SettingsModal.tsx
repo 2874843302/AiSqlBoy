@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { Bot, X, Sparkles, AlignLeft, RefreshCw, Loader2, Download, CheckCircle2, Play } from 'lucide-react';
+import { Bot, X, Sparkles, AlignLeft, RefreshCw, Loader2, Download, CheckCircle2, Play, Plug, Copy, ShieldAlert } from 'lucide-react';
 import {
   AI_VENDOR_LIST,
   AI_VENDOR_MODELS,
@@ -8,9 +8,10 @@ import {
   type AiVendorId,
 } from '../../../shared/aiProviderPresets';
 import type { UpdateStatus } from '../../hooks/useAutoUpdate';
+import { Modal, Button, Switch, Select } from '../../ui';
 
 export type ThemeMode = 'light' | 'dark' | 'system';
-export type SettingsTab = 'ai' | 'ui' | 'update';
+export type SettingsTab = 'ai' | 'ui' | 'mcp' | 'update';
 
 export const DEFAULT_UI_FONT_STACK = "'Inter', 'PingFang SC', 'Microsoft YaHei', sans-serif";
 
@@ -24,9 +25,6 @@ const UI_FONT_PRESETS: { label: string; value: string }[] = [
   { label: 'Consolas（等宽）', value: "'Consolas', 'Courier New', monospace" },
   { label: 'Courier New（等宽）', value: "'Courier New', monospace" },
 ];
-
-const aiSelectClass =
-  'w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-sm text-slate-900 focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600 outline-none transition-all cursor-pointer appearance-none';
 
 type SettingsModalProps = {
   settingsTab: SettingsTab;
@@ -87,21 +85,74 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     return opts;
   }, [providerVendor, providerApiVersion]);
 
+  // ── MCP 服务状态（自包含：仅在该标签页挂载时拉取）────────────────
+  const [mcpStatus, setMcpStatus] = React.useState<{
+    running: boolean;
+    port: number;
+    endpointFile: string;
+    allowWrite?: boolean;
+  } | null>(null);
+  const [mcpBusy, setMcpBusy] = React.useState(false);
+  const [mcpCopied, setMcpCopied] = React.useState(false);
+  const [mcpConfig, setMcpConfig] = React.useState('');
+
+  React.useEffect(() => {
+    if (settingsTab !== 'mcp') return;
+    let alive = true;
+    window.electronAPI
+      .mcpGetStatus()
+      .then((status) => {
+        if (alive) setMcpStatus(status);
+      })
+      .catch(() => {
+        if (alive) setMcpStatus(null);
+      });
+    // 桥路径由主进程按运行环境计算，前端不硬编码
+    window.electronAPI
+      .mcpGetClientConfig()
+      .then((res) => {
+        if (alive) setMcpConfig(res.config);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [settingsTab]);
+
+  const toggleMcpServer = async (next: boolean) => {
+    setMcpBusy(true);
+    try {
+      const result = await window.electronAPI.mcpSetEnabled(next);
+      setMcpStatus(result);
+    } catch {
+      // 失败时保持原状态，错误由主进程日志体现
+    } finally {
+      setMcpBusy(false);
+    }
+  };
+
+  const toggleMcpWrite = async (next: boolean) => {
+    setMcpBusy(true);
+    try {
+      const result = await window.electronAPI.mcpSetAllowWrite(next);
+      setMcpStatus((prev) => (prev ? { ...prev, allowWrite: result.allowWrite } : prev));
+    } finally {
+      setMcpBusy(false);
+    }
+  };
+
+  const copyMcpConfig = async () => {
+    try {
+      await navigator.clipboard.writeText(mcpConfig);
+      setMcpCopied(true);
+      setTimeout(() => setMcpCopied(false), 1500);
+    } catch {
+      // 剪贴板不可用时静默失败，用户可手动选中复制
+    }
+  };
+
   return (
-    <div className="fixed inset-0 z-[110] flex items-center justify-center p-6">
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        onClick={onClose}
-        className="absolute inset-0 bg-slate-900/20"
-      />
-      <motion.div
-        initial={{ scale: 0.9, opacity: 0, y: 20 }}
-        animate={{ scale: 1, opacity: 1, y: 0 }}
-        exit={{ scale: 0.9, opacity: 0, y: 20 }}
-        className="bg-white border border-slate-200 rounded-[32px] shadow-2xl w-full max-w-[520px] min-w-[320px] overflow-hidden z-10"
-      >
+    <Modal onClose={onClose} zIndex={110} ariaLabel="系统设置">
         <div className="px-8 py-6 border-b border-slate-100 flex justify-between items-center bg-gradient-to-b from-slate-50 to-transparent">
           <div className="flex items-center gap-2">
             <Bot size={20} className="text-indigo-600" />
@@ -120,27 +171,37 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
           <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-2xl p-1">
             <button
               onClick={() => onTabChange('ai')}
-              className={`flex-1 text-xs font-bold rounded-xl px-3 py-2 transition-all ${
+              className={`flex-1 text-xs font-bold rounded-xl px-2 py-2 transition-all whitespace-nowrap ${
                 settingsTab === 'ai'
                   ? 'bg-white text-slate-900 shadow-sm border border-slate-200'
                   : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100 border border-transparent'
               }`}
             >
-              AI 功能配置
+              AI 配置
             </button>
             <button
               onClick={() => onTabChange('ui')}
-              className={`flex-1 text-xs font-bold rounded-xl px-3 py-2 transition-all ${
+              className={`flex-1 text-xs font-bold rounded-xl px-2 py-2 transition-all whitespace-nowrap ${
                 settingsTab === 'ui'
                   ? 'bg-white text-slate-900 shadow-sm border border-slate-200'
                   : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100 border border-transparent'
               }`}
             >
-              个性化配置
+              个性化
+            </button>
+            <button
+              onClick={() => onTabChange('mcp')}
+              className={`flex-1 text-xs font-bold rounded-xl px-2 py-2 transition-all whitespace-nowrap ${
+                settingsTab === 'mcp'
+                  ? 'bg-white text-slate-900 shadow-sm border border-slate-200'
+                  : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100 border border-transparent'
+              }`}
+            >
+              MCP 服务
             </button>
             <button
               onClick={() => onTabChange('update')}
-              className={`flex-1 text-xs font-bold rounded-xl px-3 py-2 transition-all ${
+              className={`flex-1 text-xs font-bold rounded-xl px-2 py-2 transition-all whitespace-nowrap ${
                 settingsTab === 'update'
                   ? 'bg-white text-slate-900 shadow-sm border border-slate-200'
                   : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100 border border-transparent'
@@ -158,52 +219,40 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
             <div className="space-y-2">
               <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">厂商</label>
-              <select
-                className={aiSelectClass}
+              <Select
+                ariaLabel="AI 厂商"
+                size="lg"
                 value={providerVendor}
-                onChange={(e) => onVendorChange(e.target.value as AiVendorId)}
-              >
-                {AI_VENDOR_LIST.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {v.label}
-                  </option>
-                ))}
-              </select>
+                onChange={(next) => onVendorChange(next as AiVendorId)}
+                options={AI_VENDOR_LIST.map((v) => ({ value: v.id, label: v.label }))}
+              />
               <p className="text-xs text-slate-400 px-1">
                 仅支持国产 API 预设地址；请求会发往 <code className="text-[11px]">…/chat/completions</code>。
               </p>
             </div>
             <div className="space-y-2">
               <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">模型</label>
-              <select
-                className={aiSelectClass}
+              <Select
+                ariaLabel="模型"
+                size="lg"
                 value={providerModel}
-                onChange={(e) => onModelChange(e.target.value)}
-              >
-                {AI_VENDOR_MODELS[providerVendor].map((m) => (
-                  <option key={m.value} value={m.value}>
-                    {m.label}
-                  </option>
-                ))}
-              </select>
+                onChange={onModelChange}
+                options={AI_VENDOR_MODELS[providerVendor].map((m) => ({ value: m.value, label: m.label }))}
+              />
             </div>
             <div className="space-y-2">
               <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">API Version</label>
-              <select
-                className={aiSelectClass}
+              <Select
+                ariaLabel="API Version"
+                size="lg"
                 value={
                   versionSelectOptions.some((o) => o.value === providerApiVersion)
                     ? providerApiVersion
                     : versionSelectOptions[0]?.value ?? ''
                 }
-                onChange={(e) => onApiVersionChange(e.target.value)}
-              >
-                {versionSelectOptions.map((o) => (
-                  <option key={o.value || '_empty'} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
+                onChange={onApiVersionChange}
+                options={versionSelectOptions.map((o) => ({ value: o.value, label: o.label }))}
+              />
             </div>
             <div className="space-y-2">
               <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">
@@ -242,32 +291,112 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
 
             <div className="space-y-2">
               <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">字体族</label>
-              <select
-                className={aiSelectClass}
+              <Select
+                ariaLabel="界面字体族"
+                size="lg"
                 value={uiFontFamily}
-                onChange={(e) => onUIFontChange(e.target.value)}
-              >
-                {UI_FONT_PRESETS.map((f) => (
-                  <option key={f.value} value={f.value}>
-                    {f.label}
-                  </option>
-                ))}
-              </select>
+                onChange={onUIFontChange}
+                options={UI_FONT_PRESETS.map((f) => ({ value: f.value, label: f.label }))}
+              />
               <p className="text-xs text-slate-400 px-1">点击「保存配置」后立即应用到全局界面。</p>
             </div>
 
             <div className="space-y-2">
               <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">主题模式</label>
-              <select
-                className={aiSelectClass}
+              <Select
+                ariaLabel="主题模式"
+                size="lg"
                 value={uiThemeMode}
-                onChange={(e) => onUIThemeChange(e.target.value as ThemeMode)}
-              >
-                <option value="system">跟随系统</option>
-                <option value="light">浅色模式</option>
-                <option value="dark">深色模式</option>
-              </select>
+                onChange={(next) => onUIThemeChange(next as ThemeMode)}
+                options={[
+                  { value: 'system', label: '跟随系统' },
+                  { value: 'light', label: '浅色模式' },
+                  { value: 'dark', label: '深色模式' },
+                ]}
+              />
               <p className="text-xs text-slate-400 px-1">当前为预览版深色模式，主要调整背景与基础文字颜色。</p>
+            </div>
+          </div>
+
+          {/* MCP Section */}
+          <div className={`pt-6 border-t border-slate-100 space-y-4 ${settingsTab === 'mcp' ? '' : 'hidden'}`}>
+            <div className="flex items-center gap-2 mb-2">
+              <Plug size={14} className="text-indigo-500" />
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em]">MCP 服务</span>
+            </div>
+
+            <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100">
+              <div className="flex items-start justify-between gap-4">
+                <div className="space-y-1 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm font-bold text-slate-900">启用本地 MCP 服务</span>
+                    {mcpStatus?.running ? (
+                      <span className="text-[10px] px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded-full font-bold">
+                        运行中 · 127.0.0.1:{mcpStatus.port}
+                      </span>
+                    ) : (
+                      <span className="text-[10px] px-2 py-0.5 bg-slate-200 text-slate-500 rounded-full font-bold">
+                        已停止
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-500 leading-relaxed">
+                    让 Cursor、Claude Code 等 MCP 客户端访问本机已保存的数据库连接。服务仅监听 127.0.0.1，
+                    用一次性 token 鉴权，凭证不会离开本机。
+                  </p>
+                </div>
+                <Switch
+                  checked={!!mcpStatus?.running}
+                  onChange={toggleMcpServer}
+                  disabled={mcpBusy}
+                  label="启用本地 MCP 服务"
+                />
+              </div>
+            </div>
+
+            <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100">
+              <div className="flex items-start justify-between gap-4">
+                <div className="space-y-1 flex-1">
+                  <div className="flex items-center gap-2">
+                    <ShieldAlert size={14} className="text-amber-500" />
+                    <span className="text-sm font-bold text-slate-900">允许写操作</span>
+                  </div>
+                  <p className="text-xs text-slate-500 leading-relaxed">
+                    开启后模型可执行 INSERT / UPDATE / DELETE / DDL，且仅对非只读连接生效。
+                    MCP 客户端无法弹窗确认，建议只在明确需要时临时开启。
+                  </p>
+                </div>
+                <Switch
+                  checked={!!mcpStatus?.allowWrite}
+                  onChange={toggleMcpWrite}
+                  disabled={mcpBusy || !mcpStatus?.running}
+                  tone="amber"
+                  label="允许 MCP 写操作"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between px-1">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                  客户端配置
+                </label>
+                <button
+                  type="button"
+                  onClick={copyMcpConfig}
+                  className="flex items-center gap-1 text-[10px] font-bold text-slate-500 hover:text-indigo-600 transition-colors"
+                >
+                  <Copy size={12} />
+                  {mcpCopied ? '已复制' : '复制'}
+                </button>
+              </div>
+              <pre className="text-[11px] leading-relaxed bg-slate-900 text-slate-100 rounded-2xl p-4 overflow-x-auto font-mono">
+                {mcpConfig || '加载中…'}
+              </pre>
+              <p className="text-xs text-slate-400 px-1 leading-relaxed">
+                配置里没有密钥是正常的：token 由 AiSqlBoy 每次启动随机生成，桥进程会自动从本机端点文件读取，
+                不经过客户端配置文件。写入后重启客户端即可生效。Windows 路径中的反斜杠已按 JSON 转义。
+              </p>
             </div>
           </div>
 
@@ -375,23 +504,14 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
         </div>
 
         <div className="px-8 py-6 border-t border-slate-100 bg-slate-50 flex gap-3">
-          <button
-            onClick={onClose}
-            className="flex-1 py-3 rounded-2xl text-sm font-bold text-slate-500 hover:text-slate-700 hover:bg-slate-200/50 transition-all"
-          >
+          <Button size="lg" variant="ghost" className="flex-1" onClick={onClose}>
             取消
-          </button>
-          <motion.button
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-            onClick={onSave}
-            className="flex-[2] py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl text-sm font-bold shadow-lg shadow-indigo-600/20 transition-all"
-          >
+          </Button>
+          <Button size="lg" variant="primary" className="flex-[2]" onClick={onSave}>
             保存配置
-          </motion.button>
+          </Button>
         </div>
-      </motion.div>
-    </div>
+    </Modal>
   );
 };
 

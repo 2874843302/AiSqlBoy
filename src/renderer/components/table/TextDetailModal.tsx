@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { Layout, Search, ArrowUp, ArrowDown, X, FileJson, Copy } from 'lucide-react';
 import { isJsonLike, formatJson, renderJsonSyntax, escapeRegExp } from '../../utils/jsonText';
+import { Modal } from '../../ui';
 
 export type TextDetailData = { content: any; fieldName: string };
 
@@ -83,7 +84,7 @@ const TextDetailModal: React.FC<TextDetailModalProps> = ({ detail, onClose, onTo
     target?.scrollIntoView({ block: 'center', behavior: 'smooth' });
   }, [matchIndex, matches.length]);
 
-  // Ctrl+F 打开弹窗内查找；Escape 关闭查找
+  // Ctrl+F 打开弹窗内查找；Escape 先关查找，查找未打开时关闭弹窗
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
@@ -92,31 +93,32 @@ const TextDetailModal: React.FC<TextDetailModalProps> = ({ detail, onClose, onTo
         requestAnimationFrame(() => searchInputRef.current?.focus());
         return;
       }
-      if (e.key === 'Escape' && searchVisible) {
-        e.preventDefault();
-        setSearchVisible(false);
-        searchInputRef.current?.blur();
+      if (e.key === 'Escape') {
+        if (searchVisible) {
+          e.preventDefault();
+          setSearchVisible(false);
+          searchInputRef.current?.blur();
+        } else {
+          onClose();
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [searchVisible]);
+  }, [searchVisible, onClose]);
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-10">
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        onClick={onClose}
-        className="absolute inset-0 bg-slate-900/40"
-      />
-      <motion.div
-        initial={{ scale: 0.9, opacity: 0, y: 30 }}
-        animate={{ scale: 1, opacity: 1, y: 0 }}
-        exit={{ scale: 0.9, opacity: 0, y: 30 }}
-        className="bg-white border border-slate-200 rounded-[40px] shadow-3xl w-full max-w-3xl max-h-[80vh] flex flex-col overflow-hidden z-10"
-      >
+    <Modal
+      onClose={onClose}
+      zIndex={100}
+      padding="p-10"
+      backdropClassName="bg-slate-900/40"
+      rounded="rounded-[40px]"
+      width="w-full max-w-3xl"
+      className="max-h-[80vh] flex flex-col"
+      ariaLabel="详细内容预览"
+      closeOnEsc={false}
+    >
         <div className="px-10 py-8 border-b border-slate-100 flex justify-between items-center bg-gradient-to-b from-slate-50 to-transparent">
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 bg-blue-50 rounded-2xl flex items-center justify-center border border-blue-100">
@@ -263,8 +265,7 @@ const TextDetailModal: React.FC<TextDetailModalProps> = ({ detail, onClose, onTo
             关闭预览
           </motion.button>
         </div>
-      </motion.div>
-    </div>
+    </Modal>
   );
 };
 

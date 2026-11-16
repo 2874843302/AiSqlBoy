@@ -2,6 +2,7 @@ import React from 'react';
 import { motion } from 'framer-motion';
 import { Table, Plus, X, ChevronRight, Trash2, Loader2, Sparkles, Server, Activity } from 'lucide-react';
 import { DB_TYPES } from '../../constants/dbTypes';
+import { Modal, Select } from '../../ui';
 
 export type SchemaData = { tableName: string; columns: any[]; indexes: any[] };
 
@@ -34,20 +35,13 @@ const SchemaEditorModal: React.FC<SchemaEditorModalProps> = ({
 }) => {
   const isExistingTable = existingTables.includes(schemaData.tableName);
   return (
-          <div className="fixed inset-0 z-[120] flex items-center justify-center p-6">
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => onClose()}
-              className="absolute inset-0 bg-slate-900/20"
-            />
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0, y: 20 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.95, opacity: 0, y: 20 }}
-              className="bg-white border border-slate-200 rounded-[32px] shadow-2xl w-[900px] max-h-[85vh] flex flex-col overflow-hidden z-10"
-            >
+          <Modal
+            onClose={onClose}
+            zIndex={120}
+            width="w-[900px]"
+            className="max-h-[85vh] flex flex-col"
+            ariaLabel={isExistingTable ? '修改表结构' : '创建新表'}
+          >
               <div className="px-8 py-6 border-b border-slate-100 flex justify-between items-center bg-gradient-to-b from-slate-50 to-transparent">
                 <div>
                   <h3 className="font-bold text-lg text-slate-900 tracking-tight">
@@ -186,25 +180,24 @@ const SchemaEditorModal: React.FC<SchemaEditorModalProps> = ({
                                 <div className="absolute right-4 pointer-events-none text-slate-300 group-hover/type:text-blue-400 transition-colors z-20">
                                   <ChevronRight size={12} className="rotate-90" />
                                 </div>
-                                <select
+                                <Select
+                                  ariaLabel="选择常用类型"
+                                  rootClassName="absolute inset-0 z-0"
+                                  triggerClassName="absolute inset-0 w-full opacity-0 cursor-pointer"
                                   value=""
-                                  onChange={(e) => {
+                                  onChange={(next) => {
+                                    if (!next) return;
                                     const newCols = [...schemaData.columns];
-                                    newCols[idx].type = e.target.value;
+                                    newCols[idx].type = next;
                                     onSchemaChange({ ...schemaData, columns: newCols });
                                   }}
-                                  className="absolute inset-0 opacity-0 cursor-pointer w-full z-0"
-                                >
-                                  <option value="" disabled>选择常用类型...</option>
-                                  {(
+                                  options={(
                                     connectionType === 'sqlite' ? DB_TYPES.sqlite :
                                     connectionType === 'postgresql' ? DB_TYPES.postgresql :
                                     connectionType === 'oracle' ? DB_TYPES.oracle :
                                     DB_TYPES.mysql
-                                  ).map(type => (
-                                    <option key={type} value={type}>{type}</option>
-                                  ))}
-                                </select>
+                                  ).map(type => ({ value: type, label: type }))}
+                                />
                               </div>
                             </td>
                           <td className="px-6 py-3 text-center">
@@ -329,23 +322,24 @@ const SchemaEditorModal: React.FC<SchemaEditorModalProps> = ({
                                     />
                                   </div>
                                 ))}
-                                <select
+                                <Select
+                                  ariaLabel="添加索引字段"
+                                  variant="compact"
+                                  size="sm"
+                                  className="inline-block"
+                                  minMenuWidth={160}
                                   value=""
-                                  onChange={(e) => {
-                                    if (!e.target.value) return;
+                                  placeholder="+ 添加字段"
+                                  onChange={(next) => {
+                                    if (!next) return;
                                     const newIdxs = [...schemaData.indexes];
-                                    if (!newIdxs[i].columns.includes(e.target.value)) {
-                                      newIdxs[i].columns.push(e.target.value);
+                                    if (!newIdxs[i].columns.includes(next)) {
+                                      newIdxs[i].columns.push(next);
                                       onSchemaChange({ ...schemaData, indexes: newIdxs });
                                     }
                                   }}
-                                  className="text-xs bg-slate-100 border-none rounded px-1 outline-none text-slate-500 cursor-pointer"
-                                >
-                                  <option value="">+ 添加字段</option>
-                                  {schemaData.columns.map(c => (
-                                    <option key={c.name} value={c.name}>{c.name}</option>
-                                  ))}
-                                </select>
+                                  options={schemaData.columns.map(c => ({ value: c.name, label: c.name }))}
+                                />
                               </div>
                             </td>
                             <td className="px-6 py-3 text-center">
@@ -403,8 +397,7 @@ const SchemaEditorModal: React.FC<SchemaEditorModalProps> = ({
                 </motion.button>
                 )}
               </div>
-            </motion.div>
-          </div>
+          </Modal>
   );
 };
 

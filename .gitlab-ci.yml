@@ -1,0 +1,56 @@
+stages:
+  - release
+
+variables:
+  NODE_VERSION: "20"
+
+# ─── Windows 构建 ───
+build-windows:
+  stage: release
+  tags:
+    - shared-windows  # GitLab SaaS；自建 GitLab 改为你的 runner tag
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v/i
+    - if: $CI_COMMIT_BRANCH == "main"
+  before_script:
+    - |
+      if (Get-Command nvm -ErrorAction SilentlyContinue) {
+        nvm install $NODE_VERSION
+        nvm use $NODE_VERSION
+      } elseif (!(Get-Command node -ErrorAction SilentlyContinue)) {
+        choco install nodejs-lts -y
+        refreshenv
+      }
+    - node -v
+    - npm -v
+  script:
+    - npm install
+    - npm run publish:win
+  artifacts:
+    paths:
+      - "release1.0/"
+    expire_in: 30 days
+
+# ─── macOS 构建 ───
+build-macos:
+  stage: release
+  tags:
+    - shared-macos  # GitLab SaaS；自建 GitLab 改为你的 runner tag，如 macos
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v/i
+    - if: $CI_COMMIT_BRANCH == "main"
+  before_script:
+    - |
+      if ! command -v node &> /dev/null; then
+        brew install node@${NODE_VERSION}
+        brew link node@${NODE_VERSION} --force --overwrite
+      fi
+    - node -v
+    - npm -v
+  script:
+    - npm install
+    - npm run publish:mac
+  artifacts:
+    paths:
+      - "release1.0/"
+    expire_in: 30 days

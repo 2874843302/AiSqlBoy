@@ -1,5 +1,14 @@
-import type { ConnectionConfig, ConnectionPackagePreview } from '../../shared/types';
+import type { ConnectionConfig, ConnectionPackagePreview, QueryResultSet } from '../../shared/types';
 import type { AgentResponse } from '../../shared/agentTypes';
+
+/** 本地 MCP 服务状态 */
+export interface McpStatus {
+  running: boolean;
+  port: number;
+  endpointFile: string;
+  poolSize?: number;
+  allowWrite?: boolean;
+}
 
 declare global {
   interface Window {
@@ -51,10 +60,20 @@ declare global {
         isAutoLimited?: boolean;
         totalCount?: number;
         executionTime?: number;
+        /** 多语句执行时逐条的结果（单条时长度为 1） */
+        results?: QueryResultSet[];
+        /** 因前面语句失败而未执行的语句数 */
+        skippedCount?: number;
       }>;
       aiChat: (messages: any[]) => Promise<{ success: boolean; response?: string; error?: string }>;
       saveSetting: (key: string, value: string) => Promise<void>;
       getSetting: (key: string) => Promise<string | null>;
+
+      // MCP 服务
+      mcpGetStatus: () => Promise<McpStatus>;
+      mcpSetEnabled: (enabled: boolean) => Promise<McpStatus & { success: boolean; error?: string }>;
+      mcpSetAllowWrite: (enabled: boolean) => Promise<{ success: boolean; allowWrite: boolean }>;
+      mcpGetClientConfig: () => Promise<{ bridgePath: string; config: string }>;
 
       // Agent
       agentCreateSession: (params: { connectionId: number; dbType: string; dbName: string; permissionLevel: 'readonly' | 'write-confirm' | 'full-control' }) => Promise<{ success: boolean; sessionId?: string; error?: string }>;

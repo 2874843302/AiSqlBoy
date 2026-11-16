@@ -13,3 +13,6 @@
 
 # Dev config
 /dev-app-update.yml
+
+# 项目记忆（本地工作日志，不入库）
+/.workbuddy/

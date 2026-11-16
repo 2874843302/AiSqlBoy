@@ -1,6 +1,6 @@
 {
   "name": "aisqlboy",
-  "version": "1.6.4",
+  "version": "1.7.0",
   "description": "",
   "main": "dist-electron/main/index.js",
   "scripts": {
@@ -12,6 +12,9 @@
     "publish:win": "tsc && vite build && electron-builder --win --publish always",
     "publish:mac": "tsc && vite build && electron-builder --mac --publish always",
     "preview": "vite preview",
+    "test:ui": "esbuild scripts/ui-smoke-test.tsx --bundle --platform=node --format=cjs --outfile=node_modules/.cache/ui-smoke.cjs --jsx=automatic --external:react --external:react-dom && node node_modules/.cache/ui-smoke.cjs",
+    "test:mcp": "node scripts/mcp-smoke-test.mjs",
+    "test:mcp:e2e": "node scripts/mcp-e2e-test.mjs",
     "postinstall": "electron-builder install-app-deps"
   },
   "repository": {
@@ -70,6 +73,16 @@
     },
     "asarUnpack": [
       "**/node_modules/oracledb/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "packages/mcp-server",
+        "to": "mcp-server",
+        "filter": [
+          "index.mjs",
+          "package.json"
+        ]
+      }
     ]
   },
   "dependencies": {
@@ -111,5 +124,6 @@
     "vite": "^7.3.1",
     "vite-plugin-electron": "^0.29.0",
     "vite-plugin-electron-renderer": "^0.14.6"
-  }
+  },
+  "packageManager": "pnpm@11.18.0+sha512.33d83c77da82f49fba836925c6f1b841181ec3132b670639bd012f7075f5c7cf634c5f870147c19aae7478fac01df09d8892e880454896edd23ee9b33757563c"
 }

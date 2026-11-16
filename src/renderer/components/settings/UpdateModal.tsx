@@ -2,6 +2,7 @@ import React from 'react';
 import { motion } from 'framer-motion';
 import { X, Sparkles, ArrowUp, CheckCircle2, Download, Play } from 'lucide-react';
 import type { UpdateStatus } from '../../hooks/useAutoUpdate';
+import { Modal, Button } from '../../ui';
 
 type UpdateModalProps = {
   updateStatus: UpdateStatus;
@@ -11,21 +12,16 @@ type UpdateModalProps = {
 };
 
 const UpdateModal: React.FC<UpdateModalProps> = ({ updateStatus, onClose, onDownload, onInstall }) => {
+  const downloading = updateStatus.type === 'downloading';
+
   return (
-    <div className="fixed inset-0 z-[120] flex items-center justify-center p-6">
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        onClick={onClose}
-        className="absolute inset-0 bg-slate-900/40"
-      />
-      <motion.div
-        initial={{ scale: 0.9, opacity: 0, y: 20 }}
-        animate={{ scale: 1, opacity: 1, y: 0 }}
-        exit={{ scale: 0.9, opacity: 0, y: 20 }}
-        className="bg-white border border-slate-200 rounded-[32px] shadow-2xl w-[400px] overflow-hidden z-10"
-      >
+    <Modal
+      onClose={onClose}
+      zIndex={120}
+      backdropClassName="bg-slate-900/40"
+      width="w-[400px]"
+      ariaLabel="发现新版本"
+    >
         <div className="px-8 py-6 border-b border-slate-100 flex justify-between items-center bg-gradient-to-b from-indigo-50 to-transparent">
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center">
@@ -101,38 +97,27 @@ const UpdateModal: React.FC<UpdateModalProps> = ({ updateStatus, onClose, onDown
         </div>
 
         <div className="px-8 py-6 border-t border-slate-100 bg-slate-50 flex gap-3">
-          <button
-            onClick={onClose}
-            disabled={updateStatus.type === 'downloading'}
-            className="flex-1 py-3 rounded-2xl text-sm font-bold text-slate-500 hover:text-slate-700 hover:bg-slate-200/50 transition-all disabled:opacity-50"
-          >
+          <Button size="lg" variant="ghost" className="flex-1" onClick={onClose} disabled={downloading}>
             稍后再说
-          </button>
+          </Button>
           {updateStatus.type === 'downloaded' ? (
-            <motion.button
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-              onClick={onInstall}
-              className="flex-[2] py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl text-sm font-bold shadow-lg shadow-emerald-600/20 transition-all flex items-center justify-center gap-2"
-            >
-              <Play size={16} />
+            <Button size="lg" variant="success" className="flex-[2]" icon={<Play size={16} />} onClick={onInstall}>
               立即重启安装
-            </motion.button>
+            </Button>
           ) : (
-            <motion.button
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
+            <Button
+              size="lg"
+              variant="primary"
+              className="flex-[2]"
+              icon={<Download size={16} />}
               onClick={onDownload}
-              disabled={updateStatus.type === 'downloading'}
-              className="flex-[2] py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl text-sm font-bold shadow-lg shadow-indigo-600/20 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+              disabled={downloading}
             >
-              <Download size={16} />
-              {updateStatus.type === 'downloading' ? '正在下载...' : '立即下载更新'}
-            </motion.button>
+              {downloading ? '正在下载...' : '立即下载更新'}
+            </Button>
           )}
         </div>
-      </motion.div>
-    </div>
+    </Modal>
   );
 };
 

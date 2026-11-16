@@ -3,6 +3,8 @@
  * 主进程使用，为 AI 提供工具使用指引和安全规则
  */
 
+import { friendlyDbError } from './sqlSecurity';
+
 export interface AgentPromptContext {
   dbType: string;
   dbName: string;
@@ -61,6 +63,15 @@ export function buildAgentSystemPrompt(ctx: AgentPromptContext): string {
 4. **finish** — 任务完成，给出最终总结
    - 示例：\`\`\`action\n{"tool":"finish","reason":"任务已完成"}\n\`\`\``;
 
+  const pgDialectSection = dbType === 'postgresql'
+    ? `## PostgreSQL 方言注意
+- json 与 jsonb 是两种不同类型，函数族不通用：json 列用 json_typeof / json_each / json_extract_path；jsonb 列用 jsonb_ 系列
+- 严禁对 json 列直接调用 jsonb_typeof / jsonb_contains 等函数（会报 function jsonb_typeof(json) does not exist）；确需使用时必须显式转换 col::jsonb
+- 编写涉及 JSON 列的 SQL 前，先通过 get_schema 确认列的实际类型（json 还是 jsonb）
+
+`
+    : '';
+
   return `你是一个专业的数据库 Agent，可以自主调用工具来执行 SQL，帮助用户完成数据库任务。
 
 ## 当前环境
@@ -73,7 +84,7 @@ ${schemaInfo}
 ## 当前权限级别
 ${permissionDesc[permissionLevel]}
 
-${toolsSection}
+${pgDialectSection}${toolsSection}
 
 ## 安全规则（必须严格遵守）
 1. **严禁捏造**：必须严格基于上方提供的真实数据库结构编写 SQL，严禁使用不存在的表名或字段名
@@ -113,7 +124,7 @@ export function formatToolResult(
   result: { success: boolean; columns?: string[]; data?: any[]; affectedRows?: number; error?: string; truncated?: boolean; executionTime?: number }
 ): string {
   if (!result.success) {
-    return `工具 ${tool} 执行失败：${result.error || '未知错误'}`;
+    return `工具 ${tool} 执行失败：${friendlyDbError(result.error || '未知错误')}`;
   }
 
   if (tool === 'list_tables') {

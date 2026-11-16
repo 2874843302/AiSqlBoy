@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react'
 import { Database, Table, Layout, Settings, Loader2, Key, ArrowUp, ArrowDown, Filter } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { ConnectionConfig, ConnectionPackagePreview } from '../shared/types'
+import { ConnectionConfig, ConnectionPackagePreview, QueryResultSet } from '../shared/types'
 import {
   AI_VERSION_OPTIONS,
   defaultModelForVendor,
@@ -239,6 +239,7 @@ const App: React.FC = () => {
     filterPopoverPos, setFilterPopoverPos,
     skipFilterReloadRef,
     tableColumnWidths,
+    autoColumnWidths,
     resultColumnWidths,
     resizingColumn,
     editingCells, setEditingCells,
@@ -1069,11 +1070,13 @@ const App: React.FC = () => {
       const endTime = Date.now();
       const duration = endTime - startTime;
 
-      if (res.success) {
-        let processedData = res.data;
+      const sets: QueryResultSet[] = res.results?.length ? res.results : [];
+      const firstFailed = sets.find((s) => !s.success);
+      const primary = sets[0];
 
-        // 移除旧的强制截断逻辑，改用主进程返回的 hasMore 状态
-        if (res.isAutoLimited && res.hasMore) {
+      if (sets.length > 0) {
+        // 单条与多条统一存成结果集列表；只有长度 > 1 时界面才显示切换条
+        if (primary?.isAutoLimited && primary.hasMore) {
           setToast({
             message: `已自动加载前 10,000 条数据。如果需要查看更多，请手动添加 LIMIT 或点击下方按钮。`,
             type: 'info'
@@ -1082,18 +1085,34 @@ const App: React.FC = () => {
 
         setConsoles(prev => prev.map(c => c.id === id ? {
           ...c,
-          results: processedData,
-          columns: res.columns,
+          resultSets: sets,
+          activeResultIndex: 0,
+          results: primary?.success ? (primary.data || []) : [],
+          columns: primary?.columns,
           executing: false,
           currentPage: 1,
           executionTime: duration,
-          hasMore: res.hasMore,
-          isAutoLimited: res.isAutoLimited,
-          totalCount: res.totalCount
+          hasMore: primary?.hasMore,
+          isAutoLimited: primary?.isAutoLimited,
+          totalCount: primary?.totalCount,
+          error: firstFailed ? firstFailed.error : undefined
         } : c));
 
+        if (firstFailed) {
+          const failedIndex = sets.indexOf(firstFailed) + 1;
+          const skipped = res.skippedCount ? `，后续 ${res.skippedCount} 条未执行` : '';
+          setToast({
+            message: sets.length > 1
+              ? `第 ${failedIndex} 条语句失败：${firstFailed.error}${skipped}`
+              : (firstFailed.error || 'SQL 执行失败'),
+            type: 'error'
+          });
+        } else if (sets.length > 1) {
+          setToast({ message: `已执行 ${sets.length} 条语句`, type: 'success' });
+        }
+
         // 如果执行的是创建/删除数据库语句，刷新数据库列表
-        const upperSql = consoleTab.sql.trim().toUpperCase();
+        const upperSql = consoleTab.sql.toUpperCase();
         if (upperSql.includes('CREATE DATABASE') || upperSql.includes('DROP DATABASE')) {
           await loadDatabases();
         }
@@ -1108,6 +1127,27 @@ const App: React.FC = () => {
       setToast({ message: err.message, type: 'error' });
     }
   }
+
+  // 多结果集切换：把选中的那条镜像到 results/columns，
+  // 这样渲染层、导出、AI 联动都不用感知「多结果」这层结构
+  const handleSelectResultSet = (id: string, index: number) => {
+    setConsoles(prev => prev.map(c => {
+      if (c.id !== id) return c;
+      const set = c.resultSets?.[index];
+      if (!set) return c;
+      return {
+        ...c,
+        activeResultIndex: index,
+        results: set.success ? (set.data || []) : [],
+        columns: set.columns,
+        hasMore: set.hasMore,
+        isAutoLimited: set.isAutoLimited,
+        totalCount: set.totalCount,
+        error: set.success ? undefined : set.error,
+        currentPage: 1
+      };
+    }));
+  };
 
   const handleExportDB = async (includeData: boolean) => {
     if (activeConnection?.type === 'redis') {
@@ -2042,6 +2082,7 @@ ${JSON.stringify(payload)}
                 startColumnResize={startColumnResize}
                 TABLE_COL_MAX_WIDTH={TABLE_COL_MAX_WIDTH}
                 tableColumnWidths={tableColumnWidths}
+                autoColumnWidths={autoColumnWidths}
                 tableContainerRef={tableContainerRef}
                 tableExecutionTime={tableExecutionTime}
                 tableInspector={tableInspector}
@@ -2071,6 +2112,7 @@ ${JSON.stringify(payload)}
                 handleContainerScroll={handleContainerScroll}
                 handleEditorKeyDown={handleEditorKeyDown}
                 handleExecuteSQL={handleExecuteSQL}
+                onSelectResultSet={handleSelectResultSet}
                 handleFormatSQL={handleFormatSQL}
                 handleLoadMore={handleLoadMore}
                 handleOpenAIModal={handleOpenAIModal}

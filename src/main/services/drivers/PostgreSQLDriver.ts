@@ -52,33 +52,49 @@ export class PostgreSQLDriver implements IDatabaseDriver {
 
   async getTableColumns(tableName: string): Promise<ColumnInfo[]> {
     if (!this.client) throw new Error('Not connected');
+    // 刻意不用 information_schema.columns：它会按当前用户的列权限过滤，
+    // 而 getTables/getTableIndexes 走 pg_catalog 不做过滤，
+    // 两者不一致会出现「表能列出来、结构查不到」的假象。
+    // 一并把主键判断做进同一查询（EXISTS），避免再依赖 search_path 解析 regclass。
     const res = await this.client.query(`
-      SELECT 
-        column_name as name, 
-        data_type as type, 
-        is_nullable as nullable, 
-        column_default as "defaultValue",
-        col_description((quote_ident(table_schema) || '.' || quote_ident(table_name))::regclass::oid, ordinal_position) as comment
-      FROM information_schema.columns 
-      WHERE table_name = $1
+      WITH target AS (
+        SELECT c.oid
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relname = $1
+          AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+          AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        ORDER BY (n.nspname = current_schema()) DESC, n.nspname
+        LIMIT 1
+      )
+      SELECT
+        a.attname AS name,
+        format_type(a.atttypid, a.atttypmod) AS type,
+        NOT a.attnotnull AS nullable,
+        pg_get_expr(d.adbin, d.adrelid) AS "defaultValue",
+        col_description(a.attrelid, a.attnum) AS comment,
+        EXISTS (
+          SELECT 1 FROM pg_index i
+          WHERE i.indrelid = a.attrelid
+            AND i.indisprimary
+            AND a.attnum = ANY (i.indkey)
+        ) AS "primaryKey"
+      FROM pg_attribute a
+      CROSS JOIN target t
+      LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+      WHERE a.attrelid = t.oid
+        AND a.attnum > 0
+        AND NOT a.attisdropped
+      ORDER BY a.attnum
     `, [tableName]);
 
-    // 获取主键信息
-    const pkRes = await this.client.query(`
-      SELECT a.attname
-      FROM pg_index i
-      JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
-      WHERE i.indrelid = $1::regclass AND i.indisprimary;
-    `, [tableName]);
-    const pks = new Set(pkRes.rows.map(r => r.attname));
-
-    return res.rows.map(row => ({
+    return res.rows.map((row: any) => ({
       name: row.name,
       type: row.type,
-      nullable: row.nullable === 'YES',
-      primaryKey: pks.has(row.name),
+      nullable: !!row.nullable,
+      primaryKey: !!row.primaryKey,
       defaultValue: row.defaultValue,
-      autoIncrement: row.defaultValue?.includes('nextval'),
+      autoIncrement: typeof row.defaultValue === 'string' && row.defaultValue.includes('nextval'),
       comment: row.comment || ''
     }));
   }
@@ -100,7 +116,7 @@ export class PostgreSQLDriver implements IDatabaseDriver {
         AND i.oid = ix.indexrelid
         AND a.attrelid = t.oid
         AND a.attnum = ANY(ix.indkey)
-        AND t.relkind = 'r'
+        AND t.relkind IN ('r', 'p')
         AND t.relname = $1
     `, [tableName]);
 

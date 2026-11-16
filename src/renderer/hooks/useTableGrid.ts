@@ -12,6 +12,85 @@ export interface DensityMetrics {
   fontPx: number;
 }
 
+/**
+ * 表格正文字体栈：必须与 index.css 的 --font-sans 保持一致，
+ * 否则 canvas 测出的宽度与实际渲染不符，列宽会偏窄或偏宽。
+ */
+const TABLE_FONT_STACK = "'Inter', 'NotionInter', 'PingFang SC', 'Microsoft YaHei', sans-serif";
+
+/** 表头除文字外还要放类型标签、排序箭头与筛选按钮，预留固定空间 */
+const HEADER_EXTRA_WIDTH = 36;
+
+/** 稳定的空宽度表：避免未命中时每次渲染都产生新对象引用 */
+const EMPTY_COLUMN_WIDTHS: Record<string, number> = {};
+
+/** 列宽上下限：主数据表与查询结果表共用 */
+export const TABLE_COL_MIN_WIDTH = 120;
+export const TABLE_COL_MAX_WIDTH = 420;
+
+/**
+ * 测量前先截断：超过上限宽度的文本一律会被钳到 TABLE_COL_MAX_WIDTH，
+ * 再往后测没有意义。200 个字符最宽也就 2800px，远超 420 上限，
+ * 足以判定"该列已到顶"，同时避免 metrics 对超大 JSON 做无谓的测量。
+ */
+const MEASURE_CLIP_CHARS = 200;
+
+/** 把单元格原始值转成表格里实际显示的文本（用于宽度测量） */
+function toCellText(value: any): string {
+  if (value === null || value === undefined) return 'NULL';
+
+  let text: string;
+  if (typeof value === 'object') {
+    try {
+      text = JSON.stringify(value);
+    } catch {
+      text = String(value);
+    }
+  } else {
+    text = String(value);
+  }
+
+  if (!text) return '';
+  return text.length > MEASURE_CLIP_CHARS ? text.slice(0, MEASURE_CLIP_CHARS) : text;
+}
+
+/**
+ * 按「每列所有行中最长的那个值」算出固定列宽。
+ * 用 canvas 测量而非 DOM，这样虚拟滚动只渲染部分行时也能拿到全量数据的宽度。
+ */
+export function computeColumnWidths(
+  columns: any[],
+  rows: any[],
+  metrics: DensityMetrics,
+  minWidth: number,
+  maxWidth: number
+): Record<string, number> {
+  if (!columns.length) return {};
+
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return {};
+
+  ctx.font = `${metrics.fontPx}px ${TABLE_FONT_STACK}`;
+
+  const widths: Record<string, number> = {};
+  for (const col of columns) {
+    let widest = ctx.measureText(String(col.name ?? '')).width;
+
+    for (const row of rows) {
+      const text = toCellText(row?.[col.name]);
+      if (!text) continue;
+      const width = ctx.measureText(text).width;
+      if (width > widest) widest = width;
+    }
+
+    const padded = Math.ceil(widest) + metrics.padX * 2 + HEADER_EXTRA_WIDTH;
+    widths[col.name] = Math.max(minWidth, Math.min(maxWidth, padded));
+  }
+
+  return widths;
+}
+
 export const densityMetrics = (d: number): DensityMetrics => {
   const t = Math.min(1, Math.max(0, d / 100));
   const fontPx = Math.round(11 + 3 * t); // 11..14
@@ -124,8 +203,47 @@ export const useTableGrid = ({
   const [resultsViewportHeight, setResultsViewportHeight] = useState(0);
   const [showScrollButtons, setShowScrollButtons] = useState(false);
   const [showResultsScrollButtons, setShowResultsScrollButtons] = useState(false);
-  const TABLE_COL_MIN_WIDTH = 120;
-  const TABLE_COL_MAX_WIDTH = 420;
+  // ── 自适应列宽（冻结）──────────────────────────────────────────
+  // 首次拿到数据时按「每列最长的值」算一次固定像素宽度，之后翻页/排序/筛选
+  // 都不再重算，避免列宽随数据跳动；只有切表、列变化或调密度才重新测量。
+  //
+  // 用「key + 宽度」一起存状态：key 不匹配时立即返回空（回退到浏览器自动布局），
+  // 这样切表瞬间不会短暂沿用上一张表的列宽，也不需要额外的清空副作用。
+  const dataSnapshotRef = useRef<any[]>(data);
+  dataSnapshotRef.current = data;
+
+  const columnSignature = useMemo(
+    () => (columns || []).map((c: any) => c.name).join('|'),
+    [columns]
+  );
+  const dataLength = data?.length ?? 0;
+
+  const autoWidthKey = useMemo(
+    () => `${selectedTable ?? ''}|${columnSignature}|${gridMetrics.fontPx}|${gridMetrics.padX}`,
+    [selectedTable, columnSignature, gridMetrics]
+  );
+
+  const [autoWidthState, setAutoWidthState] = useState<{
+    key: string;
+    widths: Record<string, number>;
+  }>({ key: '', widths: EMPTY_COLUMN_WIDTHS });
+
+  useEffect(() => {
+    if (autoWidthState.key === autoWidthKey) return;
+
+    const rows = dataSnapshotRef.current;
+    // 等首批数据到齐再测量，避免按空表算出全是下限宽度的结果
+    if (!columns?.length || !rows?.length) return;
+
+    setAutoWidthState({
+      key: autoWidthKey,
+      widths: computeColumnWidths(columns, rows, gridMetrics, TABLE_COL_MIN_WIDTH, TABLE_COL_MAX_WIDTH)
+    });
+  }, [autoWidthKey, autoWidthState.key, columns, dataLength, gridMetrics]);
+
+  const autoColumnWidths =
+    autoWidthState.key === autoWidthKey ? autoWidthState.widths : EMPTY_COLUMN_WIDTHS;
+
   const tableScrollRafRef = useRef<number | null>(null);
   const resultsScrollRafRef = useRef<number | null>(null);
   const pendingTableScrollTopRef = useRef(0);
@@ -798,6 +916,7 @@ export const useTableGrid = ({
     skipFilterReloadRef,
     tableColumnWidths,
     setTableColumnWidths,
+    autoColumnWidths,
     resultColumnWidths,
     setResultColumnWidths,
     resizingColumn,

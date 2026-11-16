@@ -235,6 +235,54 @@ export function isAllowed(
 }
 
 /**
+ * 按分号拆分多条语句，跳过字符串字面量、标识符引用与注释里的分号。
+ *
+ * 不处理两类无法安全拆分的脚本，遇到时整体返回一条，交由驱动自行执行：
+ * - MySQL 的 DELIMITER 指令（自定义语句分隔符，常见于存储过程）
+ * - 以 BEGIN / DECLARE 开头的 PL/SQL 或存储过程块（内部含有分号）
+ */
+export function splitSqlStatements(sql: string): string[] {
+  const trimmedInput = sql.trim();
+  if (!trimmedInput) return [];
+
+  const masked = maskSqlNoise(trimmedInput);
+  const head = masked.replace(/^\s+/, '').toUpperCase();
+  if (/^DELIMITER\b/.test(head) || /^(BEGIN|DECLARE)\b/.test(head) || /\bDELIMITER\b/i.test(masked)) {
+    return [trimmedInput];
+  }
+
+  const statements: string[] = [];
+  let start = 0;
+
+  for (let i = 0; i < masked.length; i += 1) {
+    if (masked[i] !== ';') continue;
+    const piece = trimmedInput.slice(start, i).trim();
+    if (piece) statements.push(piece);
+    start = i + 1;
+  }
+
+  const tail = trimmedInput.slice(start).trim();
+  if (tail) statements.push(tail);
+
+  return statements;
+}
+
+/**
+ * 为常见数据库报错附加友好修复建议（不改变原错误，仅追加提示）
+ */
+export function friendlyDbError(msg: string): string {
+  const raw = String(msg || '');
+  const hints: string[] = [];
+  if (/function jsonb_\w+\(json\)/.test(raw)) {
+    hints.push('该列为 json 类型而非 jsonb：请改用 json_ 系列函数（如 json_typeof），或显式转换 col::jsonb');
+  }
+  if (/function json_\w+\(jsonb\)/.test(raw)) {
+    hints.push('该列为 jsonb 类型而非 json：请改用 jsonb_ 系列函数，或显式转换 col::json');
+  }
+  return hints.length > 0 ? `${raw}（提示：${hints.join('；')}）` : raw;
+}
+
+/**
  * 检测 SQL 是否越过授权库边界（限库连接包专用）。
  * 拦截项：
  * - USE 切换到白名单以外的库（白名单内互切放行）

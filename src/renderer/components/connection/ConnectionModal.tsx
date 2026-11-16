@@ -2,6 +2,7 @@ import React from 'react';
 import { motion } from 'framer-motion';
 import { X, PackagePlus } from 'lucide-react';
 import { ConnectionConfig } from '../../../shared/types';
+import { Modal } from '../../ui';
 
 type ConnectionModalProps = {
   config: ConnectionConfig;
@@ -13,20 +14,7 @@ type ConnectionModalProps = {
 
 const ConnectionModal: React.FC<ConnectionModalProps> = ({ config, onChange, onClose, onSave, onExportPackage }) => {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        onClick={onClose}
-        className="absolute inset-0 bg-slate-900/20"
-      />
-      <motion.div
-        initial={{ scale: 0.9, opacity: 0, y: 20 }}
-        animate={{ scale: 1, opacity: 1, y: 0 }}
-        exit={{ scale: 0.9, opacity: 0, y: 20 }}
-        className="bg-white border border-slate-200 rounded-[32px] shadow-2xl w-[480px] overflow-hidden z-10"
-      >
+    <Modal onClose={onClose} zIndex={50} width="w-[480px]" ariaLabel="数据库连接">
         <div className="px-8 py-6 border-b border-slate-100 flex justify-between items-center bg-gradient-to-b from-slate-50 to-transparent">
           <div>
             <h3 className="font-bold text-xl text-slate-900 tracking-tight">新建连接</h3>
@@ -227,8 +215,7 @@ const ConnectionModal: React.FC<ConnectionModalProps> = ({ config, onChange, onC
             保存连接
           </motion.button>
         </div>
-      </motion.div>
-    </div>
+    </Modal>
   );
 };
 

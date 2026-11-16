@@ -14,7 +14,7 @@ import { DEFAULT_UI_FONT_STACK, type ThemeMode } from '../components/settings/Se
 
 export const useSettings = () => {
   const [showSettings, setShowSettings] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'ai' | 'ui' | 'update'>('ai');
+  const [settingsTab, setSettingsTab] = useState<'ai' | 'ui' | 'mcp' | 'update'>('ai');
   const [apiKey, setApiKey] = useState('');
   const [showApiKeyPlain, setShowApiKeyPlain] = useState(false);
   const [providerVendor, setProviderVendor] = useState<AiVendorId>('deepseek');

@@ -43,3 +43,21 @@ export interface IndexInfo {
   type?: string; // e.g., BTREE, HASH (mostly for MySQL)
 }
 
+/** 单条语句的执行结果（多语句执行时按顺序返回数组） */
+export interface QueryResultSet {
+  /** 该条语句的原始 SQL */
+  sql: string;
+  success: boolean;
+  columns?: string[];
+  data?: any[];
+  affectedRows?: number;
+  error?: string;
+  /** 该条语句耗时（毫秒） */
+  durationMs: number;
+  /** 是否还有更多数据（自动 LIMIT 探测时） */
+  hasMore?: boolean;
+  /** 是否被自动追加了行数上限 */
+  isAutoLimited?: boolean;
+  totalCount?: number;
+}
+

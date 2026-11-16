@@ -2,13 +2,16 @@ import { app, BrowserWindow, ipcMain, dialog } from 'electron'
 import { join } from 'path'
 import { autoUpdater } from 'electron-updater'
 import { internalDB } from './services/internalDB'
-import { SQLiteDriver, MySQLDriver, PostgreSQLDriver, OracleDriver, RedisDriver, IDatabaseDriver } from './services/drivers'
+import { createDriver, IDatabaseDriver } from './services/drivers'
+import { startMcpServer, stopMcpServer, getMcpStatus } from './mcp/rpcServer'
+import { MCP_SETTING_KEYS } from '../shared/mcpSettings'
 import { aiService } from './services/aiService'
 import { agentService, sanitizeAgentMessagesForStorage } from './services/agentService'
 import fs from 'fs'
 import crypto from 'crypto'
-import { ConnectionConfig, ConnectionPackagePreview } from '../shared/types'
-import { classifySql, hasMultipleStatements, stripSqlNoise, checkAllowedDatabaseSql } from '../shared/sqlSecurity'
+import { ConnectionConfig, ConnectionPackagePreview, QueryResultSet } from '../shared/types'
+import { classifySql, hasMultipleStatements, stripSqlNoise, checkAllowedDatabaseSql, friendlyDbError, splitSqlStatements, ensureSelectLimit } from '../shared/sqlSecurity'
+import { mapConnectError } from '../shared/dbErrors'
 import { encryptConnectionPackage, decryptConnectionPackage } from './services/connectionPackage'
 
 // 配置自动更新
@@ -20,6 +23,7 @@ let currentDriver: IDatabaseDriver | null = null
 let heartbeatTimer: NodeJS.Timeout | null = null
 let currentReadOnly = false // 当前连接是否只读模式
 let currentAllowedDatabases: string[] | null = null // 限库连接包授权访问的数据库白名单（null 表示不限）
+let currentDbType = '' // 当前连接类型，供 SQL 方言相关处理（如自动 LIMIT 语法）使用
 
 // 连接包导入暂存：解密后的完整配置仅存于主进程内存，token 一次性、5 分钟过期
 const pendingImports = new Map<string, { config: ConnectionConfig; expireAt: number }>()
@@ -32,50 +36,6 @@ function checkReadOnlySql(sql: string): string | null {
   if (/\bINTO\s+(OUTFILE|DUMPFILE)\b/i.test(stripSqlNoise(sql))) return '只读模式下禁止 SELECT INTO OUTFILE/DUMPFILE'
   if (classifySql(sql) !== 'SELECT') return READONLY_DENY + '（仅允许查询）'
   return null
-}
-
-function createDriver(config: ConnectionConfig): IDatabaseDriver {
-  if (config.type === 'sqlite') {
-    return new SQLiteDriver(config)
-  }
-  if (config.type === 'mysql') {
-    return new MySQLDriver(config)
-  }
-  if (config.type === 'postgresql') {
-    return new PostgreSQLDriver(config)
-  }
-  if (config.type === 'oracle') {
-    return new OracleDriver(config)
-  }
-  if (config.type === 'redis') {
-    return new RedisDriver(config)
-  }
-  throw new Error('Unsupported database type')
-}
-
-function mapConnectError(error: any, config: ConnectionConfig): string {
-  const message = String(error?.message || '')
-  const dbName = (config.database || '').trim()
-
-  if (config.type === 'mysql') {
-    if (error?.code === 'ER_BAD_DB_ERROR' || /unknown database/i.test(message)) {
-      return dbName ? `数据库不存在：${dbName}` : '数据库不存在，请检查数据库名称'
-    }
-  }
-
-  if (config.type === 'postgresql') {
-    if (error?.code === '3D000' || /database .* does not exist/i.test(message)) {
-      return dbName ? `数据库不存在：${dbName}` : '数据库不存在，请检查数据库名称'
-    }
-  }
-
-  if (config.type === 'oracle') {
-    if (/ORA-12514|ORA-12154/i.test(message)) {
-      return dbName ? `Oracle 服务名不存在：${dbName}` : 'Oracle 服务名不存在，请检查 Service Name'
-    }
-  }
-
-  return message || '连接失败'
 }
 
 function startHeartbeat() {
@@ -139,6 +99,18 @@ app.whenReady().then(() => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
 
+  // 按设置启动本地 MCP 服务（外部 MCP 客户端通过 stdio 桥访问本机连接）
+  void (async () => {
+    try {
+      const enabled = await internalDB.getSetting(MCP_SETTING_KEYS.enabled)
+      if (enabled === 'true') {
+        await startMcpServer()
+      }
+    } catch (error) {
+      console.error('[mcp] 服务启动失败：', error)
+    }
+  })()
+
   // 自动检查更新逻辑
   autoUpdater.on('checking-for-update', () => {
     mainWindow?.webContents.send('update-message', '正在检查更新...')
@@ -165,6 +137,11 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
+})
+
+// 退出前关闭 MCP 服务与连接池，并清理端点文件
+app.on('before-quit', () => {
+  void stopMcpServer()
 })
 
 // 自动更新 IPC 处理器
@@ -353,6 +330,7 @@ ipcMain.handle('connect-db', async (_, config: ConnectionConfig) => {
     await currentDriver.connect()
     currentReadOnly = !!config.readOnly
     currentAllowedDatabases = config.allowedDatabases && config.allowedDatabases.length > 0 ? config.allowedDatabases : null
+    currentDbType = config.type
     agentService.setDriver(currentDriver, config.id, currentAllowedDatabases)
     startHeartbeat()
     return { success: true }
@@ -360,6 +338,7 @@ ipcMain.handle('connect-db', async (_, config: ConnectionConfig) => {
     currentDriver = null
     currentReadOnly = false
     currentAllowedDatabases = null
+    currentDbType = ''
     agentService.setDriver(null)
     stopHeartbeat()
     return { success: false, error: mapConnectError(error, config) }
@@ -508,55 +487,90 @@ ipcMain.handle('delete-database', async (_, dbName: string) => {
   }
 })
 
-ipcMain.handle('execute-query', async (_, sql: string) => {
-  if (!currentDriver) return { success: false, error: 'Not connected' }
-  if (currentReadOnly) {
-    const denyReason = checkReadOnlySql(sql)
-    if (denyReason) return { success: false, error: denyReason }
-  }
-  // 限库连接包：拦截白名单外的 USE/跨库引用等越库操作
-  if (currentAllowedDatabases) {
-    const dbDenyReason = checkAllowedDatabaseSql(sql, currentAllowedDatabases)
-    if (dbDenyReason) return { success: false, error: dbDenyReason }
-  }
-  try {
-    // 这里的 MAX_ROWS 是为了防止单次 IPC 传输过载
-    // 我们应该鼓励用户使用分页，而不是一次性拉取所有数据
-    const MAX_ROWS_PER_FETCH = 10000;
-    
-    // 简单的正则表达式检查是否已经有 LIMIT
-    const hasLimit = /\blimit\b\s+\d+/i.test(sql);
-    let executionSql = sql;
-    
-    // 如果是 SELECT 语句且没有 LIMIT，我们自动加上 LIMIT 以保护性能
-    // 但我们会告知用户这一点
-    const isSelect = sql.trim().toUpperCase().startsWith('SELECT');
-    let autoLimited = false;
-    
-    if (isSelect && !hasLimit) {
-      // 这里的 10001 是为了判断是否还有更多数据
-      executionSql = `${sql.trim().replace(/;$/, '')} LIMIT ${MAX_ROWS_PER_FETCH + 1}`;
-      autoLimited = true;
-    }
+const MAX_ROWS_PER_FETCH = 10000
 
-    const result = await currentDriver.executeQuery(executionSql);
-    
+/**
+ * 执行单条语句并归一化结果。
+ * 抽出来是因为多语句执行需要逐条跑、逐条记录成功状态与耗时。
+ * 自动行数上限走 ensureSelectLimit，按方言生成 LIMIT / FETCH FIRST
+ * （此前硬编码 LIMIT，Oracle 执行 SELECT 会直接语法报错）。
+ */
+async function runSingleStatement(driver: IDatabaseDriver, sql: string, dbType: string) {
+  const startedAt = Date.now();
+  const limited = ensureSelectLimit(sql, MAX_ROWS_PER_FETCH + 1, dbType);
+  const autoLimited = limited.modified;
+
+  try {
+    const result = await driver.executeQuery(limited.sql);
     let hasMore = false;
     if (autoLimited && result.data && result.data.length > MAX_ROWS_PER_FETCH) {
       result.data = result.data.slice(0, MAX_ROWS_PER_FETCH);
       hasMore = true;
     }
-    
-    return { 
-      success: true, 
-      ...result, 
-      hasMore, 
+    return {
+      sql,
+      success: true as const,
+      ...result,
+      hasMore,
+      isAutoLimited: autoLimited,
       totalCount: result.data ? result.data.length : 0,
-      isAutoLimited: autoLimited
-    }
+      durationMs: Date.now() - startedAt
+    };
   } catch (error: any) {
-    return { success: false, error: error.message }
+    return {
+      sql,
+      success: false as const,
+      error: friendlyDbError(error?.message || '未知错误'),
+      durationMs: Date.now() - startedAt
+    };
   }
+}
+
+ipcMain.handle('execute-query', async (_, sql: string) => {
+  if (!currentDriver) return { success: false, error: 'Not connected' };
+
+  // 捕获引用：多语句执行期间用户可能切换连接，不能让后半程跑到另一个库上
+  const driver = currentDriver;
+  const dbType = currentDbType;
+
+  const statements = splitSqlStatements(sql);
+  if (!statements.length) return { success: false, error: '没有可执行的 SQL' };
+
+  const results: QueryResultSet[] = [];
+
+  for (const statement of statements) {
+    // 只读 / 限库守卫逐条校验：命中即停，后续语句不再执行
+    if (currentReadOnly) {
+      const denyReason = checkReadOnlySql(statement);
+      if (denyReason) {
+        results.push({ sql: statement, success: false, error: denyReason, durationMs: 0 });
+        break;
+      }
+    }
+    if (currentAllowedDatabases) {
+      const dbDenyReason = checkAllowedDatabaseSql(statement, currentAllowedDatabases);
+      if (dbDenyReason) {
+        results.push({ sql: statement, success: false, error: dbDenyReason, durationMs: 0 });
+        break;
+      }
+    }
+
+    const single = await runSingleStatement(driver, statement, dbType);
+    results.push(single);
+
+    // 遇错即停：避免在错误状态下继续执行后续语句，造成部分应用
+    if (!single.success) break;
+  }
+
+  const last = results[results.length - 1];
+
+  // 顶层字段保留最后一条的结果，兼容既有调用方；results 供多结果集展示
+  return {
+    ...last,
+    success: results.every((r) => r.success),
+    results,
+    skippedCount: Math.max(0, statements.length - results.length)
+  };
 })
 
 // AI & Settings IPC
@@ -575,6 +589,64 @@ ipcMain.handle('save-setting', async (_, key: string, value: string) => {
 
 ipcMain.handle('get-setting', async (_, key: string) => {
   return internalDB.getSetting(key)
+})
+
+// ============================================================
+//  MCP 服务（对外提供本地 MCP 能力）
+// ============================================================
+
+ipcMain.handle('mcp:get-status', async () => {
+  const allowWrite = (await internalDB.getSetting(MCP_SETTING_KEYS.allowWrite)) === 'true'
+  return { ...getMcpStatus(), allowWrite }
+})
+
+ipcMain.handle('mcp:set-enabled', async (_, enabled: boolean) => {
+  try {
+    await internalDB.saveSetting(MCP_SETTING_KEYS.enabled, enabled ? 'true' : 'false')
+    if (enabled) {
+      await startMcpServer()
+    } else {
+      await stopMcpServer()
+    }
+    const allowWrite = (await internalDB.getSetting(MCP_SETTING_KEYS.allowWrite)) === 'true'
+    return { success: true, ...getMcpStatus(), allowWrite }
+  } catch (error: any) {
+    return { success: false, error: error.message, ...getMcpStatus() }
+  }
+})
+
+ipcMain.handle('mcp:set-allow-write', async (_, enabled: boolean) => {
+  await internalDB.saveSetting(MCP_SETTING_KEYS.allowWrite, enabled ? 'true' : 'false')
+  const allowWrite = (await internalDB.getSetting(MCP_SETTING_KEYS.allowWrite)) === 'true'
+  return { success: true, allowWrite }
+})
+
+/**
+ * 给出可直接粘贴的客户端配置。
+ *
+ * 桥进程路径必须由主进程算：开发态在仓库 packages/ 下，
+ * 打包后由 extraResources 复制到 resources/mcp-server。
+ *
+ * 运行时用应用自带的 Electron 可执行文件（ELECTRON_RUN_AS_NODE=1），
+ * 这样客户端机器不需要预装 Node。桥只用 fetch + fs，不触碰 native 模块，
+ * 在 Node 模式下运行完全没问题。
+ */
+ipcMain.handle('mcp:get-client-config', () => {
+  const bridgePath = app.isPackaged
+    ? join(process.resourcesPath, 'mcp-server', 'index.mjs')
+    : join(__dirname, '../../packages/mcp-server/index.mjs')
+
+  const config = {
+    mcpServers: {
+      aisqlboy: {
+        command: process.execPath,
+        args: [bridgePath],
+        env: { ELECTRON_RUN_AS_NODE: '1' },
+      },
+    },
+  }
+
+  return { bridgePath, config: JSON.stringify(config, null, 2) }
 })
 
 // Native Dialog IPC

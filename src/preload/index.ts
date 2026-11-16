@@ -44,6 +44,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     saveSetting: (key: string, value: string) => ipcRenderer.invoke('save-setting', key, value),
     getSetting: (key: string) => ipcRenderer.invoke('get-setting', key),
 
+    // MCP 服务
+    mcpGetStatus: () => ipcRenderer.invoke('mcp:get-status'),
+    mcpSetEnabled: (enabled: boolean) => ipcRenderer.invoke('mcp:set-enabled', enabled),
+    mcpSetAllowWrite: (enabled: boolean) => ipcRenderer.invoke('mcp:set-allow-write', enabled),
+    mcpGetClientConfig: () => ipcRenderer.invoke('mcp:get-client-config'),
+
     // Agent
     agentCreateSession: (params: { connectionId: number; dbType: string; dbName: string; permissionLevel: 'readonly' | 'write-confirm' | 'full-control' }) =>
         ipcRenderer.invoke('agent:create-session', params),

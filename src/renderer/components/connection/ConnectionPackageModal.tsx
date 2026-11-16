@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { X, Lock, PackageOpen, PackagePlus, Database, Check } from 'lucide-react';
 import type { ConnectionPackagePreview } from '../../../shared/types';
+import { Modal } from '../../ui';
 
 type ConnectionPackageModalProps = {
   mode: 'export' | 'import';
@@ -107,21 +108,7 @@ const ConnectionPackageModal: React.FC<ConnectionPackageModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-[110] flex items-center justify-center p-6">
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        onClick={onClose}
-        className="absolute inset-0 bg-slate-900/20"
-      />
-      <motion.div
-        initial={{ scale: 0.9, opacity: 0, y: 20 }}
-        animate={{ scale: 1, opacity: 1, y: 0 }}
-        exit={{ scale: 0.9, opacity: 0, y: 20 }}
-        onKeyDown={handleKeyDown}
-        className="bg-white border border-slate-200 rounded-[32px] shadow-2xl w-[440px] overflow-hidden z-10"
-      >
+    <Modal onClose={onClose} zIndex={110} width="w-[440px]" ariaLabel="连接包" onKeyDown={handleKeyDown}>
         <div className="px-8 py-6 border-b border-slate-100 flex justify-between items-center bg-gradient-to-b from-amber-50/60 to-transparent">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 flex items-center justify-center rounded-2xl bg-amber-100 text-amber-600">
@@ -364,8 +351,7 @@ const ConnectionPackageModal: React.FC<ConnectionPackageModalProps> = ({
             </motion.button>
           </div>
         </div>
-      </motion.div>
-    </div>
+    </Modal>
   );
 };
 

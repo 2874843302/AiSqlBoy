@@ -5,6 +5,7 @@ import { Database, Table, Play, Plus, Trash2, X, Server, HardDrive, RefreshCw, C
 import { getTimeInputType, isBooleanType, formatTimeForInput, sanitizeDisplayText, formatRedisValue } from '../../utils/valueFormat';
 import { isJsonLike, escapeRegExp, formatJson, renderJsonSyntax } from '../../utils/jsonText';
 import { highlightSqlForDisplay } from '../../utils/sqlText';
+import { Select } from '../../ui';
 
 /** 表头类型简写：去掉冗长后缀（完整类型仍在悬浮 title 中展示） */
 const shortType = (t: string): string =>
@@ -74,6 +75,7 @@ const TableView: React.FC<Record<string, any>> = (props) => {
     sortConfig,
     startColumnResize,
     TABLE_COL_MAX_WIDTH,
+    autoColumnWidths,
     tableColumnWidths,
     tableContainerRef,
     tableExecutionTime,
@@ -93,6 +95,23 @@ const TableView: React.FC<Record<string, any>> = (props) => {
     paddingLeft: gridMetrics.padX,
     paddingRight: gridMetrics.padX
   };
+
+  // 列宽：手动拖拽优先，其次是按「该列最长值」算好后冻结的自适应宽度
+  const resolveColumnWidth = (name: string): number | undefined =>
+    tableColumnWidths[name] ?? autoColumnWidths?.[name];
+
+  const columnWidthStyle = (name: string): React.CSSProperties => {
+    const width = resolveColumnWidth(name);
+    return width
+      ? { width, minWidth: width, maxWidth: width }
+      : { maxWidth: TABLE_COL_MAX_WIDTH };
+  };
+
+  // 只有拿到固定列宽后才切到 fixed 布局，否则 fixed 会把所有列平均分配
+  const hasFixedColumnWidths =
+    Object.keys(tableColumnWidths || {}).length > 0 ||
+    Object.keys(autoColumnWidths || {}).length > 0;
+
   return (
               <div
                 key={selectedTable}
@@ -147,11 +166,14 @@ const TableView: React.FC<Record<string, any>> = (props) => {
                       ref={tableContainerRef}
                       onScroll={(e) => handleContainerScroll(e, 'table')}
                     >
-                      <table className="w-full border-collapse">
+                      <table
+                        className="w-full border-collapse"
+                        style={hasFixedColumnWidths ? { tableLayout: 'fixed' } : undefined}
+                      >
                       <thead>
                         <tr className="bg-slate-50/50 border-b border-slate-100">
                           {columns.map((col) => {
-                            const colWidth = tableColumnWidths[col.name];
+                            const colWidth = resolveColumnWidth(col.name);
                             const filterVal = columnFilters[col.name] || '';
                             const isFilterActive = !!filterVal;
                             const isFilterOpen = activeFilterCol === col.name;
@@ -161,11 +183,7 @@ const TableView: React.FC<Record<string, any>> = (props) => {
                               className="sticky top-0 z-20 bg-slate-50 border-b border-slate-100 text-left cursor-pointer hover:bg-slate-100 transition-colors group/th"
                               onClick={() => handleSort(col.name)}
                               title={`${col.name} ${col.type}${col.comment ? ` — ${col.comment}` : ''}${aiDict?.columns?.[col.name] ? ` | AI：${aiDict.columns[col.name]}` : ''}`}
-                              style={
-                                colWidth
-                                  ? { ...padStyle, width: colWidth, minWidth: colWidth, maxWidth: colWidth }
-                                  : { ...padStyle, maxWidth: TABLE_COL_MAX_WIDTH }
-                              }
+                              style={{ ...padStyle, ...columnWidthStyle(col.name) }}
                             >
                               <div className="flex flex-col gap-1">
                                 <div className="flex items-center justify-between gap-1">
@@ -334,26 +352,26 @@ const TableView: React.FC<Record<string, any>> = (props) => {
                                     <td
                                       key={`insert-${col.name}`}
                                       className="px-6 py-3 text-sm text-slate-700 border-x border-transparent"
-                                      style={
-                                        tableColumnWidths[col.name]
-                                          ? { width: tableColumnWidths[col.name], minWidth: tableColumnWidths[col.name], maxWidth: tableColumnWidths[col.name] }
-                                          : { maxWidth: TABLE_COL_MAX_WIDTH }
-                                      }
+                                      style={columnWidthStyle(col.name)}
                                     >
                                       {col.autoIncrement ? (
                                         <span className="text-[11px] text-slate-400 italic">AUTO</span>
                                       ) : isBooleanType(col.type) ? (
-                                        <select
-                                          className="w-full bg-white border border-emerald-200 rounded-lg px-2.5 py-1.5 text-[13px] font-mono text-slate-700 outline-none focus:ring-2 focus:ring-emerald-500/20"
+                                        <Select
+                                          ariaLabel={`${col.name} 取值`}
+                                          size="sm"
+                                          className="w-full"
+                                          triggerClassName="w-full flex items-center justify-between gap-2 bg-white border border-emerald-200 rounded-lg px-2.5 py-1.5 text-[13px] font-mono text-slate-700 outline-none focus:ring-2 focus:ring-emerald-500/20"
                                           value={insertingRow[col.name] ?? ''}
-                                          onChange={(e) =>
-                                            setInsertingRow((prev) => ({ ...(prev || {}), [col.name]: e.target.value }))
+                                          onChange={(next) =>
+                                            setInsertingRow((prev) => ({ ...(prev || {}), [col.name]: next }))
                                           }
-                                        >
-                                          <option value="">{col.nullable ? 'NULL' : '—'}</option>
-                                          <option value="true">true</option>
-                                          <option value="false">false</option>
-                                        </select>
+                                          options={[
+                                            { value: '', label: col.nullable ? 'NULL' : '—' },
+                                            { value: 'true', label: 'true' },
+                                            { value: 'false', label: 'false' }
+                                          ]}
+                                        />
                                       ) : (
                                         <input
                                           type={getTimeInputType(col.type) || 'text'}
@@ -414,16 +432,14 @@ const TableView: React.FC<Record<string, any>> = (props) => {
                                           style={{
                                             ...padStyle,
                                             fontSize: gridMetrics.fontPx,
-                                            ...(tableColumnWidths[col.name]
-                                              ? { width: tableColumnWidths[col.name], minWidth: tableColumnWidths[col.name], maxWidth: tableColumnWidths[col.name] }
-                                              : { maxWidth: TABLE_COL_MAX_WIDTH })
+                                            ...columnWidthStyle(col.name)
                                           }}
                                         >
                                           {isEditing ? (
                                             isBooleanType(col.type) ? (
                                               <select
                                                 autoFocus
-                                                className="w-full bg-transparent outline-none font-mono text-[13px] text-blue-600"
+                                                className="w-full bg-white border border-blue-200 rounded-md px-1.5 py-1 outline-none font-mono text-[13px] text-blue-600 focus:ring-2 focus:ring-blue-500/20"
                                                 value={editValue}
                                                 onChange={(e) => setEditValue(e.target.value)}
                                                 onBlur={handleCellEditCommit}
@@ -572,19 +588,23 @@ const TableView: React.FC<Record<string, any>> = (props) => {
                         <div className="h-4 w-px bg-slate-200" />
                         <div className="flex items-center gap-2">
                           <span className="text-xs text-slate-500 font-semibold">每页显示</span>
-                          <select
-                            value={pageSize}
-                            onChange={(e) => {
-                              const newSize = Number(e.target.value);
+                          <Select
+                            ariaLabel="每页显示条数"
+                            variant="ghost"
+                            size="sm"
+                            className="inline-block"
+                            minMenuWidth={80}
+                            value={String(pageSize)}
+                            onChange={(next) => {
+                              const newSize = Number(next);
                               setPageSize(newSize);
                               handleSelectTable(selectedTable!, 1, newSize);
                             }}
-                            className="bg-white border border-slate-200 rounded-lg text-xs font-bold px-2 py-1 outline-none focus:ring-2 focus:ring-blue-500/20 transition-all cursor-pointer"
-                          >
-                            {[20, 50, 100, 200, 500, 1000].map(size => (
-                              <option key={size} value={size}>{size}</option>
-                            ))}
-                          </select>
+                            options={[20, 50, 100, 200, 500, 1000].map(size => ({
+                              value: String(size),
+                              label: String(size)
+                            }))}
+                          />
                         </div>
                         <div className="h-4 w-px bg-slate-200" />
                         <div className="flex items-center gap-1.5" title="行密度：拖动实时调节（左紧凑 / 右舒适）">
